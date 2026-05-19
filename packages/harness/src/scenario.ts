@@ -59,6 +59,15 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			}
 			setSession(null)
 			if (currentScenarioId) {
+				// Drain pending step records (incl. their screenshot uploads)
+				// before marking the scenario done. step() fires recordStep
+				// fire-and-forget; the test process would otherwise exit while
+				// those requests were still in flight.
+				try {
+					await reporter.flush()
+				} catch {
+					// best-effort
+				}
 				const durationMs = Date.now() - currentScenarioStart
 				const status = currentScenarioFailures > 0 ? 'failed' : 'passed'
 				try {
@@ -68,7 +77,7 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 				}
 			}
 			currentScenarioId = null
-		}, 15_000)
+		}, 30_000)
 
 		fn()
 	})

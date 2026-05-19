@@ -115,19 +115,27 @@ class HttpReporter implements Reporter {
 		return response['scenarioId'] as string
 	}
 
-	async recordStep(event: StepEvent): Promise<void> {
+	recordStep(event: StepEvent): Promise<void> {
+		// Track synchronously so flush() awaits the entire pipeline (including
+		// encodeScreenshot's fs.readFile and the upload), not just whatever
+		// fragment has run by the time afterAll fires.
+		const promise = this.recordStepInternal(event)
+		this.track(promise)
+		return promise
+	}
+
+	private async recordStepInternal(event: StepEvent): Promise<void> {
 		const runId = await this.ensureRun()
 		const screenshot = event.screenshotPath
 			? await this.encodeScreenshot(event.screenshotPath)
 			: undefined
-		const promise = this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+		await this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
 			name: event.name,
 			status: event.status,
 			durationMs: event.durationMs,
 			error: event.error,
 			screenshot,
 		})
-		this.track(promise)
 	}
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {
