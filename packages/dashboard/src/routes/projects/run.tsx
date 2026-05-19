@@ -2,8 +2,9 @@ import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
-import { Stat } from '../../components/Stat'
-import { StatusBadge } from '../../components/StatusBadge'
+import { Polaroid } from '../../components/Polaroid'
+import { ResultStrip } from '../../components/Stat'
+import { StatusMark, StatusMarkInline } from '../../components/StatusBadge'
 import { rpc } from '../../lib/client'
 import { fmtDate, fmtDuration, fmtRelative } from '../../lib/format'
 
@@ -34,72 +35,69 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	}
 
 	const r = run.data
-	const duration = r.finishedAt ? r.finishedAt - r.startedAt : null
 
 	return (
 		<>
 			<div className="breadcrumb">
-				<Link to="index">Projects</Link>
+				<Link to="index">Registry</Link>
 				<span className="sep">/</span>
 				<Link to="projects/detail" params={{ slug }}>{project.data.name}</Link>
 				<span className="sep">/</span>
-				<span>Run {r.id.slice(0, 8)}</span>
+				<span>Session {r.id.slice(0, 8)}</span>
 			</div>
 
 			<div className="page-head">
-				<div>
-					<h1 className="row" style={{ alignItems: 'center', gap: 12 }}>
-						<span>Run {r.id.slice(0, 8)}</span>
-						<StatusBadge status={r.status} />
-					</h1>
-					<div className="subtitle row wrap">
-						<span title={fmtDate(r.startedAt)}>Started {fmtRelative(r.startedAt)}</span>
-						{r.branch && (
-							<>
-								<span className="sep" />
-								<span>branch <code>{r.branch}</code></span>
-							</>
-						)}
-						{r.commitSha && (
-							<>
-								<span className="sep" />
-								<span>commit <code>{r.commitSha.slice(0, 7)}</code></span>
-							</>
-						)}
-					</div>
+				<div className="eyebrow">Observation session</div>
+				<h1>{r.branch ?? 'unknown branch'}</h1>
+				<div className="subtitle">
+					<StatusMarkInline status={r.status} />
+					<span className="sep">·</span>
+					<span title={fmtDate(r.startedAt)}>Started {fmtRelative(r.startedAt)}</span>
+					{r.commitSha && (
+						<>
+							<span className="sep">·</span>
+							<span>commit <code>{r.commitSha.slice(0, 7)}</code></span>
+						</>
+					)}
+					<span className="sep">·</span>
+					<span>session <code>{r.id.slice(0, 8)}</code></span>
 				</div>
 			</div>
 
-			<div className="stats">
-				<Stat label="Total" value={r.totalScenarios} />
-				<Stat label="Passed" value={r.passedScenarios} tone={r.passedScenarios > 0 ? 'passed' : 'default'} />
-				<Stat label="Failed" value={r.failedScenarios} tone={r.failedScenarios > 0 ? 'failed' : 'default'} />
-				<Stat label="Duration" value={fmtDuration(duration)} />
+			<ResultStrip run={r} />
+
+			<div className="section-head">
+				<span className="label">Field notes — {scenarios.data?.length ?? 0} scenarios</span>
+				<span className="rule" />
 			</div>
 
 			{scenarios.isLoading ? (
-				<Loading message="Loading scenarios…" />
+				<Loading message="Reading scenarios…" />
 			) : !scenarios.data || scenarios.data.length === 0 ? (
 				<div className="empty">
 					<div className="empty-title">No scenarios reported</div>
 				</div>
 			) : (
-				scenarios.data.map(s => (
-					<ScenarioBlock
-						key={s.id}
-						scenarioId={s.id}
-						name={s.name}
-						status={s.status}
-						hash={s.hash}
-						durationMs={s.durationMs}
-					/>
-				))
+				<div className="scenarios">
+					{scenarios.data.map((s, i) => (
+						<ScenarioBlock
+							key={s.id}
+							index={i + 1}
+							scenarioId={s.id}
+							name={s.name}
+							status={s.status}
+							hash={s.hash}
+							durationMs={s.durationMs}
+						/>
+					))}
+				</div>
 			)}
 		</>
 	)
 }
 
 interface ScenarioProps {
+	index: number
 	scenarioId: string
 	name: string
 	status: 'running' | 'passed' | 'failed'
@@ -107,7 +105,7 @@ interface ScenarioProps {
 	durationMs: number | null
 }
 
-function ScenarioBlock({ scenarioId, name, status, hash, durationMs }: ScenarioProps) {
+function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: ScenarioProps) {
 	const steps = useQuery({
 		queryKey: ['scenarios.steps', scenarioId],
 		queryFn: () => rpc.scenarios.steps({ scenarioId }),
@@ -116,45 +114,60 @@ function ScenarioBlock({ scenarioId, name, status, hash, durationMs }: ScenarioP
 	const failedCount = steps.data?.filter(s => s.status === 'failed').length ?? 0
 
 	return (
-		<details className="scenario" open={status === 'failed'}>
-			<summary>
-				<ChevronIcon className="chevron" />
-				<StatusBadge status={status} size="sm" />
-				<span className="name">{name}</span>
-				<span className="meta">
-					{hash && <span className="hash">#{hash}</span>}
-					{steps.data && steps.data.length > 0 && (
-						<span>
-							{steps.data.length} step{steps.data.length === 1 ? '' : 's'}
-							{failedCount > 0 && <span style={{ color: 'var(--failed)' }}> · {failedCount} failed</span>}
-						</span>
-					)}
-					<span>{fmtDuration(durationMs)}</span>
-				</span>
-			</summary>
-			{steps.isLoading ? (
-				<div className="steps"><Loading message="Loading steps…" /></div>
-			) : !steps.data || steps.data.length === 0 ? (
-				<div className="steps"><div className="muted" style={{ padding: '12px 0', fontSize: 13 }}>No steps recorded.</div></div>
-			) : (
-				<div className="steps">
-					{steps.data.map(st => (
-						<div className="step" key={st.id}>
-							<div className="head">
-								<StatusBadge status={st.status} size="sm" />
-								<span className="name">{st.name}</span>
-								<span className="duration">{fmtDuration(st.durationMs)}</span>
-							</div>
-							{st.error && <div className="err">{st.error}</div>}
-							{st.screenshotUrl && (
-								<a href={st.screenshotUrl} target="_blank" rel="noreferrer">
-									<img className="shot" loading="lazy" src={st.screenshotUrl} alt={`${st.name} screenshot`} />
-								</a>
+		<div className="scenario">
+			<div className="s-gutter">
+				<StatusMark status={status} />
+				<span className="s-num">№ {String(index).padStart(2, '0')}</span>
+				<span className="s-time">{fmtDuration(durationMs)}</span>
+			</div>
+			<div className="s-body">
+				<details open={status === 'failed'}>
+					<summary>
+						<ChevronIcon className="chevron" />
+						<span className="s-name">{name}</span>
+						<span className="s-meta">
+							{hash && <span className="hash">#{hash}</span>}
+							{steps.data && steps.data.length > 0 && (
+								<span>
+									{steps.data.length} {steps.data.length === 1 ? 'step' : 'steps'}
+									{failedCount > 0 && (
+										<span style={{ color: 'var(--vermilion)' }}> · {failedCount} failed</span>
+									)}
+								</span>
 							)}
+						</span>
+					</summary>
+					{steps.isLoading ? (
+						<div className="steps"><Loading message="Reading steps…" /></div>
+					) : !steps.data || steps.data.length === 0 ? (
+						<div className="steps">
+							<div className="muted" style={{ padding: '12px 0', fontSize: 13 }}>
+								No steps recorded.
+							</div>
 						</div>
-					))}
-				</div>
-			)}
-		</details>
+					) : (
+						<div className="steps">
+							{steps.data.map(st => (
+								<div className="step" key={st.id}>
+									<div className="step-mark">
+										<StatusMark status={st.status} />
+									</div>
+									<div>
+										<div className="step-name">
+											<span>{st.name}</span>
+											<span className="duration">{fmtDuration(st.durationMs)}</span>
+										</div>
+										{st.error && <div className="step-error">{st.error}</div>}
+										{st.screenshotUrl && (
+											<Polaroid src={st.screenshotUrl} caption={st.name} />
+										)}
+									</div>
+								</div>
+							))}
+						</div>
+					)}
+				</details>
+			</div>
+		</div>
 	)
 }

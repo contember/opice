@@ -16,51 +16,49 @@ function ProjectsPage() {
 		queryFn: () => rpc.projects.list(),
 	})
 
-	if (isLoading) return <Loading message="Loading projects…" />
+	if (isLoading) return <Loading message="Reading the registry…" />
 	if (error) return <div className="error">{(error as Error).message}</div>
 	if (!data) return null
 
 	return (
 		<>
 			<div className="page-head">
-				<div>
-					<h1>Projects</h1>
-					<div className="subtitle">
-						{data.length} {data.length === 1 ? 'project' : 'projects'} sending runs to opice
-					</div>
+				<div className="eyebrow">Registry</div>
+				<h1>Subjects under observation</h1>
+				<div className="subtitle">
+					{data.length === 0
+						? 'No projects yet — register one to begin.'
+						: `${data.length} ${data.length === 1 ? 'project reports' : 'projects report'} into this journal.`}
 				</div>
 			</div>
 
 			{data.length === 0 ? (
 				<EmptyState
 					icon={<FolderIcon size={36} />}
-					title="No projects yet"
-					hint="curl -X POST -H 'x-admin-token: ...' /api/v1/admin/projects"
+					title="The registry is empty"
+					hint="curl -X POST -H 'x-admin-token: …' /api/v1/admin/projects"
 				>
-					Create one with the admin endpoint.
+					Register a project with the admin endpoint, then point its
+					CI at this worker.
 				</EmptyState>
 			) : (
-				<div className="card">
-					<table className="runs">
-						<thead>
-							<tr>
-								<th>Project</th>
-								<th>Slug</th>
-								<th>Added</th>
-							</tr>
-						</thead>
-						<tbody>
-							{data.map(p => (
-								<tr key={p.id}>
-									<td>
-										<Link to="projects/detail" params={{ slug: p.slug }}>{p.name}</Link>
-									</td>
-									<td><code className="muted">{p.slug}</code></td>
-									<td className="muted">{fmtRelative(p.createdAt)}</td>
-								</tr>
-							))}
-						</tbody>
-					</table>
+				<div className="entry-list">
+					{data.map(p => (
+						<div className="entry" key={p.id}>
+							<div className="entry-gutter">
+								<span className="gutter-time">{fmtRelative(p.createdAt)}</span>
+								<span>added</span>
+							</div>
+							<div className="entry-body">
+								<div className="lead">
+									<Link to="projects/detail" params={{ slug: p.slug }}>{p.name}</Link>
+								</div>
+								<div className="meta">
+									<code>{p.slug}</code>
+								</div>
+							</div>
+						</div>
+					))}
 				</div>
 			)}
 		</>

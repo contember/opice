@@ -2,10 +2,10 @@ interface Props {
 	message?: string
 }
 
-export function Loading({ message = 'Loading…' }: Props) {
+export function Loading({ message = 'Observing…' }: Props) {
 	return (
 		<div className="loading">
-			<span className="spinner" /> {message}
+			<span className="spinner" /> <span>{message}</span>
 		</div>
 	)
 }

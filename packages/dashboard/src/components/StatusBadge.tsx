@@ -1,17 +1,38 @@
-import { CheckIcon, ClockIcon, XIcon } from './Icon'
+type Status = 'passed' | 'failed' | 'running' | string
 
 interface Props {
-	status: 'passed' | 'failed' | 'running' | string
-	size?: 'sm' | 'md'
+	status: Status
+	className?: string
 }
 
-export function StatusBadge({ status, size = 'md' }: Props) {
-	const Icon = status === 'passed' ? CheckIcon : status === 'failed' ? XIcon : ClockIcon
-	const iconSize = size === 'sm' ? 11 : 13
+const GLYPH: Record<string, string> = {
+	passed: '●',
+	failed: '✕',
+	running: '◐',
+}
+
+/**
+ * A typographic status mark — never a pill. Lives in the gutter or inline next
+ * to a name. See .interface-design/system.md → "Status marks".
+ */
+export function StatusMark({ status, className }: Props) {
+	const glyph = GLYPH[status] ?? '○'
 	return (
-		<span className={`badge ${status} ${status === 'running' ? 'running-pulse' : ''}`}>
-			<Icon size={iconSize} />
+		<span className={`mark ${status}${className ? ' ' + className : ''}`} aria-label={status}>
+			{glyph}
+		</span>
+	)
+}
+
+export function StatusMarkInline({ status }: Props) {
+	const glyph = GLYPH[status] ?? '○'
+	return (
+		<span className={`mark-inline ${status}`}>
+			<span aria-hidden>{glyph}</span>
 			<span>{status}</span>
 		</span>
 	)
 }
+
+// Back-compat export so older imports don't break during the redesign.
+export { StatusMark as StatusBadge }
