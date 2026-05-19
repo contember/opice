@@ -46,9 +46,11 @@ export default define(({ env }) => {
 			DB: new D1Database({
 				name: 'opice',
 				migrationsDir: './migrations',
+				locationHint: 'weur',
 			}),
 			SCREENSHOTS: new R2Bucket({
 				name: 'opice-screenshots',
+				locationHint: 'weur',
 			}),
 		},
 		vars: {
