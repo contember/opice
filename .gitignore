@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+.wrangler/
+.lopata/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# Test artifacts
+/tmp/
+coverage/
