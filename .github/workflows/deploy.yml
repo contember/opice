@@ -68,7 +68,10 @@ jobs:
 
       - name: Apply D1 migrations
         working-directory: packages/worker
-        run: bunx wrangler d1 migrations apply opice --remote
+        # `DB` is the binding name from oblaka-generated wrangler.jsonc; the
+        # actual DB name in CF is `${env}-opice`. Either works, but the
+        # binding is env-stable.
+        run: bunx wrangler d1 migrations apply DB --remote
 
       - name: Summary
         run: |
