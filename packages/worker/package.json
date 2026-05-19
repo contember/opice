@@ -1,0 +1,35 @@
+{
+	"name": "@opice/worker",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"types": "./src/index.ts",
+	"exports": {
+		".": {
+			"types": "./src/index.ts",
+			"default": "./src/index.ts"
+		},
+		"./rpc": {
+			"types": "./src/rpc/index.ts",
+			"default": "./src/rpc/index.ts"
+		}
+	},
+	"scripts": {
+		"dev": "bunx lopata dev --env local --listen 0.0.0.0",
+		"oblaka": "bunx oblaka oblaka.ts",
+		"oblaka:deploy": "bunx oblaka oblaka.ts --remote",
+		"types": "wrangler types --strict-vars=false",
+		"typecheck": "tsc --noEmit",
+		"db:migrate:local": "wrangler d1 migrations apply opice --local",
+		"db:migrate:remote": "wrangler d1 migrations apply opice --remote"
+	},
+	"dependencies": {
+		"zod": "^3.25.0"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20251001.0",
+		"lopata": "latest",
+		"oblaka-iac": "latest",
+		"wrangler": "^4.24.0"
+	}
+}

@@ -1,0 +1,10 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"types": ["vite/client", "@cloudflare/workers-types"],
+		"noEmit": true,
+		"allowImportingTsExtensions": false
+	},
+	"include": ["src/**/*", "vite.config.ts"]
+}

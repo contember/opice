@@ -1,0 +1,39 @@
+/**
+ * File is auto generated DO NOT EDIT
+ */
+{
+	"name": "opice-worker",
+	"main": "./src/index.ts",
+	"compatibility_flags": [
+		"nodejs_compat_v2"
+	],
+	"compatibility_date": "2025-10-01",
+	"observability": {
+		"enabled": true
+	},
+	"assets": {
+		"directory": "../dashboard/dist",
+		"binding": "ASSETS",
+		"html_handling": "auto-trailing-slash",
+		"not_found_handling": "single-page-application"
+	},
+	"vars": {
+		"ENVIRONMENT": "local",
+		"READ_TOKEN": "local-dev",
+		"ADMIN_TOKEN": "local-admin"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "opice",
+			"database_id": "opice",
+			"migrations_dir": "./migrations"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "SCREENSHOTS",
+			"bucket_name": "opice-screenshots"
+		}
+	]
+}

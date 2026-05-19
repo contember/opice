@@ -1,0 +1,25 @@
+{
+	"name": "@opice/dashboard",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc --noEmit && vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@opice/worker": "workspace:*",
+		"@tanstack/react-query": "^5.62.0",
+		"react": "^19.0.0",
+		"react-dom": "^19.0.0"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20251001.0",
+		"@types/react": "^19.0.0",
+		"@types/react-dom": "^19.0.0",
+		"@vitejs/plugin-react": "^5.0.0",
+		"vite": "^7.0.0"
+	}
+}

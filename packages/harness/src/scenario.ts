@@ -13,6 +13,10 @@ export interface BrowserTestOptions {
 	url?: string
 }
 
+let currentScenarioId: string | null = null
+let currentScenarioStart: number = 0
+let currentScenarioFailures = 0
+
 /**
  * Register a top-level browser test scenario.
  *
@@ -22,11 +26,19 @@ export interface BrowserTestOptions {
  */
 export function browserTest(name: string, fn: () => void, options: BrowserTestOptions | string = {}): void {
 	const opts: BrowserTestOptions = typeof options === 'string' ? { hash: options } : options
+	const reporter = getReporter()
 
 	describe(name, () => {
-		beforeAll(() => {
+		beforeAll(async () => {
 			const session = `opice-${crypto.randomUUID().slice(0, 8)}`
 			setSession(session)
+			currentScenarioStart = Date.now()
+			currentScenarioFailures = 0
+			try {
+				currentScenarioId = await reporter.startScenario({ name, hash: opts.hash })
+			} catch {
+				currentScenarioId = null
+			}
 			const base = opts.url ?? PLAYGROUND_URL
 			const url = opts.hash ? `${base}#${opts.hash}` : base
 			exec(`agent-browser open ${url}`)
@@ -39,13 +51,23 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			}, { timeout: 15_000 })
 		}, 30_000)
 
-		afterAll(() => {
+		afterAll(async () => {
 			try {
 				exec('agent-browser close')
 			} catch {
 				// ignore close errors
 			}
 			setSession(null)
+			if (currentScenarioId) {
+				const durationMs = Date.now() - currentScenarioStart
+				const status = currentScenarioFailures > 0 ? 'failed' : 'passed'
+				try {
+					await reporter.finishScenario({ scenarioId: currentScenarioId, status, durationMs })
+				} catch {
+					// best-effort
+				}
+			}
+			currentScenarioId = null
 		}, 15_000)
 
 		fn()
@@ -54,10 +76,7 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 
 /**
  * A reportable step inside a scenario. Captures duration + screenshot on
- * finish, forwards to the active reporter.
- *
- * For now the reporter is a no-op (see reporter.ts); the API shape is stable
- * so tests written today work unchanged when the platform reporter ships.
+ * finish, forwards to the active reporter (no-op unless configured via env).
  */
 export function step(name: string, fn: () => void): void {
 	const reporter = getReporter()
@@ -69,6 +88,7 @@ export function step(name: string, fn: () => void): void {
 	} catch (e) {
 		status = 'failed'
 		error = e instanceof Error ? e.message : String(e)
+		currentScenarioFailures++
 		throw e
 	} finally {
 		const durationMs = Date.now() - start
@@ -78,13 +98,15 @@ export function step(name: string, fn: () => void): void {
 		} catch {
 			// screenshot failure shouldn't fail the test
 		}
-		void reporter.recordStep({
-			scenarioId: 'local',
-			name,
-			status,
-			durationMs,
-			error,
-			screenshotPath,
-		})
+		if (currentScenarioId) {
+			void reporter.recordStep({
+				scenarioId: currentScenarioId,
+				name,
+				status,
+				durationMs,
+				error,
+				screenshotPath,
+			})
+		}
 	}
 }
