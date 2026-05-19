@@ -9,6 +9,16 @@
         "typescript": "^5.6.0",
       },
     },
+    "packages/cli": {
+      "name": "@opice/cli",
+      "version": "0.0.1",
+      "bin": {
+        "opice": "./src/cli.ts",
+      },
+      "peerDependencies": {
+        "bun-types": "*",
+      },
+    },
     "packages/dashboard": {
       "name": "@opice/dashboard",
       "version": "0.0.1",
@@ -223,6 +233,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@opice/cli": ["@opice/cli@workspace:packages/cli"],
 
     "@opice/dashboard": ["@opice/dashboard@workspace:packages/dashboard"],
 
