@@ -19,7 +19,7 @@
 	},
 	"vars": {
 		"ENVIRONMENT": "local",
-		"READ_TOKEN": "local-dev",
+		"READ_TOKEN": "",
 		"ADMIN_TOKEN": "local-admin"
 	},
 	"d1_databases": [

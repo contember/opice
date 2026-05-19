@@ -1,5 +1,5 @@
 import { hasReadAccess } from '../read-gate'
-import { unauthorized } from '../http'
+import { json } from '../http'
 import { appRouter, type RpcContext } from '../router'
 import { dispatchRpcRequest } from '../rpc'
 import type { Services } from '../services'
@@ -9,7 +9,9 @@ export async function handleRpc(request: Request, services: Services): Promise<R
 		return new Response('method not allowed', { status: 405 })
 	}
 	if (!hasReadAccess(request, services.config.readToken)) {
-		return unauthorized('forbidden')
+		// Use the RPC error envelope so the dashboard's rpc-client can surface
+		// the message rather than throwing "undefined" into react-query.
+		return json({ error: { type: 'auth', message: 'forbidden' } }, { status: 401 })
 	}
 	return dispatchRpcRequest<RpcContext>({
 		router: appRouter,

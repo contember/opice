@@ -2,7 +2,10 @@ import { D1Database, define, R2Bucket, Worker } from 'oblaka-iac'
 
 const envVars = {
 	local: {
-		READ_TOKEN: 'local-dev',
+		// Empty in local — the read gate is bypassed entirely so vite dev
+		// (different origin from the worker) can hit /rpc without a cookie
+		// dance. Stage/prod must set a real value.
+		READ_TOKEN: '',
 		ADMIN_TOKEN: 'local-admin',
 	},
 	stage: {
