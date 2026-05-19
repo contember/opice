@@ -4,8 +4,14 @@ const POLL_INTERVAL = 200
 const POLL_TIMEOUT = 10_000
 const ACTION_SETTLE_MS = 500
 
+/**
+ * Auto-wrap bare identifiers as `[data-testid="…"]` selectors; treat anything
+ * with CSS-flavoured characters as a raw selector. Heuristic — if you need a
+ * plain-tag selector (e.g. `h1`), give it some structure (e.g. `main h1`) or
+ * use a descendant/attribute form.
+ */
 function resolveSelector(selectorOrTestId: string): string {
-	if (selectorOrTestId.includes('[')) {
+	if (/[\[\].#:> ]/.test(selectorOrTestId)) {
 		return selectorOrTestId
 	}
 	return `[data-testid="${selectorOrTestId}"]`

@@ -1,0 +1,13 @@
+{
+	"name": "@opice/self-test",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "bun test"
+	},
+	"devDependencies": {
+		"@opice/harness": "workspace:*",
+		"bun-types": "^1.3.5"
+	}
+}

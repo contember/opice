@@ -1,13 +1,23 @@
 /**
  * Reporter — streams scenario/step/screenshot events to the opice platform.
  *
- * Events are fire-and-forget but tracked in a pending queue; `flush()` awaits
- * them before the process exits (registered via `beforeExit`). When env vars
- * aren't configured, falls back to a no-op so harness behavior matches the
- * bindx prototype.
+ * Steps are fire-and-forget (tracked in a pending queue so flush awaits
+ * them). Scenario create + finish are awaited inline so the platform sees
+ * the right status when the test process exits.
+ *
+ * The CLI handles end-of-run finalization: the reporter writes a
+ * handoff file under $TMPDIR with the runId and credentials, the
+ * `opice test` wrapper picks it up after `bun test` exits and POSTs
+ * /api/v1/runs/<id>/finish so the dashboard sees the run as completed.
+ *
+ * When env vars aren't configured, the reporter falls back to a no-op so
+ * harness behavior matches the bindx prototype.
  */
 
 import { promises as fs } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 
 export interface ReporterConfig {
 	endpoint: string
@@ -53,22 +63,27 @@ class NoopReporter implements Reporter {
 	async flush(): Promise<void> {}
 }
 
+export const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
+
+function handoffPath(pid = process.pid): string {
+	return path.join(HANDOFF_DIR, `${pid}.json`)
+}
+
+export interface RunHandoff {
+	endpoint: string
+	apiKey: string
+	runId: string
+}
+
 class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
-	private exitHookRegistered = false
 
 	constructor(private readonly config: ReporterConfig) {}
 
 	private async ensureRun(): Promise<string> {
 		if (!this.runIdPromise) {
 			this.runIdPromise = this.startRun()
-			if (!this.exitHookRegistered) {
-				this.exitHookRegistered = true
-				process.on('beforeExit', () => {
-					void this.flush()
-				})
-			}
 		}
 		return this.runIdPromise
 	}
@@ -78,7 +93,17 @@ class HttpReporter implements Reporter {
 			branch: this.config.branch,
 			commit: this.config.commit,
 		})
-		return response['runId'] as string
+		const runId = response['runId'] as string
+		// Synchronous write so the CLI can pick this up even if the test
+		// process exits abruptly (process.on('exit') runs sync).
+		try {
+			mkdirSync(HANDOFF_DIR, { recursive: true })
+			const handoff: RunHandoff = { endpoint: this.config.endpoint, apiKey: this.config.apiKey, runId }
+			writeFileSync(handoffPath(), JSON.stringify(handoff), 'utf-8')
+		} catch {
+			// best-effort
+		}
+		return runId
 	}
 
 	async startScenario(input: ScenarioStart): Promise<string> {
@@ -107,24 +132,17 @@ class HttpReporter implements Reporter {
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {
 		const runId = await this.ensureRun()
-		this.track(
-			this.fetch('PATCH', `/api/v1/runs/${runId}/scenarios/${input.scenarioId}`, {
-				status: input.status,
-				durationMs: input.durationMs,
-			}),
-		)
+		// Awaited inline so the scenario status is committed before the
+		// bun:test afterAll returns.
+		await this.fetch('PATCH', `/api/v1/runs/${runId}/scenarios/${input.scenarioId}`, {
+			status: input.status,
+			durationMs: input.durationMs,
+		})
 	}
 
 	async flush(): Promise<void> {
 		await Promise.allSettled([...this.pending])
-		if (this.runIdPromise) {
-			try {
-				const runId = await this.runIdPromise
-				await this.fetch('POST', `/api/v1/runs/${runId}/finish`, {})
-			} catch {
-				// best-effort finalization
-			}
-		}
+		// finishRun is the CLI's responsibility — see handoff file.
 	}
 
 	private track(promise: Promise<unknown>): void {
