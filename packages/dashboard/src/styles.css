@@ -8,23 +8,32 @@
  */
 
 :root {
-	--paper:           #f5efe2;
-	--paper-soft:      #ecdfc8;
-	--paper-edge:      rgba(70, 50, 25, 0.16);
-	--paper-rule:      rgba(70, 50, 25, 0.22);
-	--paper-edge-soft: rgba(70, 50, 25, 0.08);
+	/* Light — primary. Sage-cream paper, olive ink. The botanical herbarium
+	   palette: less orange-warmth than a notebook, more "field flora plate". */
+	--paper:           #ecedde;
+	--paper-soft:      #dde0c8;
+	--paper-edge:      rgba(30, 50, 25, 0.16);
+	--paper-rule:      rgba(30, 50, 25, 0.22);
+	--paper-edge-soft: rgba(30, 50, 25, 0.08);
 
-	--ink:        #221b15;
-	--ink-soft:   #4b3b2a;
-	--ink-mute:   #8a7559;
-	--ink-faint:  #b9a784;
+	--ink:        #1c2317;
+	--ink-soft:   #38462e;
+	--ink-mute:   #6a785a;
+	--ink-faint:  #a6ad94;
 
-	--amber:         #b8741c;
-	--amber-soft:    #f0d99a;
-	--lichen:        #5d7a3c;
-	--lichen-soft:   #cfd9b3;
-	--vermilion:     #b53a1c;
-	--vermilion-soft: #f0cdbe;
+	/* Accent — primary interactive (links, brand-tag, focus, theme underline).
+	   Deep forest, distinct from the lichen status. */
+	--accent:        #3a6a30;
+	--accent-soft:   #cad8b5;
+
+	/* Status semantics — kept separate from accent so they read as states,
+	   not as brand. */
+	--lichen:        #5d8a30;
+	--lichen-soft:   #d4dfb2;
+	--vermilion:     #a8351a;
+	--vermilion-soft: #ecccbe;
+	--running:       #a47118;
+	--running-soft:  #ecd594;
 
 	--gutter: 88px;
 	--content-max: 880px;
@@ -38,43 +47,49 @@
    chosen, OR when the user forces dark via the theme switcher. */
 @media (prefers-color-scheme: dark) {
 	:root:not([data-theme]) {
-		--paper:           #1a1310;
-		--paper-soft:      #241a15;
-		--paper-edge:      rgba(240, 220, 180, 0.14);
-		--paper-rule:      rgba(240, 220, 180, 0.18);
-		--paper-edge-soft: rgba(240, 220, 180, 0.06);
+		--paper:           #131811;
+		--paper-soft:      #1c2218;
+		--paper-edge:      rgba(220, 235, 200, 0.14);
+		--paper-rule:      rgba(220, 235, 200, 0.18);
+		--paper-edge-soft: rgba(220, 235, 200, 0.06);
 
-		--ink:        #f0e6d2;
-		--ink-soft:   #cbb798;
-		--ink-mute:   #8e7959;
-		--ink-faint:  #5d4d38;
+		--ink:        #e8ecda;
+		--ink-soft:   #b6c0a2;
+		--ink-mute:   #7a8966;
+		--ink-faint:  #4e5a44;
 
-		--amber:         #e8a93a;
-		--amber-soft:    #4a3414;
-		--lichen:        #9fb872;
+		--accent:        #9bbf7a;
+		--accent-soft:   #243018;
+
+		--lichen:        #b6d68a;
 		--lichen-soft:   #2c3a1d;
-		--vermilion:     #e8745a;
+		--vermilion:     #e07458;
 		--vermilion-soft: #3e1b12;
+		--running:       #d99c36;
+		--running-soft:  #3e2e10;
 	}
 }
 :root[data-theme="dark"] {
-	--paper:           #1a1310;
-	--paper-soft:      #241a15;
-	--paper-edge:      rgba(240, 220, 180, 0.14);
-	--paper-rule:      rgba(240, 220, 180, 0.18);
-	--paper-edge-soft: rgba(240, 220, 180, 0.06);
+	--paper:           #131811;
+	--paper-soft:      #1c2218;
+	--paper-edge:      rgba(220, 235, 200, 0.14);
+	--paper-rule:      rgba(220, 235, 200, 0.18);
+	--paper-edge-soft: rgba(220, 235, 200, 0.06);
 
-	--ink:        #f0e6d2;
-	--ink-soft:   #cbb798;
-	--ink-mute:   #8e7959;
-	--ink-faint:  #5d4d38;
+	--ink:        #e8ecda;
+	--ink-soft:   #b6c0a2;
+	--ink-mute:   #7a8966;
+	--ink-faint:  #4e5a44;
 
-	--amber:         #e8a93a;
-	--amber-soft:    #4a3414;
-	--lichen:        #9fb872;
+	--accent:        #9bbf7a;
+	--accent-soft:   #243018;
+
+	--lichen:        #b6d68a;
 	--lichen-soft:   #2c3a1d;
-	--vermilion:     #e8745a;
+	--vermilion:     #e07458;
 	--vermilion-soft: #3e1b12;
+	--running:       #d99c36;
+	--running-soft:  #3e2e10;
 }
 
 * { box-sizing: border-box; }
@@ -93,12 +108,12 @@ body {
 }
 
 a {
-	color: var(--amber);
+	color: var(--accent);
 	text-decoration: none;
 	border-bottom: 1px solid transparent;
 	transition: border-color 0.12s;
 }
-a:hover { border-bottom-color: var(--amber); }
+a:hover { border-bottom-color: var(--accent); }
 
 code, .mono {
 	font-family: var(--font-mono);
@@ -132,7 +147,7 @@ header.app-header {
 .brand-tag {
 	font-family: var(--font-sans);
 	font-size: 10.5px;
-	color: var(--amber);
+	color: var(--accent);
 	letter-spacing: 0.22em;
 	text-transform: uppercase;
 	font-weight: 500;
@@ -158,7 +173,7 @@ nav.main a {
 nav.main a:hover { color: var(--ink); border-bottom: none; }
 nav.main a.active {
 	color: var(--ink);
-	border-bottom: 1px solid var(--amber);
+	border-bottom: 1px solid var(--accent);
 }
 
 /* ---------------- Layout ---------------- */
@@ -166,11 +181,17 @@ nav.main a.active {
 main {
 	max-width: calc(var(--gutter) + var(--content-max) + 32px);
 	margin: 0 auto;
-	padding: 40px 32px 96px;
+	padding: 14px 32px 96px;
 	display: grid;
 	grid-template-columns: var(--gutter) minmax(0, 1fr);
 	column-gap: 0;
 	row-gap: 0;
+}
+
+/* When a page has no breadcrumb (e.g. the registry index), give the
+   page-head some breathing room from the header. */
+.page-head:first-child {
+	margin-top: 28px;
 }
 
 /* Everything that should appear in the main reading column needs .col. */
@@ -194,7 +215,7 @@ main {
 }
 
 .breadcrumb {
-	grid-column: 2;
+	grid-column: 1 / -1;
 	font-family: var(--font-sans);
 	font-size: 10.5px;
 	letter-spacing: 0.18em;
@@ -204,15 +225,15 @@ main {
 	align-items: center;
 	gap: 10px;
 	margin-bottom: 28px;
-	padding-left: 24px;
+	padding-left: 0;
 }
 .breadcrumb a { color: var(--ink-mute); }
 .breadcrumb a:hover { color: var(--ink); border-bottom-color: var(--ink); }
 .breadcrumb .sep { color: var(--ink-faint); }
 
 .page-head {
-	grid-column: 2;
-	padding-left: 24px;
+	grid-column: 1 / -1;
+	padding-left: 0;
 	margin-bottom: 40px;
 }
 .page-head .eyebrow {
@@ -245,8 +266,8 @@ main {
 
 /* Section heading inside a page (e.g. "Observations" above scenarios) */
 .section-head {
-	grid-column: 2;
-	padding-left: 24px;
+	grid-column: 1 / -1;
+	padding-left: 0;
 	margin: 16px 0 18px;
 	display: flex;
 	align-items: baseline;
@@ -280,7 +301,7 @@ main {
 }
 .mark.passed   { color: var(--lichen); }
 .mark.failed   { color: var(--vermilion); }
-.mark.running  { color: var(--amber); animation: breathe 1.8s ease-in-out infinite; }
+.mark.running  { color: var(--running); animation: breathe 1.8s ease-in-out infinite; }
 
 @keyframes breathe {
 	0%, 100% { opacity: 1; }
@@ -300,7 +321,7 @@ main {
 }
 .mark-inline.passed   { color: var(--lichen); }
 .mark-inline.failed   { color: var(--vermilion); }
-.mark-inline.running  { color: var(--amber); }
+.mark-inline.running  { color: var(--running); }
 
 /* ---------------- Entry rows (projects, runs) ---------------- */
 
@@ -308,6 +329,10 @@ main {
 	grid-column: 1 / -1;
 	display: grid;
 	grid-template-columns: var(--gutter) minmax(0, 1fr);
+	border: 1px solid var(--paper-edge);
+	border-radius: 4px;
+	background: var(--paper-soft);
+	overflow: hidden;
 }
 
 .entry {
@@ -342,7 +367,7 @@ main {
 }
 .entry:hover > .entry-gutter,
 .entry:hover > .entry-body {
-	background: var(--paper-soft);
+	background: var(--paper);
 }
 
 .entry .lead {
@@ -354,7 +379,7 @@ main {
 	color: var(--ink);
 }
 .entry .lead a { color: inherit; }
-.entry .lead a:hover { color: var(--amber); border-bottom: none; }
+.entry .lead a:hover { color: var(--accent); border-bottom: none; }
 
 .entry .meta {
 	font-family: var(--font-sans);
@@ -391,9 +416,12 @@ main {
 /* ---------------- Result strip (run summary) ---------------- */
 
 .result-strip {
-	grid-column: 2;
-	padding-left: 24px;
+	grid-column: 1 / -1;
+	padding: 22px 24px;
 	margin-bottom: 32px;
+	border: 1px solid var(--paper-edge);
+	border-radius: 4px;
+	background: var(--paper-soft);
 }
 .result-strip .bar {
 	display: flex;
@@ -405,7 +433,7 @@ main {
 }
 .result-strip .seg.passed   { background: var(--lichen); }
 .result-strip .seg.failed   { background: var(--vermilion); }
-.result-strip .seg.running  { background: var(--amber); }
+.result-strip .seg.running  { background: var(--running); }
 .result-strip .legend {
 	margin-top: 10px;
 	display: flex;
@@ -424,7 +452,7 @@ main {
 }
 .result-strip .legend .swatch.passed  { background: var(--lichen); }
 .result-strip .legend .swatch.failed  { background: var(--vermilion); }
-.result-strip .legend .swatch.running { background: var(--amber); }
+.result-strip .legend .swatch.running { background: var(--running); }
 .result-strip .legend .count { color: var(--ink); font-weight: 500; }
 .result-strip .legend .label-cap {
 	color: var(--ink-mute);
@@ -671,7 +699,7 @@ main {
 	width: 12px;
 	height: 12px;
 	border: 1.5px solid var(--paper-edge);
-	border-top-color: var(--amber);
+	border-top-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.8s linear infinite;
 }
@@ -735,7 +763,7 @@ main {
 }
 .theme-switch .opt.active {
 	color: var(--ink);
-	border-bottom-color: var(--amber);
+	border-bottom-color: var(--accent);
 }
 
 /* ---------------- Responsive ---------------- */

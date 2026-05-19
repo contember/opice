@@ -22,8 +22,11 @@ illustration.
 
 ### Color world
 
-Reference: aged paper, sepia ink, mahogany shadow, brass instrument, banana
-amber afternoon light through canopy, lichen green, vermilion.
+Reference: a botanical herbarium plate. Sage-tinted paper, olive ink, deep
+forest accent, lichen green for life signs, vermilion for warnings, ochre
+amber only for the in-progress status (the one warm note that says "the
+specimen is still moving"). The old cream-amber palette was too cocoa /
+notebook — this is more "herbarium folio".
 
 ### Signatures (must remain visible in code)
 
@@ -58,42 +61,55 @@ Switch with `prefers-color-scheme`. No toggle in v1.
 
 ## Tokens
 
+Critical: `--accent` (brand / links / focus / theme underline) is **separate**
+from `--running` (status only). Earlier the same `--amber` was used for both,
+which dragged the whole UI toward orange. Forest green now owns brand
+language; ochre amber is reserved for the running state alone.
+
 ```css
-/* Light — primary */
---paper:         #f5efe2;   /* page background, warm cream */
---paper-soft:    #ecdfc8;   /* sunk surface (input, code chip) */
---paper-edge:    #e3d2b3;   /* card border */
---paper-rule:    #d9c39e;   /* section rule */
+/* Light — primary. Sage cream paper, olive ink. */
+--paper:         #ecedde;
+--paper-soft:    #dde0c8;
+--paper-edge:    rgba(30, 50, 25, 0.16);
+--paper-rule:    rgba(30, 50, 25, 0.22);
+--paper-edge-soft: rgba(30, 50, 25, 0.08);
 
---ink:           #221b15;   /* primary text */
---ink-soft:      #4b3b2a;   /* secondary text */
---ink-mute:      #8a7559;   /* tertiary, captions, metadata */
---ink-faint:     #b9a784;   /* disabled, faint marks */
+--ink:           #1c2317;
+--ink-soft:      #38462e;
+--ink-mute:      #6a785a;
+--ink-faint:     #a6ad94;
 
---amber:         #b8741c;   /* accent — running, links */
---amber-soft:    #f0d99a;
---lichen:        #5d7a3c;   /* pass */
---lichen-soft:   #cfd9b3;
---vermilion:     #b53a1c;   /* fail */
---vermilion-soft: #e8c3b4;
+--accent:        #3a6a30;   /* deep forest — interactive */
+--accent-soft:   #cad8b5;
 
-/* Dark — warm cocoa, not black */
---paper:         #1a1310;
---paper-soft:    #241a15;
---paper-edge:    #3a2a1f;
---paper-rule:    #4a3526;
+--lichen:        #5d8a30;   /* pass */
+--lichen-soft:   #d4dfb2;
+--vermilion:     #a8351a;   /* fail */
+--vermilion-soft: #ecccbe;
+--running:       #a47118;   /* ochre — only for running */
+--running-soft:  #ecd594;
 
---ink:           #f0e6d2;
---ink-soft:      #cbb798;
---ink-mute:      #8e7959;
---ink-faint:     #5d4d38;
+/* Dark — deep forest, not cocoa. */
+--paper:         #131811;
+--paper-soft:    #1c2218;
+--paper-edge:    rgba(220, 235, 200, 0.14);
+--paper-rule:    rgba(220, 235, 200, 0.18);
+--paper-edge-soft: rgba(220, 235, 200, 0.06);
 
---amber:         #e8a93a;
---amber-soft:    #4a3414;
---lichen:        #9fb872;
+--ink:           #e8ecda;
+--ink-soft:      #b6c0a2;
+--ink-mute:      #7a8966;
+--ink-faint:     #4e5a44;
+
+--accent:        #9bbf7a;
+--accent-soft:   #243018;
+
+--lichen:        #b6d68a;
 --lichen-soft:   #2c3a1d;
---vermilion:     #e8745a;
+--vermilion:     #e07458;
 --vermilion-soft: #3e1b12;
+--running:       #d99c36;
+--running-soft:  #3e2e10;
 ```
 
 ## Typography
@@ -124,7 +140,29 @@ collapses to 48px on mobile (status mark stays, timestamp wraps below name).
 **Borders-only.** No shadows anywhere — including modals (we don't have any).
 Borders use rgba so they sit on either paper tone without harshness. One
 elevation level above paper: `--paper-soft` for inputs, code chips, hover
-surfaces.
+surfaces, *and the bordered section cards* (see below).
+
+### Section cards (used sparingly)
+
+A handful of sections are wrapped in a bordered card filled with
+`--paper-soft`. This is for grouping a logically-related block, not for
+visual padding. Used for:
+
+- **Result strip** on the run page — the session summary reads as one unit.
+- **Entry list** on registry / project detail — the run / project rows sit
+  inside a single surface rather than floating against the page paper.
+
+Rules of the card:
+
+- Border: `1px solid var(--paper-edge)`, `border-radius: 4px`.
+- Background: `var(--paper-soft)`.
+- Spans the full content width including the gutter (`grid-column: 1 / -1`),
+  so the inner marginalia belongs to the card, not the page.
+- On `.entry` hover the row brightens to `var(--paper)` (lifts off the
+  soft surface) rather than darkening.
+
+Do not stack cards. Scenarios are kept airy; boxing each one would feel
+cramped. Page-head and section-head remain card-less.
 
 ## Radii
 
@@ -205,3 +243,13 @@ Sepia hairline, centered ornament, 24/24 vertical breathing.
 
 Max content width: 880px (narrower than usual dashboards on purpose — reads
 like prose). Gutter + content combined: ~960px.
+
+### Heading & breadcrumb alignment
+
+Page-head (eyebrow + h1 + subtitle), breadcrumb, and section-head all span
+`grid-column: 1 / -1` with `padding-left: 0`. They align with the **logo's
+left edge** in the header — not with the content column. Only entry rows,
+scenarios, and other gutter-bearing content sit inside the marginalia grid.
+This keeps the page hierarchy reading as one column when scanning the left
+margin top-to-bottom: logo → breadcrumb → h1 → section labels, then the
+gutter activates only where there's something to mark.
