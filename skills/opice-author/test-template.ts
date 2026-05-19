@@ -1,0 +1,27 @@
+import { test, expect, describe } from 'bun:test'
+import { browserTest, el, tid, waitFor, step } from '@opice/harness'
+
+/**
+ * Reference shape for an opice-author-generated test. The real generated
+ * file replaces every <PLACEHOLDER> with concrete values discovered while
+ * walking the scenario in agent-browser.
+ */
+
+browserTest('<Scenario Title>', () => {
+	test('walkthrough', () => {
+		step('<Step 1: plain-English description from the .scenario.md>', () => {
+			waitFor(() => el(tid('<test-id>')).exists)
+			expect(el(tid('<test-id>')).text).toContain('<expected text>')
+		})
+
+		step('<Step 2>', () => {
+			el(tid('<button-id>')).click()
+			waitFor(() => el(tid('<dialog-marker>')).exists)
+		})
+
+		step('<Step 3>', () => {
+			el(tid('<input-id>')).fill('<value>')
+			expect(el(tid('<submit-button>')).isDisabled).toBe(false)
+		})
+	})
+}, '<playground-hash>')
