@@ -34,8 +34,10 @@
 	--font-mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
+/* Dark tokens — applied when the OS prefers dark AND no explicit theme is
+   chosen, OR when the user forces dark via the theme switcher. */
 @media (prefers-color-scheme: dark) {
-	:root {
+	:root:not([data-theme]) {
 		--paper:           #1a1310;
 		--paper-soft:      #241a15;
 		--paper-edge:      rgba(240, 220, 180, 0.14);
@@ -54,6 +56,25 @@
 		--vermilion:     #e8745a;
 		--vermilion-soft: #3e1b12;
 	}
+}
+:root[data-theme="dark"] {
+	--paper:           #1a1310;
+	--paper-soft:      #241a15;
+	--paper-edge:      rgba(240, 220, 180, 0.14);
+	--paper-rule:      rgba(240, 220, 180, 0.18);
+	--paper-edge-soft: rgba(240, 220, 180, 0.06);
+
+	--ink:        #f0e6d2;
+	--ink-soft:   #cbb798;
+	--ink-mute:   #8e7959;
+	--ink-faint:  #5d4d38;
+
+	--amber:         #e8a93a;
+	--amber-soft:    #4a3414;
+	--lichen:        #9fb872;
+	--lichen-soft:   #2c3a1d;
+	--vermilion:     #e8745a;
+	--vermilion-soft: #3e1b12;
 }
 
 * { box-sizing: border-box; }
@@ -582,10 +603,12 @@ main {
 }
 
 /* Dark mode — the polaroid frame should still read as "paper" against the
-   dark cocoa background. Lift it one step. */
+   dark cocoa background. Lift it one step. Covers both system-dark and the
+   forced [data-theme="dark"] override. */
 @media (prefers-color-scheme: dark) {
-	.polaroid { background: var(--paper-soft); }
+	:root:not([data-theme]) .polaroid { background: var(--paper-soft); }
 }
+:root[data-theme="dark"] .polaroid { background: var(--paper-soft); }
 
 /* ---------------- States ---------------- */
 
@@ -672,6 +695,49 @@ main {
 .sep { color: var(--ink-faint); }
 .tabular { font-variant-numeric: tabular-nums; }
 
+/* ---------------- Theme switcher (footer) ---------------- */
+
+.theme-switch {
+	max-width: calc(var(--gutter) + var(--content-max) + 32px);
+	margin: 24px auto 0;
+	padding: 20px 32px 40px;
+	border-top: 1px solid var(--paper-edge-soft);
+	display: flex;
+	align-items: baseline;
+	gap: 18px;
+	font-family: var(--font-sans);
+	font-size: 10.5px;
+	letter-spacing: 0.22em;
+	text-transform: uppercase;
+}
+.theme-switch .label {
+	color: var(--ink-faint);
+	margin-right: 4px;
+}
+.theme-switch .opt {
+	appearance: none;
+	background: none;
+	border: 0;
+	padding: 4px 0 6px;
+	font: inherit;
+	letter-spacing: inherit;
+	text-transform: inherit;
+	color: var(--ink-mute);
+	cursor: pointer;
+	border-bottom: 1px solid transparent;
+	transition: color 0.12s ease, border-color 0.12s ease;
+}
+.theme-switch .opt:hover { color: var(--ink-soft); }
+.theme-switch .opt:focus-visible {
+	outline: none;
+	color: var(--ink);
+	border-bottom-color: var(--ink-faint);
+}
+.theme-switch .opt.active {
+	color: var(--ink);
+	border-bottom-color: var(--amber);
+}
+
 /* ---------------- Responsive ---------------- */
 
 @media (max-width: 720px) {
@@ -681,4 +747,5 @@ main {
 	.page-head h1 { font-size: 28px; }
 	.scenario .s-meta { display: none; }
 	.entry .lead { font-size: 17px; }
+	.theme-switch { padding: 16px 18px 32px; gap: 14px; flex-wrap: wrap; }
 }

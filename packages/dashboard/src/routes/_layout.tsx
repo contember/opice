@@ -1,4 +1,5 @@
 import { Link, Outlet, useRoute } from '@buzola/router'
+import { ThemeSwitcher } from '../components/ThemeSwitcher'
 
 export default function RootLayout() {
 	const { pathname } = useRoute()
@@ -20,6 +21,7 @@ export default function RootLayout() {
 			<main>
 				<Outlet />
 			</main>
+			<ThemeSwitcher />
 		</>
 	)
 }
