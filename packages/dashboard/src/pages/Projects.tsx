@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
+import { EmptyState } from '../components/EmptyState'
+import { FolderIcon } from '../components/Icon'
+import { Loading } from '../components/Loading'
 import { rpc } from '../lib/client'
-import { fmtDate } from '../lib/format'
+import { fmtRelative } from '../lib/format'
 import { navigate } from '../lib/router'
 
 export function ProjectsPage() {
@@ -9,35 +12,53 @@ export function ProjectsPage() {
 		queryFn: () => rpc.projects.list(),
 	})
 
-	if (isLoading) return <div className="loading"><span className="spinner" /> Loading…</div>
+	if (isLoading) return <Loading message="Loading projects…" />
 	if (error) return <div className="error">{(error as Error).message}</div>
 	if (!data) return null
 
-	if (data.length === 0) {
-		return <div className="empty">No projects yet. Register one with the admin tool.</div>
-	}
-
 	return (
 		<>
-			<h2>Projects</h2>
-			<table>
-				<thead>
-					<tr><th>Project</th><th>Slug</th><th>Created</th></tr>
-				</thead>
-				<tbody>
-					{data.map(p => (
-						<tr key={p.id}>
-							<td>
-								<a onClick={(e) => { e.preventDefault(); navigate(`/p/${p.slug}`) }}>
-									{p.name}
-								</a>
-							</td>
-							<td><code className="muted">{p.slug}</code></td>
-							<td className="muted">{fmtDate(p.createdAt)}</td>
-						</tr>
-					))}
-				</tbody>
-			</table>
+			<div className="page-head">
+				<div>
+					<h1>Projects</h1>
+					<div className="subtitle">{data.length} {data.length === 1 ? 'project' : 'projects'} sending runs to opice</div>
+				</div>
+			</div>
+
+			{data.length === 0 ? (
+				<EmptyState
+					icon={<FolderIcon size={36} />}
+					title="No projects yet"
+					hint="curl -X POST -H 'x-admin-token: ...' /api/v1/admin/projects"
+				>
+					Create one with the admin endpoint.
+				</EmptyState>
+			) : (
+				<div className="card">
+					<table className="runs">
+						<thead>
+							<tr>
+								<th>Project</th>
+								<th>Slug</th>
+								<th>Added</th>
+							</tr>
+						</thead>
+						<tbody>
+							{data.map(p => (
+								<tr key={p.id}>
+									<td>
+										<a onClick={(e) => { e.preventDefault(); navigate(`/p/${p.slug}`) }}>
+											{p.name}
+										</a>
+									</td>
+									<td><code className="muted">{p.slug}</code></td>
+									<td className="muted">{fmtRelative(p.createdAt)}</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
+			)}
 		</>
 	)
 }

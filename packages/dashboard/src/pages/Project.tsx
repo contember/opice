@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
+import { EmptyState } from '../components/EmptyState'
+import { InboxIcon } from '../components/Icon'
+import { Loading } from '../components/Loading'
 import { StatusBadge } from '../components/StatusBadge'
 import { rpc } from '../lib/client'
-import { fmtDate, fmtDuration } from '../lib/format'
+import { fmtDuration, fmtRelative } from '../lib/format'
 import { navigate } from '../lib/router'
 
 interface Props {
@@ -19,57 +22,81 @@ export function ProjectPage({ slug }: Props) {
 		enabled: project.isSuccess,
 	})
 
-	if (project.isLoading) return <div className="loading"><span className="spinner" /> Loading project…</div>
+	if (project.isLoading) return <Loading message="Loading project…" />
 	if (project.error) return <div className="error">{(project.error as Error).message}</div>
 	if (!project.data) return null
 
 	return (
 		<>
-			<h2>
-				{project.data.name}{' '}
-				<span className="muted" style={{ fontWeight: 400, fontSize: 14 }}>
-					/ {project.data.slug}
-				</span>
-			</h2>
+			<div className="breadcrumb">
+				<a onClick={(e) => { e.preventDefault(); navigate('/') }}>Projects</a>
+				<span className="sep">/</span>
+				<span>{project.data.name}</span>
+			</div>
+
+			<div className="page-head">
+				<div>
+					<h1>{project.data.name}</h1>
+					<div className="subtitle">
+						<code>{project.data.slug}</code>
+						<span className="sep" />
+						added {fmtRelative(project.data.createdAt)}
+					</div>
+				</div>
+			</div>
+
 			{runs.isLoading ? (
-				<div className="loading"><span className="spinner" /> Loading runs…</div>
-			) : runs.data?.length === 0 ? (
-				<div className="empty">No runs yet.</div>
+				<Loading message="Loading runs…" />
+			) : !runs.data || runs.data.length === 0 ? (
+				<EmptyState
+					icon={<InboxIcon size={36} />}
+					title="No runs yet"
+				>
+					Wire up <code>OPICE_PROJECT</code>, <code>OPICE_API_KEY</code>, and <code>OPICE_ENDPOINT</code> in your CI to start streaming results.
+				</EmptyState>
 			) : (
-				<table>
-					<thead>
-						<tr>
-							<th>Started</th>
-							<th>Status</th>
-							<th>Scenarios</th>
-							<th>Branch / commit</th>
-							<th>Duration</th>
-						</tr>
-					</thead>
-					<tbody>
-						{runs.data?.map(r => (
-							<tr key={r.id}>
-								<td>
-									<a onClick={(e) => { e.preventDefault(); navigate(`/p/${slug}/r/${r.id}`) }}>
-										{fmtDate(r.startedAt)}
-									</a>
-								</td>
-								<td><StatusBadge status={r.status} /></td>
-								<td>
-									{r.passedScenarios}/{r.totalScenarios} passed
-									{r.failedScenarios > 0 && <>, <span style={{ color: 'var(--failed-fg)' }}>{r.failedScenarios} failed</span></>}
-								</td>
-								<td className="muted">
-									{r.branch ?? '—'}
-									{r.commitSha && <> · <code>{r.commitSha.slice(0, 7)}</code></>}
-								</td>
-								<td className="muted">
-									{r.finishedAt ? fmtDuration(r.finishedAt - r.startedAt) : '—'}
-								</td>
+				<div className="card">
+					<table className="runs">
+						<thead>
+							<tr>
+								<th>Started</th>
+								<th>Status</th>
+								<th>Scenarios</th>
+								<th>Branch / commit</th>
+								<th>Duration</th>
 							</tr>
-						))}
-					</tbody>
-				</table>
+						</thead>
+						<tbody>
+							{runs.data.map(r => (
+								<tr key={r.id}>
+									<td>
+										<a onClick={(e) => { e.preventDefault(); navigate(`/p/${slug}/r/${r.id}`) }}>
+											{fmtRelative(r.startedAt)}
+										</a>
+									</td>
+									<td><StatusBadge status={r.status} /></td>
+									<td>
+										<span style={{ color: 'var(--passed)' }}>{r.passedScenarios}</span>
+										<span className="muted"> / {r.totalScenarios}</span>
+										{r.failedScenarios > 0 && (
+											<>
+												<span className="muted">, </span>
+												<span style={{ color: 'var(--failed)' }}>{r.failedScenarios} failed</span>
+											</>
+										)}
+									</td>
+									<td className="muted">
+										{r.branch ?? <span style={{ opacity: 0.5 }}>—</span>}
+										{r.commitSha && <> · <code>{r.commitSha.slice(0, 7)}</code></>}
+									</td>
+									<td className="muted">
+										{r.finishedAt ? fmtDuration(r.finishedAt - r.startedAt) : '—'}
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
 			)}
 		</>
 	)

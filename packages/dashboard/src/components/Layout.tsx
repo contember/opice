@@ -1,21 +1,26 @@
 import { type ReactNode } from 'react'
-import { navigate } from '../lib/router'
+import { navigate, usePathname } from '../lib/router'
 
 interface Props {
 	children: ReactNode
 }
 
 export function Layout({ children }: Props) {
+	const pathname = usePathname()
 	return (
 		<>
-			<header>
-				<h1>
-					<a onClick={(e) => { e.preventDefault(); navigate('/') }}>
-						🐒 opice
+			<header className="app-header">
+				<a className="brand" onClick={(e) => { e.preventDefault(); navigate('/') }}>
+					<span className="logo">🐒</span>
+					<span>opice</span>
+				</a>
+				<nav className="main">
+					<a
+						className={pathname === '/' || pathname.startsWith('/p/') ? 'active' : ''}
+						onClick={(e) => { e.preventDefault(); navigate('/') }}
+					>
+						Projects
 					</a>
-				</h1>
-				<nav>
-					<a onClick={(e) => { e.preventDefault(); navigate('/') }}>projects</a>
 				</nav>
 			</header>
 			<main>{children}</main>
