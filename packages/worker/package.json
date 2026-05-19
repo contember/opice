@@ -15,7 +15,7 @@
 		}
 	},
 	"scripts": {
-		"dev": "bunx lopata dev --env local --listen 0.0.0.0",
+		"dev": "bunx lopata dev --env local --port 8788 --listen 0.0.0.0",
 		"oblaka": "bunx oblaka oblaka.ts",
 		"oblaka:deploy": "bunx oblaka oblaka.ts --remote",
 		"types": "wrangler types --strict-vars=false",

@@ -1,0 +1,7 @@
+services:
+  - name: worker
+    cwd: packages/worker
+    command: bun run dev
+  - name: dashboard
+    cwd: packages/dashboard
+    command: bun run dev
