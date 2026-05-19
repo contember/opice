@@ -8,15 +8,17 @@ export default function RootLayout() {
 	return (
 		<>
 			<header className="app-header">
-				<Link to="index" className="brand">
-					<span>opice</span>
-					<span className="brand-tag">Field journal</span>
-				</Link>
-				<nav className="main">
-					<Link to="index" className={isProjects ? 'active' : ''}>
-						Subjects
+				<div className="inner">
+					<Link to="index" className="brand">
+						<span className="brand-mark">op</span>
+						<span>opice</span>
 					</Link>
-				</nav>
+					<nav className="main">
+						<Link to="index" className={isProjects ? 'active' : ''}>
+							Projects
+						</Link>
+					</nav>
+				</div>
 			</header>
 			<main>
 				<Outlet />

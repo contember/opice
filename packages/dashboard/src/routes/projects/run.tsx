@@ -1,6 +1,6 @@
 import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronIcon } from '../../components/Icon'
+import { ChevronIcon, ClockIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { Polaroid } from '../../components/Polaroid'
 import { ResultStrip } from '../../components/Stat'
@@ -39,20 +39,20 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	return (
 		<>
 			<div className="breadcrumb">
-				<Link to="index">Registry</Link>
+				<Link to="index">Projects</Link>
 				<span className="sep">/</span>
 				<Link to="projects/detail" params={{ slug }}>{project.data.name}</Link>
 				<span className="sep">/</span>
-				<span>Session {r.id.slice(0, 8)}</span>
+				<span>Run {r.id.slice(0, 8)}</span>
 			</div>
 
 			<div className="page-head">
-				<div className="eyebrow">Observation session</div>
-				<h1>{r.branch ?? 'unknown branch'}</h1>
-				<div className="subtitle">
+				<h1>
 					<StatusMarkInline status={r.status} />
-					<span className="sep">·</span>
-					<span title={fmtDate(r.startedAt)}>Started {fmtRelative(r.startedAt)}</span>
+					<span>Run {r.id.slice(0, 8)}</span>
+				</h1>
+				<div className="subtitle">
+					{r.branch && <span className="chip">{r.branch}</span>}
 					{r.commitSha && (
 						<>
 							<span className="sep">·</span>
@@ -60,19 +60,19 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 						</>
 					)}
 					<span className="sep">·</span>
-					<span>session <code>{r.id.slice(0, 8)}</code></span>
+					<span title={fmtDate(r.startedAt)}>started {fmtRelative(r.startedAt)}</span>
 				</div>
 			</div>
 
 			<ResultStrip run={r} />
 
 			<div className="section-head">
-				<span className="label">Field notes — {scenarios.data?.length ?? 0} scenarios</span>
-				<span className="rule" />
+				<span className="label">Scenarios</span>
+				<span className="count">{scenarios.data?.length ?? 0}</span>
 			</div>
 
 			{scenarios.isLoading ? (
-				<Loading message="Reading scenarios…" />
+				<Loading message="Loading scenarios…" />
 			) : !scenarios.data || scenarios.data.length === 0 ? (
 				<div className="empty">
 					<div className="empty-title">No scenarios reported</div>
@@ -114,60 +114,53 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 	const failedCount = steps.data?.filter(s => s.status === 'failed').length ?? 0
 
 	return (
-		<div className="scenario">
-			<div className="s-gutter">
+		<details className="scenario" open={status === 'failed'}>
+			<summary>
+				<ChevronIcon className="chevron" />
 				<StatusMark status={status} />
-				<span className="s-num">№ {String(index).padStart(2, '0')}</span>
-				<span className="s-time">{fmtDuration(durationMs)}</span>
-			</div>
-			<div className="s-body">
-				<details open={status === 'failed'}>
-					<summary>
-						<ChevronIcon className="chevron" />
-						<span className="s-name">{name}</span>
-						<span className="s-meta">
-							{hash && <span className="hash">#{hash}</span>}
-							{steps.data && steps.data.length > 0 && (
-								<span>
-									{steps.data.length} {steps.data.length === 1 ? 'step' : 'steps'}
-									{failedCount > 0 && (
-										<span style={{ color: 'var(--vermilion)' }}> · {failedCount} failed</span>
-									)}
-								</span>
+				<span className="s-num">#{String(index).padStart(2, '0')}</span>
+				<span className="s-name">{name}</span>
+				<span className="s-aside">
+					{steps.data && steps.data.length > 0 && (
+						<span>
+							{steps.data.length} {steps.data.length === 1 ? 'step' : 'steps'}
+							{failedCount > 0 && (
+								<span style={{ color: 'var(--fail)' }}> · {failedCount} failed</span>
 							)}
 						</span>
-					</summary>
-					{steps.isLoading ? (
-						<div className="steps"><Loading message="Reading steps…" /></div>
-					) : !steps.data || steps.data.length === 0 ? (
-						<div className="steps">
-							<div className="muted" style={{ padding: '12px 0', fontSize: 13 }}>
-								No steps recorded.
-							</div>
-						</div>
-					) : (
-						<div className="steps">
-							{steps.data.map(st => (
-								<div className="step" key={st.id}>
-									<div className="step-mark">
-										<StatusMark status={st.status} />
-									</div>
-									<div>
-										<div className="step-name">
-											<span>{st.name}</span>
-											<span className="duration">{fmtDuration(st.durationMs)}</span>
-										</div>
-										{st.error && <div className="step-error">{st.error}</div>}
-										{st.screenshotUrl && (
-											<Polaroid src={st.screenshotUrl} caption={st.name} />
-										)}
-									</div>
-								</div>
-							))}
-						</div>
 					)}
-				</details>
-			</div>
-		</div>
+					{hash && <span className="hash">#{hash}</span>}
+					<span className="duration">
+						<ClockIcon className="icon" />
+						<span className="tabular">{fmtDuration(durationMs)}</span>
+					</span>
+				</span>
+			</summary>
+			{steps.isLoading ? (
+				<div className="steps"><Loading message="Loading steps…" /></div>
+			) : !steps.data || steps.data.length === 0 ? (
+				<div className="steps">
+					<div className="muted" style={{ padding: '12px 16px', fontSize: 12.5 }}>
+						No steps recorded.
+					</div>
+				</div>
+			) : (
+				<div className="steps">
+					{steps.data.map(st => (
+						<div className="step" key={st.id}>
+							<span className="step-mark"><StatusMark status={st.status} /></span>
+							<span className="step-name">{st.name}</span>
+							<span className="duration">{fmtDuration(st.durationMs)}</span>
+							{(st.error || st.screenshotUrl) && (
+								<div className="step-detail">
+									{st.error && <div className="step-error">{st.error}</div>}
+									{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
+								</div>
+							)}
+						</div>
+					))}
+				</div>
+			)}
+		</details>
 	)
 }

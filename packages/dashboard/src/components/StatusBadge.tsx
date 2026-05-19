@@ -6,33 +6,38 @@ interface Props {
 }
 
 const GLYPH: Record<string, string> = {
-	passed: '●',
+	passed: '✓',
 	failed: '✕',
-	running: '◐',
+	running: '·',
+}
+
+const LABEL: Record<string, string> = {
+	passed: 'Passed',
+	failed: 'Failed',
+	running: 'Running',
 }
 
 /**
- * A typographic status mark — never a pill. Lives in the gutter or inline next
- * to a name. See .interface-design/system.md → "Status marks".
+ * Circled status icon — green check, red cross, amber pulsing dot.
  */
 export function StatusMark({ status, className }: Props) {
-	const glyph = GLYPH[status] ?? '○'
+	const glyph = GLYPH[status] ?? '?'
 	return (
-		<span className={`mark ${status}${className ? ' ' + className : ''}`} aria-label={status}>
+		<span className={`status-dot ${status}${className ? ' ' + className : ''}`} aria-label={status}>
 			{glyph}
 		</span>
 	)
 }
 
 export function StatusMarkInline({ status }: Props) {
-	const glyph = GLYPH[status] ?? '○'
+	const label = LABEL[status] ?? status
 	return (
-		<span className={`mark-inline ${status}`}>
-			<span aria-hidden>{glyph}</span>
-			<span>{status}</span>
+		<span className={`status-inline ${status}`}>
+			<StatusMark status={status} />
+			<span>{label}</span>
 		</span>
 	)
 }
 
-// Back-compat export so older imports don't break during the redesign.
+// Back-compat export so older imports don't break.
 export { StatusMark as StatusBadge }

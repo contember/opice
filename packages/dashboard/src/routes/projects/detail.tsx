@@ -1,7 +1,7 @@
 import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '../../components/EmptyState'
-import { InboxIcon } from '../../components/Icon'
+import { CalendarIcon, ClockIcon, InboxIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { StatusMark } from '../../components/StatusBadge'
 import { rpc } from '../../lib/client'
@@ -30,13 +30,12 @@ function ProjectPage({ slug }: { slug: string }) {
 	return (
 		<>
 			<div className="breadcrumb">
-				<Link to="index">Registry</Link>
+				<Link to="index">Projects</Link>
 				<span className="sep">/</span>
 				<span>{project.data.name}</span>
 			</div>
 
 			<div className="page-head">
-				<div className="eyebrow">Subject</div>
 				<h1>{project.data.name}</h1>
 				<div className="subtitle">
 					<code>{project.data.slug}</code>
@@ -45,63 +44,71 @@ function ProjectPage({ slug }: { slug: string }) {
 				</div>
 			</div>
 
-			<div className="section-head">
-				<span className="label">Observation log</span>
-				<span className="rule" />
-			</div>
-
 			{runs.isLoading ? (
-				<Loading message="Reading runs…" />
+				<Loading message="Loading runs…" />
 			) : !runs.data || runs.data.length === 0 ? (
 				<EmptyState
-					icon={<InboxIcon size={36} />}
-					title="No observations yet"
+					icon={<InboxIcon size={32} />}
+					title="No runs yet"
 				>
 					Wire <code>OPICE_PROJECT</code>, <code>OPICE_API_KEY</code> and{' '}
-					<code>OPICE_ENDPOINT</code> in your CI to begin streaming runs.
+					<code>OPICE_ENDPOINT</code> in your CI to start streaming runs.
 				</EmptyState>
 			) : (
-				<div className="entry-list">
-					{runs.data.map(r => {
-						const duration = r.finishedAt ? r.finishedAt - r.startedAt : null
-						return (
-							<div className="entry" key={r.id}>
-								<div className="entry-gutter">
-									<StatusMark status={r.status} />
-									<span className="gutter-time">{fmtRelative(r.startedAt)}</span>
-								</div>
-								<div className="entry-body">
-									<div className="lead">
-										<Link to="projects/run" params={{ slug, runId: r.id }}>
-											{r.branch ?? 'unknown branch'}
-											{r.commitSha && (
+				<>
+					<div className="toolbar">
+						<span className="total">{runs.data.length} {runs.data.length === 1 ? 'run' : 'runs'}</span>
+						<span className="pull" />
+						<span className="filter">Status<span className="caret">▾</span></span>
+						<span className="filter">Branch<span className="caret">▾</span></span>
+						<span className="filter">Commit<span className="caret">▾</span></span>
+					</div>
+					<div className="entry-list has-toolbar">
+						{runs.data.map((r, i) => {
+							const duration = r.finishedAt ? r.finishedAt - r.startedAt : null
+							const num = runs.data.length - i
+							return (
+								<div className="entry" key={r.id}>
+									<span className="e-status">
+										<StatusMark status={r.status} />
+									</span>
+									<div className="e-body">
+										<div className="e-title">
+											<Link to="projects/run" params={{ slug, runId: r.id }}>
+												Run #{num}
+												{r.commitSha && (
+													<> · <span style={{ fontWeight: 400, color: 'var(--text-soft)' }}>commit {r.commitSha.slice(0, 7)}</span></>
+												)}
+											</Link>
+										</div>
+										<div className="e-meta">
+											<span><strong className="tabular">{r.passedScenarios}</strong> passed</span>
+											{r.failedScenarios > 0 && (
 												<>
-													{' '}
-													<span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65em', fontWeight: 500, color: 'var(--ink-mute)', letterSpacing: 0 }}>
-														{r.commitSha.slice(0, 7)}
-													</span>
+													<span className="sep">·</span>
+													<span style={{ color: 'var(--fail)' }}><strong className="tabular" style={{ color: 'var(--fail)' }}>{r.failedScenarios}</strong> failed</span>
 												</>
 											)}
-										</Link>
+											<span className="sep">·</span>
+											<span><strong className="tabular">{r.totalScenarios}</strong> total</span>
+										</div>
 									</div>
-									<div className="meta">
-										<span><span className="num passed">{r.passedScenarios}</span> passed</span>
-										{r.failedScenarios > 0 && (
-											<>
-												<span className="sep">·</span>
-												<span><span className="num failed">{r.failedScenarios}</span> failed</span>
-											</>
-										)}
-										<span className="sep">·</span>
-										<span className="num">{r.totalScenarios}</span> total
-										<span className="sep">·</span>
-										<span className="tabular">{fmtDuration(duration)}</span>
+									{r.branch && <span className="e-chip chip">{r.branch}</span>}
+									<div className="e-aside">
+										<span className="row">
+											<CalendarIcon className="icon" />
+											<span>{fmtRelative(r.startedAt)}</span>
+										</span>
+										<span className="row">
+											<ClockIcon className="icon" />
+											<span className="tabular">{fmtDuration(duration)}</span>
+										</span>
 									</div>
 								</div>
-							</div>
-						)
-					})}
-				</div>
+							)
+						})}
+					</div>
+				</>
 			)}
 		</>
 	)
