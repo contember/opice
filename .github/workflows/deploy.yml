@@ -36,7 +36,7 @@ jobs:
         # wrangler still launches under Node when invoked via bunx, and it
         # requires Node 22+. The runner's default is 20.
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Resolve target environment
         id: target
