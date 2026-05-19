@@ -56,7 +56,7 @@ jobs:
         working-directory: packages/dashboard
         run: bun run build
 
-      - name: Deploy worker + provision D1/R2
+      - name: Provision D1/R2 + write wrangler.jsonc
         working-directory: packages/worker
         env:
           CLOUDFLARE_ENV: ${{ steps.target.outputs.env }}
@@ -72,6 +72,10 @@ jobs:
         # actual DB name in CF is `${env}-opice`. Either works, but the
         # binding is env-stable.
         run: bunx wrangler d1 migrations apply DB --remote
+
+      - name: Upload worker script
+        working-directory: packages/worker
+        run: bunx wrangler deploy
 
       - name: Summary
         run: |
