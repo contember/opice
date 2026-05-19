@@ -8,11 +8,11 @@ export default defineConfig({
 		react(),
 	],
 	server: {
-		port: 5174,
+		port: 18182,
 		proxy: {
-			'/rpc': 'http://localhost:8788',
-			'/api/v1': 'http://localhost:8788',
-			'/screenshots': 'http://localhost:8788',
+			'/rpc': 'http://localhost:18181',
+			'/api/v1': 'http://localhost:18181',
+			'/screenshots': 'http://localhost:18181',
 		},
 	},
 })
