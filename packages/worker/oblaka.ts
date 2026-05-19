@@ -41,6 +41,9 @@ export default define(({ env }) => {
 			binding: 'ASSETS',
 			html_handling: 'auto-trailing-slash',
 			not_found_handling: 'single-page-application',
+			// Otherwise CF's static-assets binding short-circuits index.html
+			// straight to the browser and our read-gate never runs.
+			run_worker_first: true,
 		},
 		bindings: {
 			DB: new D1Database({
