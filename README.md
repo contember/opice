@@ -69,6 +69,24 @@ bunx opice test tests/login.test.ts
 # Watch results stream into http://localhost:18182
 ```
 
+## Deploy
+
+GitHub Actions live in [`.github/workflows/`](.github/workflows):
+
+- **`ci.yml`** — runs on every PR + push to main. Typechecks every package, generates buzola routes, builds the dashboard.
+- **`deploy.yml`** — pushes to `main` deploy `stage` automatically; `prod` is `workflow_dispatch`-only. Both targets run `bunx oblaka oblaka.ts --env=<env> --remote`, which provisions D1 + R2 if missing and deploys the worker, then applies pending D1 migrations.
+
+Required repository secrets:
+
+| Secret | Used by |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | oblaka + wrangler |
+| `CLOUDFLARE_ACCOUNT_ID` | oblaka + wrangler |
+| `OPICE_READ_TOKEN` | baked into worker `vars` as `READ_TOKEN` (the dashboard read gate) |
+| `OPICE_ADMIN_TOKEN` | baked into worker `vars` as `ADMIN_TOKEN` (the project-create endpoint) |
+
+Set distinct values per GitHub *environment* (`stage` / `prod`) and the workflow picks them up via the `environment:` key.
+
 ## v1 roadmap
 
 - [x] Week 1: `@opice/harness` extracted from bindx prototype

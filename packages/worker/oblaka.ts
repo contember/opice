@@ -1,27 +1,33 @@
 import { D1Database, define, R2Bucket, Worker } from 'oblaka-iac'
 
-const envVars = {
-	local: {
+function envVarsFor(env: string): { READ_TOKEN: string; ADMIN_TOKEN: string } {
+	if (env === 'local') {
 		// Empty in local — the read gate is bypassed entirely so vite dev
 		// (different origin from the worker) can hit /rpc without a cookie
 		// dance. Stage/prod must set a real value.
-		READ_TOKEN: '',
-		ADMIN_TOKEN: 'local-admin',
-	},
-	stage: {
-		READ_TOKEN: 'fill .env',
-		ADMIN_TOKEN: 'fill .env',
-	},
-	prod: {
-		READ_TOKEN: 'fill .env',
-		ADMIN_TOKEN: 'fill .env',
-	},
-} as const
+		return { READ_TOKEN: '', ADMIN_TOKEN: 'local-admin' }
+	}
+	// Stage/prod read tokens from the deploy environment. CI sets these from
+	// GitHub secrets; locally `bunx oblaka --env=stage` would need them in
+	// .env. Throws loudly if missing so we never ship an open gate.
+	const readToken = process.env['OPICE_READ_TOKEN']
+	const adminToken = process.env['OPICE_ADMIN_TOKEN']
+	if (!readToken || !adminToken) {
+		throw new Error(
+			`Missing OPICE_READ_TOKEN and/or OPICE_ADMIN_TOKEN for env=${env}. ` +
+			`Set them as environment variables before running oblaka.`,
+		)
+	}
+	return { READ_TOKEN: readToken, ADMIN_TOKEN: adminToken }
+}
+
+const KNOWN_ENVS = new Set(['local', 'stage', 'prod'])
 
 export default define(({ env }) => {
-	if (!(env in envVars)) {
+	if (!KNOWN_ENVS.has(env)) {
 		throw new Error(`Unknown environment ${env}`)
 	}
+	const envVars = envVarsFor(env)
 
 	return new Worker({
 		dir: '.',
@@ -47,7 +53,7 @@ export default define(({ env }) => {
 		},
 		vars: {
 			ENVIRONMENT: env,
-			...envVars[env as keyof typeof envVars],
+			...envVars,
 		},
 	})
 })

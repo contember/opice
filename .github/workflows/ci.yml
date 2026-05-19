@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck harness
+        run: bunx tsc --noEmit -p packages/harness/tsconfig.json
+
+      - name: Typecheck worker
+        run: bunx tsc --noEmit -p packages/worker/tsconfig.json
+
+      - name: Typecheck CLI
+        run: bunx tsc --noEmit -p packages/cli/tsconfig.json
+
+      - name: Generate buzola routes + typecheck dashboard
+        working-directory: packages/dashboard
+        run: bun run gen && bunx tsc --noEmit
+
+      - name: Build dashboard
+        working-directory: packages/dashboard
+        run: bun run build
