@@ -121,42 +121,74 @@ code, .mono {
 /* ---------------- Header ---------------- */
 
 header.app-header {
+	position: relative;
 	border-bottom: 1px solid var(--border);
 	background: var(--surface);
+}
+header.app-header::before {
+	content: '';
+	position: absolute;
+	inset: 0 0 auto 0;
+	height: 2px;
+	background: linear-gradient(90deg,
+		var(--accent) 0%,
+		var(--accent) 30%,
+		color-mix(in srgb, var(--accent) 50%, transparent) 60%,
+		transparent 100%
+	);
 }
 header.app-header .inner {
 	display: flex;
 	align-items: center;
 	gap: 24px;
-	padding: 12px 24px;
+	padding: 14px 24px;
 	max-width: var(--content-max);
 	margin: 0 auto;
 }
 
 .brand {
 	font-family: var(--font-sans);
-	font-size: 14px;
-	font-weight: 600;
 	color: var(--text);
-	letter-spacing: -0.005em;
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
+	gap: 10px;
+	line-height: 1;
 }
 .brand:hover { text-decoration: none; }
+.brand:hover .brand-mark {
+	border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
 .brand-mark {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 22px;
-	height: 22px;
-	border: 1px solid var(--accent);
-	border-radius: 4px;
+	width: 36px;
+	height: 36px;
+	border: 1px solid var(--accent-soft);
+	border-radius: 8px;
 	background: var(--accent-tint);
 	color: var(--accent);
-	font-family: var(--font-mono);
-	font-size: 12px;
+	transition: border-color 0.12s ease;
+}
+.brand-text {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.brand-name {
+	font-size: 15px;
 	font-weight: 600;
+	letter-spacing: -0.015em;
+	color: var(--text);
+	line-height: 1;
+}
+.brand-sub {
+	font-family: var(--font-mono);
+	font-size: 9.5px;
+	font-weight: 500;
+	color: var(--text-mute);
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
 	line-height: 1;
 }
 
