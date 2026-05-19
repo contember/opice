@@ -4,11 +4,15 @@ Authors an `@opice/harness` E2E test from a human-readable scenario file.
 
 ## Install
 
+From the repo root:
+
 ```bash
-ln -s "$(realpath skills/opice-author)" ~/.claude/skills/opice-author
+bun run skills:install          # symlinks all opice skills into ~/.claude/skills/
+bun run skills:install --copy   # copies instead, if you don't want a live link
+bun run skills:uninstall        # removes them
 ```
 
-(Or copy the directory if you don't want a live link.)
+Then restart Claude Code so it picks up the skill.
 
 ## Use
 

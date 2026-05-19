@@ -8,7 +8,9 @@
 	"scripts": {
 		"build": "tsc --build",
 		"typecheck": "tsc --build",
-		"test": "bun test"
+		"test": "bun test",
+		"skills:install": "bun run scripts/install-skills.ts",
+		"skills:uninstall": "bun run scripts/install-skills.ts --uninstall"
 	},
 	"devDependencies": {
 		"@types/bun": "^1.3.5",
