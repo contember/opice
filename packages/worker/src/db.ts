@@ -1,43 +1,164 @@
-import type { Project, Run, Scenario, Step } from './types'
+import type { Project, Run, RunStatus, Scenario, Step, StepStatus } from './types'
+
+// Internal D1 row shapes — snake_case as the migration defines.
+interface ProjectRow {
+	id: number
+	slug: string
+	name: string
+	api_key_hash: string
+	created_at: number
+}
+
+interface RunRow {
+	id: string
+	project_id: number
+	branch: string | null
+	commit_sha: string | null
+	status: RunStatus
+	total_scenarios: number
+	passed_scenarios: number
+	failed_scenarios: number
+	started_at: number
+	finished_at: number | null
+}
+
+interface ScenarioRow {
+	id: string
+	run_id: string
+	name: string
+	hash: string | null
+	status: RunStatus
+	duration_ms: number | null
+	started_at: number
+	finished_at: number | null
+}
+
+interface StepRow {
+	id: number
+	scenario_id: string
+	sequence: number
+	name: string
+	status: StepStatus
+	duration_ms: number
+	error: string | null
+	screenshot_r2_key: string | null
+	created_at: number
+}
+
+const toProject = (r: ProjectRow): Project => ({
+	id: r.id,
+	slug: r.slug,
+	name: r.name,
+	apiKeyHash: r.api_key_hash,
+	createdAt: r.created_at,
+})
+
+const toRun = (r: RunRow): Run => ({
+	id: r.id,
+	projectId: r.project_id,
+	branch: r.branch,
+	commitSha: r.commit_sha,
+	status: r.status,
+	totalScenarios: r.total_scenarios,
+	passedScenarios: r.passed_scenarios,
+	failedScenarios: r.failed_scenarios,
+	startedAt: r.started_at,
+	finishedAt: r.finished_at,
+})
+
+const toScenario = (r: ScenarioRow): Scenario => ({
+	id: r.id,
+	runId: r.run_id,
+	name: r.name,
+	hash: r.hash,
+	status: r.status,
+	durationMs: r.duration_ms,
+	startedAt: r.started_at,
+	finishedAt: r.finished_at,
+})
+
+const toStep = (r: StepRow): Step => ({
+	id: r.id,
+	scenarioId: r.scenario_id,
+	sequence: r.sequence,
+	name: r.name,
+	status: r.status,
+	durationMs: r.duration_ms,
+	error: r.error,
+	screenshotKey: r.screenshot_r2_key,
+	createdAt: r.created_at,
+})
 
 export class Db {
 	constructor(private readonly d1: D1Database) {}
 
+	async createProject(input: { slug: string; name: string; apiKeyHash: string }): Promise<Project> {
+		const createdAt = Date.now()
+		const result = await this.d1
+			.prepare('INSERT INTO projects (slug, name, api_key_hash, created_at) VALUES (?, ?, ?, ?)')
+			.bind(input.slug, input.name, input.apiKeyHash, createdAt)
+			.run()
+		return {
+			id: Number(result.meta.last_row_id),
+			slug: input.slug,
+			name: input.name,
+			apiKeyHash: input.apiKeyHash,
+			createdAt,
+		}
+	}
+
 	async getProjectBySlug(slug: string): Promise<Project | null> {
-		return this.d1
-			.prepare('SELECT * FROM projects WHERE slug = ?')
-			.bind(slug)
-			.first<Project>()
+		const row = await this.d1.prepare('SELECT * FROM projects WHERE slug = ?').bind(slug).first<ProjectRow>()
+		return row ? toProject(row) : null
+	}
+
+	async getProjectByApiKeyHash(hash: string): Promise<Project | null> {
+		const row = await this.d1.prepare('SELECT * FROM projects WHERE api_key_hash = ?').bind(hash).first<ProjectRow>()
+		return row ? toProject(row) : null
 	}
 
 	async listProjects(): Promise<Project[]> {
 		const { results } = await this.d1
 			.prepare('SELECT * FROM projects ORDER BY created_at DESC')
-			.all<Project>()
-		return results
+			.all<ProjectRow>()
+		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; startedAt: number }): Promise<void> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string }): Promise<Run> {
+		const startedAt = Date.now()
 		await this.d1
 			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.startedAt)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, startedAt)
 			.run()
+		return {
+			id: input.id,
+			projectId: input.projectId,
+			branch: input.branch ?? null,
+			commitSha: input.commit ?? null,
+			status: 'running',
+			totalScenarios: 0,
+			passedScenarios: 0,
+			failedScenarios: 0,
+			startedAt,
+			finishedAt: null,
+		}
 	}
 
 	async getRun(id: string): Promise<Run | null> {
-		return this.d1.prepare('SELECT * FROM runs WHERE id = ?').bind(id).first<Run>()
+		const row = await this.d1.prepare('SELECT * FROM runs WHERE id = ?').bind(id).first<RunRow>()
+		return row ? toRun(row) : null
 	}
 
 	async listRunsForProject(projectId: number, limit = 50): Promise<Run[]> {
 		const { results } = await this.d1
 			.prepare('SELECT * FROM runs WHERE project_id = ? ORDER BY started_at DESC LIMIT ?')
 			.bind(projectId, limit)
-			.all<Run>()
-		return results
+			.all<RunRow>()
+		return results.map(toRun)
 	}
 
-	async finishRun(id: string, finishedAt: number): Promise<void> {
-		// Compute scenario counts + final status from scenarios table.
+	async finishRun(id: string): Promise<void> {
+		// Derive final status + counts from the run's scenarios.
 		const counts = await this.d1
 			.prepare(`SELECT
 				COUNT(*) AS total,
@@ -49,24 +170,24 @@ export class Db {
 		const total = counts?.total ?? 0
 		const passed = counts?.passed ?? 0
 		const failed = counts?.failed ?? 0
-		const status = failed > 0 || total === 0 ? 'failed' : 'passed'
+		const status: RunStatus = failed > 0 || total === 0 ? 'failed' : 'passed'
 		await this.d1
 			.prepare(`UPDATE runs SET status = ?, total_scenarios = ?, passed_scenarios = ?, failed_scenarios = ?, finished_at = ? WHERE id = ?`)
-			.bind(status, total, passed, failed, finishedAt, id)
+			.bind(status, total, passed, failed, Date.now(), id)
 			.run()
 	}
 
-	async createScenario(input: { id: string; runId: string; name: string; hash?: string; startedAt: number }): Promise<void> {
+	async createScenario(input: { id: string; runId: string; name: string; hash?: string }): Promise<void> {
 		await this.d1
 			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)`)
-			.bind(input.id, input.runId, input.name, input.hash ?? null, input.startedAt)
+			.bind(input.id, input.runId, input.name, input.hash ?? null, Date.now())
 			.run()
 	}
 
-	async finishScenario(input: { id: string; status: 'passed' | 'failed'; durationMs: number; finishedAt: number }): Promise<void> {
+	async finishScenario(input: { id: string; status: StepStatus; durationMs: number }): Promise<void> {
 		await this.d1
 			.prepare(`UPDATE scenarios SET status = ?, duration_ms = ?, finished_at = ? WHERE id = ?`)
-			.bind(input.status, input.durationMs, input.finishedAt, input.id)
+			.bind(input.status, input.durationMs, Date.now(), input.id)
 			.run()
 	}
 
@@ -74,23 +195,23 @@ export class Db {
 		const { results } = await this.d1
 			.prepare('SELECT * FROM scenarios WHERE run_id = ? ORDER BY started_at')
 			.bind(runId)
-			.all<Scenario>()
-		return results
+			.all<ScenarioRow>()
+		return results.map(toScenario)
 	}
 
 	async createStep(input: {
 		scenarioId: string
 		name: string
-		status: 'passed' | 'failed'
+		status: StepStatus
 		durationMs: number
 		error?: string
-		screenshotR2Key?: string
+		screenshotKey?: string
 	}): Promise<number> {
-		const seqRow = await this.d1
+		const next = await this.d1
 			.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS next FROM steps WHERE scenario_id = ?')
 			.bind(input.scenarioId)
 			.first<{ next: number }>()
-		const sequence = seqRow?.next ?? 0
+		const sequence = next?.next ?? 0
 		const result = await this.d1
 			.prepare(`INSERT INTO steps (scenario_id, sequence, name, status, duration_ms, error, screenshot_r2_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
@@ -100,18 +221,25 @@ export class Db {
 				input.status,
 				input.durationMs,
 				input.error ?? null,
-				input.screenshotR2Key ?? null,
+				input.screenshotKey ?? null,
 				Date.now(),
 			)
 			.run()
 		return Number(result.meta.last_row_id)
 	}
 
+	async attachScreenshot(stepId: number, key: string): Promise<void> {
+		await this.d1
+			.prepare('UPDATE steps SET screenshot_r2_key = ? WHERE id = ?')
+			.bind(key, stepId)
+			.run()
+	}
+
 	async listStepsForScenario(scenarioId: string): Promise<Step[]> {
 		const { results } = await this.d1
 			.prepare('SELECT * FROM steps WHERE scenario_id = ? ORDER BY sequence')
 			.bind(scenarioId)
-			.all<Step>()
-		return results
+			.all<StepRow>()
+		return results.map(toStep)
 	}
 }

@@ -57,25 +57,17 @@ const projects = rpc.router({
 	list: rpc.procedure
 		.input(z.void())
 		.output(z.array(ProjectSchema))
-		.handler(async ({ ctx }) => {
-			const rows = await ctx.db.listProjects()
-			return rows.map(p => ({
-				id: p.id,
-				slug: p.slug,
-				name: p.name,
-				createdAt: p.created_at,
-			}))
-		}),
+		.handler(async ({ ctx }) => (await ctx.db.listProjects()).map(stripApiKey)),
 
 	get: rpc.procedure
 		.input(z.object({ slug: z.string() }))
 		.output(ProjectSchema)
 		.handler(async ({ ctx, input }) => {
-			const p = await ctx.db.getProjectBySlug(input.slug)
-			if (!p) {
+			const project = await ctx.db.getProjectBySlug(input.slug)
+			if (!project) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Project not found: ${input.slug}`, httpStatus: 404 })
 			}
-			return { id: p.id, slug: p.slug, name: p.name, createdAt: p.created_at }
+			return stripApiKey(project)
 		}),
 })
 
@@ -88,8 +80,7 @@ const runs = rpc.router({
 			if (!project) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Project not found: ${input.projectSlug}`, httpStatus: 404 })
 			}
-			const rows = await ctx.db.listRunsForProject(project.id, input.limit)
-			return rows.map(serializeRun)
+			return ctx.db.listRunsForProject(project.id, input.limit)
 		}),
 
 	get: rpc.procedure
@@ -100,25 +91,13 @@ const runs = rpc.router({
 			if (!run) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Run not found: ${input.runId}`, httpStatus: 404 })
 			}
-			return serializeRun(run)
+			return run
 		}),
 
 	scenarios: rpc.procedure
 		.input(z.object({ runId: z.string() }))
 		.output(z.array(ScenarioSchema))
-		.handler(async ({ ctx, input }) => {
-			const rows = await ctx.db.listScenariosForRun(input.runId)
-			return rows.map(s => ({
-				id: s.id,
-				runId: s.run_id,
-				name: s.name,
-				hash: s.hash,
-				status: s.status,
-				durationMs: s.duration_ms,
-				startedAt: s.started_at,
-				finishedAt: s.finished_at,
-			}))
-		}),
+		.handler(({ ctx, input }) => ctx.db.listScenariosForRun(input.runId)),
 })
 
 const scenarios = rpc.router({
@@ -128,15 +107,8 @@ const scenarios = rpc.router({
 		.handler(async ({ ctx, input }) => {
 			const rows = await ctx.db.listStepsForScenario(input.scenarioId)
 			return rows.map(s => ({
-				id: s.id,
-				scenarioId: s.scenario_id,
-				sequence: s.sequence,
-				name: s.name,
-				status: s.status,
-				durationMs: s.duration_ms,
-				error: s.error,
-				screenshotUrl: s.screenshot_r2_key ? `/screenshots/${s.screenshot_r2_key}` : null,
-				createdAt: s.created_at,
+				...s,
+				screenshotUrl: s.screenshotKey ? `/screenshots/${s.screenshotKey}` : null,
 			}))
 		}),
 })
@@ -149,28 +121,11 @@ export const appRouter = rpc.router({
 
 export type AppRouter = typeof appRouter
 
-function serializeRun(r: {
-	id: string
-	project_id: number
-	branch: string | null
-	commit_sha: string | null
-	status: 'running' | 'passed' | 'failed'
-	total_scenarios: number
-	passed_scenarios: number
-	failed_scenarios: number
-	started_at: number
-	finished_at: number | null
-}) {
-	return {
-		id: r.id,
-		projectId: r.project_id,
-		branch: r.branch,
-		commitSha: r.commit_sha,
-		status: r.status,
-		totalScenarios: r.total_scenarios,
-		passedScenarios: r.passed_scenarios,
-		failedScenarios: r.failed_scenarios,
-		startedAt: r.started_at,
-		finishedAt: r.finished_at,
-	}
+function stripApiKey(p: { id: number; slug: string; name: string; createdAt: number }): {
+	id: number
+	slug: string
+	name: string
+	createdAt: number
+} {
+	return { id: p.id, slug: p.slug, name: p.name, createdAt: p.createdAt }
 }
