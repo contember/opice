@@ -2,7 +2,9 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main         # → stage
+      - deploy/prod  # → prod
   workflow_dispatch:
     inputs:
       environment:
@@ -12,14 +14,14 @@ on:
         default: stage
 
 concurrency:
-  # Serialize deploys per target — prevents racing oblaka state writes.
-  group: deploy-${{ github.event.inputs.environment || 'stage' }}
+  # Serialize deploys per target so oblaka's KV state never races.
+  group: deploy-${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'stage' }}
+    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -36,6 +38,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "env=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/deploy/prod" ]; then
+            echo "env=prod" >> "$GITHUB_OUTPUT"
           else
             echo "env=stage" >> "$GITHUB_OUTPUT"
           fi
@@ -51,7 +55,11 @@ jobs:
         working-directory: packages/worker
         env:
           CLOUDFLARE_ENV: ${{ steps.target.outputs.env }}
-        run: bunx oblaka oblaka.ts --env=${{ steps.target.outputs.env }} --remote
+        run: |
+          bunx oblaka oblaka.ts \
+            --env=${{ steps.target.outputs.env }} \
+            --state-namespace=opice-state \
+            --remote
 
       - name: Apply D1 migrations
         working-directory: packages/worker
@@ -61,5 +69,5 @@ jobs:
         run: |
           echo "### Deployed opice to **${{ steps.target.outputs.env }}** :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Trigger: \`${{ github.event_name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger: \`${{ github.event_name }}\` on \`${{ github.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

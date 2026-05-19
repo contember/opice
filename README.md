@@ -74,7 +74,7 @@ bunx opice test tests/login.test.ts
 GitHub Actions live in [`.github/workflows/`](.github/workflows):
 
 - **`ci.yml`** — runs on every PR + push to main. Typechecks every package, generates buzola routes, builds the dashboard.
-- **`deploy.yml`** — pushes to `main` deploy `stage` automatically; `prod` is `workflow_dispatch`-only. Both targets run `bunx oblaka oblaka.ts --env=<env> --remote`, which provisions D1 + R2 if missing and deploys the worker, then applies pending D1 migrations.
+- **`deploy.yml`** — push to `main` deploys `stage`; push to `deploy/prod` deploys `prod`. `workflow_dispatch` is also wired up as a manual backup with an env picker. Both targets run `bunx oblaka oblaka.ts --env=<env> --state-namespace=opice-state --remote`, which provisions D1 + R2 if missing (oblaka also auto-creates the `opice-state` KV namespace it stores resource state in), deploys the worker, then applies pending D1 migrations.
 
 Required repository secrets:
 
