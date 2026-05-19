@@ -1,12 +1,16 @@
+import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '../components/EmptyState'
 import { FolderIcon } from '../components/Icon'
 import { Loading } from '../components/Loading'
 import { rpc } from '../lib/client'
 import { fmtRelative } from '../lib/format'
-import { navigate } from '../lib/router'
 
-export function ProjectsPage() {
+export default createPage()
+	.route('/')
+	.render(() => <ProjectsPage />)
+
+function ProjectsPage() {
 	const { data, isLoading, error } = useQuery({
 		queryKey: ['projects.list'],
 		queryFn: () => rpc.projects.list(),
@@ -21,7 +25,9 @@ export function ProjectsPage() {
 			<div className="page-head">
 				<div>
 					<h1>Projects</h1>
-					<div className="subtitle">{data.length} {data.length === 1 ? 'project' : 'projects'} sending runs to opice</div>
+					<div className="subtitle">
+						{data.length} {data.length === 1 ? 'project' : 'projects'} sending runs to opice
+					</div>
 				</div>
 			</div>
 
@@ -47,9 +53,7 @@ export function ProjectsPage() {
 							{data.map(p => (
 								<tr key={p.id}>
 									<td>
-										<a onClick={(e) => { e.preventDefault(); navigate(`/p/${p.slug}`) }}>
-											{p.name}
-										</a>
+										<Link to="projects/detail" params={{ slug: p.slug }}>{p.name}</Link>
 									</td>
 									<td><code className="muted">{p.slug}</code></td>
 									<td className="muted">{fmtRelative(p.createdAt)}</td>

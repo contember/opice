@@ -1,17 +1,18 @@
+import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
-import { EmptyState } from '../components/EmptyState'
-import { InboxIcon } from '../components/Icon'
-import { Loading } from '../components/Loading'
-import { StatusBadge } from '../components/StatusBadge'
-import { rpc } from '../lib/client'
-import { fmtDuration, fmtRelative } from '../lib/format'
-import { navigate } from '../lib/router'
+import { EmptyState } from '../../components/EmptyState'
+import { InboxIcon } from '../../components/Icon'
+import { Loading } from '../../components/Loading'
+import { StatusBadge } from '../../components/StatusBadge'
+import { rpc } from '../../lib/client'
+import { fmtDuration, fmtRelative } from '../../lib/format'
 
-interface Props {
-	slug: string
-}
+export default createPage()
+	.params({ slug: 'string' })
+	.route('/p/:slug')
+	.render(({ params }) => <ProjectPage slug={params.slug} />)
 
-export function ProjectPage({ slug }: Props) {
+function ProjectPage({ slug }: { slug: string }) {
 	const project = useQuery({
 		queryKey: ['projects.get', slug],
 		queryFn: () => rpc.projects.get({ slug }),
@@ -29,7 +30,7 @@ export function ProjectPage({ slug }: Props) {
 	return (
 		<>
 			<div className="breadcrumb">
-				<a onClick={(e) => { e.preventDefault(); navigate('/') }}>Projects</a>
+				<Link to="index">Projects</Link>
 				<span className="sep">/</span>
 				<span>{project.data.name}</span>
 			</div>
@@ -70,9 +71,9 @@ export function ProjectPage({ slug }: Props) {
 							{runs.data.map(r => (
 								<tr key={r.id}>
 									<td>
-										<a onClick={(e) => { e.preventDefault(); navigate(`/p/${slug}/r/${r.id}`) }}>
+										<Link to="projects/run" params={{ slug, runId: r.id }}>
 											{fmtRelative(r.startedAt)}
-										</a>
+										</Link>
 									</td>
 									<td><StatusBadge status={r.status} /></td>
 									<td>

@@ -5,17 +5,20 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"build": "tsc --noEmit && vite build",
+		"gen": "bun scripts/gen.ts",
+		"build": "bun run gen && tsc --noEmit && vite build",
 		"preview": "vite preview",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "bun run gen && tsc --noEmit"
 	},
 	"dependencies": {
+		"@buzola/router": "latest",
 		"@opice/worker": "workspace:*",
 		"@tanstack/react-query": "^5.62.0",
 		"react": "^19.0.0",
 		"react-dom": "^19.0.0"
 	},
 	"devDependencies": {
+		"@buzola/vite-plugin": "latest",
 		"@cloudflare/workers-types": "^4.20251001.0",
 		"@types/react": "^19.0.0",
 		"@types/react-dom": "^19.0.0",

@@ -1,18 +1,18 @@
+import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronIcon } from '../components/Icon'
-import { Loading } from '../components/Loading'
-import { Stat } from '../components/Stat'
-import { StatusBadge } from '../components/StatusBadge'
-import { rpc } from '../lib/client'
-import { fmtDate, fmtDuration, fmtRelative } from '../lib/format'
-import { navigate } from '../lib/router'
+import { ChevronIcon } from '../../components/Icon'
+import { Loading } from '../../components/Loading'
+import { Stat } from '../../components/Stat'
+import { StatusBadge } from '../../components/StatusBadge'
+import { rpc } from '../../lib/client'
+import { fmtDate, fmtDuration, fmtRelative } from '../../lib/format'
 
-interface Props {
-	slug: string
-	runId: string
-}
+export default createPage()
+	.params({ slug: 'string', runId: 'string' })
+	.route('/p/:slug/r/:runId')
+	.render(({ params }) => <RunPage slug={params.slug} runId={params.runId} />)
 
-export function RunPage({ slug, runId }: Props) {
+function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	const project = useQuery({
 		queryKey: ['projects.get', slug],
 		queryFn: () => rpc.projects.get({ slug }),
@@ -39,9 +39,9 @@ export function RunPage({ slug, runId }: Props) {
 	return (
 		<>
 			<div className="breadcrumb">
-				<a onClick={(e) => { e.preventDefault(); navigate('/') }}>Projects</a>
+				<Link to="index">Projects</Link>
 				<span className="sep">/</span>
-				<a onClick={(e) => { e.preventDefault(); navigate(`/p/${slug}`) }}>{project.data.name}</a>
+				<Link to="projects/detail" params={{ slug }}>{project.data.name}</Link>
 				<span className="sep">/</span>
 				<span>Run {r.id.slice(0, 8)}</span>
 			</div>
