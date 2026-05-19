@@ -32,6 +32,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: actions/setup-node@v4
+        # wrangler still launches under Node when invoked via bunx, and it
+        # requires Node 22+. The runner's default is 20.
+        with:
+          node-version: '22'
 
       - name: Resolve target environment
         id: target
