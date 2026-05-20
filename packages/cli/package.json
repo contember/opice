@@ -4,7 +4,7 @@
 	"description": "CLI for opice — scaffolds projects and wraps `bun test` to stream E2E results to the reporting platform",
 	"type": "module",
 	"bin": {
-		"opice": "./src/cli.ts"
+		"opice": "src/cli.ts"
 	},
 	"exports": {
 		".": {
