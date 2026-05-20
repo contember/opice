@@ -12,6 +12,7 @@ export interface Project {
 	slug: string
 	name: string
 	apiKeyHash: string
+	readToken: string | null
 	createdAt: number
 }
 
@@ -33,6 +34,8 @@ export interface Scenario {
 	runId: string
 	name: string
 	hash: string | null
+	testFile: string | null
+	scenarioFile: string | null
 	status: RunStatus
 	durationMs: number | null
 	startedAt: number

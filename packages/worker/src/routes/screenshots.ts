@@ -1,9 +1,10 @@
-import { hasReadAccess } from '../read-gate'
+import { resolveReadScope, screenshotKeyAllowed } from '../read-gate'
 import { forbidden, notFound } from '../http'
 import type { Services } from '../services'
 
 export async function handleScreenshot(request: Request, services: Services, key: string): Promise<Response> {
-	if (!hasReadAccess(request, services.config.readToken)) {
+	const scope = await resolveReadScope(request, services)
+	if (!scope || !screenshotKeyAllowed(scope, key)) {
 		return forbidden()
 	}
 	const obj = await services.screenshots.get(key)

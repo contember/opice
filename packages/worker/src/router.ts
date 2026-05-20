@@ -1,12 +1,23 @@
 import { z } from 'zod'
 import type { Db } from './db'
+import type { ReadScope } from './read-gate'
+import { projectAllowed } from './read-gate'
 import { initRpc, RpcDispatchError } from './rpc'
 
 export interface RpcContext {
 	db: Db
+	scope: ReadScope
 }
 
 const rpc = initRpc<RpcContext>()
+
+function forbidden(): never {
+	throw new RpcDispatchError({ type: 'forbidden', message: 'forbidden', httpStatus: 403 })
+}
+
+function assertProjectAllowed(scope: ReadScope, projectId: number): void {
+	if (!projectAllowed(scope, projectId)) forbidden()
+}
 
 const StatusSchema = z.enum(['running', 'passed', 'failed'])
 
@@ -14,6 +25,7 @@ const ProjectSchema = z.object({
 	id: z.number(),
 	slug: z.string(),
 	name: z.string(),
+	readToken: z.string().nullable(),
 	createdAt: z.number(),
 })
 
@@ -35,6 +47,8 @@ const ScenarioSchema = z.object({
 	runId: z.string(),
 	name: z.string(),
 	hash: z.string().nullable(),
+	testFile: z.string().nullable(),
+	scenarioFile: z.string().nullable(),
 	status: StatusSchema,
 	durationMs: z.number().nullable(),
 	startedAt: z.number(),
@@ -57,7 +71,13 @@ const projects = rpc.router({
 	list: rpc.procedure
 		.input(z.void())
 		.output(z.array(ProjectSchema))
-		.handler(async ({ ctx }) => (await ctx.db.listProjects()).map(stripApiKey)),
+		.handler(async ({ ctx }) => {
+			const all = await ctx.db.listProjects()
+			// A project-scoped token only ever sees its own project.
+			const scope = ctx.scope
+			const visible = scope.kind === 'all' ? all : all.filter(p => p.id === scope.projectId)
+			return visible.map(stripApiKey)
+		}),
 
 	get: rpc.procedure
 		.input(z.object({ slug: z.string() }))
@@ -67,6 +87,7 @@ const projects = rpc.router({
 			if (!project) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Project not found: ${input.slug}`, httpStatus: 404 })
 			}
+			assertProjectAllowed(ctx.scope, project.id)
 			return stripApiKey(project)
 		}),
 })
@@ -80,6 +101,7 @@ const runs = rpc.router({
 			if (!project) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Project not found: ${input.projectSlug}`, httpStatus: 404 })
 			}
+			assertProjectAllowed(ctx.scope, project.id)
 			return ctx.db.listRunsForProject(project.id, input.limit)
 		}),
 
@@ -91,13 +113,21 @@ const runs = rpc.router({
 			if (!run) {
 				throw new RpcDispatchError({ type: 'not_found', message: `Run not found: ${input.runId}`, httpStatus: 404 })
 			}
+			assertProjectAllowed(ctx.scope, run.projectId)
 			return run
 		}),
 
 	scenarios: rpc.procedure
 		.input(z.object({ runId: z.string() }))
 		.output(z.array(ScenarioSchema))
-		.handler(({ ctx, input }) => ctx.db.listScenariosForRun(input.runId)),
+		.handler(async ({ ctx, input }) => {
+			const run = await ctx.db.getRun(input.runId)
+			if (!run) {
+				throw new RpcDispatchError({ type: 'not_found', message: `Run not found: ${input.runId}`, httpStatus: 404 })
+			}
+			assertProjectAllowed(ctx.scope, run.projectId)
+			return ctx.db.listScenariosForRun(input.runId)
+		}),
 })
 
 const scenarios = rpc.router({
@@ -105,6 +135,12 @@ const scenarios = rpc.router({
 		.input(z.object({ scenarioId: z.string() }))
 		.output(z.array(StepSchema))
 		.handler(async ({ ctx, input }) => {
+			const scenario = await ctx.db.getScenario(input.scenarioId)
+			if (!scenario) {
+				throw new RpcDispatchError({ type: 'not_found', message: `Scenario not found: ${input.scenarioId}`, httpStatus: 404 })
+			}
+			const run = await ctx.db.getRun(scenario.runId)
+			if (run) assertProjectAllowed(ctx.scope, run.projectId)
 			const rows = await ctx.db.listStepsForScenario(input.scenarioId)
 			return rows.map(s => ({
 				...s,
@@ -121,11 +157,12 @@ export const appRouter = rpc.router({
 
 export type AppRouter = typeof appRouter
 
-function stripApiKey(p: { id: number; slug: string; name: string; createdAt: number }): {
+function stripApiKey(p: { id: number; slug: string; name: string; readToken: string | null; createdAt: number }): {
 	id: number
 	slug: string
 	name: string
+	readToken: string | null
 	createdAt: number
 } {
-	return { id: p.id, slug: p.slug, name: p.name, createdAt: p.createdAt }
+	return { id: p.id, slug: p.slug, name: p.name, readToken: p.readToken, createdAt: p.createdAt }
 }

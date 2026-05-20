@@ -6,6 +6,7 @@ interface ProjectRow {
 	slug: string
 	name: string
 	api_key_hash: string
+	read_token: string | null
 	created_at: number
 }
 
@@ -27,6 +28,8 @@ interface ScenarioRow {
 	run_id: string
 	name: string
 	hash: string | null
+	test_file: string | null
+	scenario_file: string | null
 	status: RunStatus
 	duration_ms: number | null
 	started_at: number
@@ -50,6 +53,7 @@ const toProject = (r: ProjectRow): Project => ({
 	slug: r.slug,
 	name: r.name,
 	apiKeyHash: r.api_key_hash,
+	readToken: r.read_token,
 	createdAt: r.created_at,
 })
 
@@ -71,6 +75,8 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	runId: r.run_id,
 	name: r.name,
 	hash: r.hash,
+	testFile: r.test_file,
+	scenarioFile: r.scenario_file,
 	status: r.status,
 	durationMs: r.duration_ms,
 	startedAt: r.started_at,
@@ -92,17 +98,18 @@ const toStep = (r: StepRow): Step => ({
 export class Db {
 	constructor(private readonly d1: D1Database) {}
 
-	async createProject(input: { slug: string; name: string; apiKeyHash: string }): Promise<Project> {
+	async createProject(input: { slug: string; name: string; apiKeyHash: string; readToken: string }): Promise<Project> {
 		const createdAt = Date.now()
 		const result = await this.d1
-			.prepare('INSERT INTO projects (slug, name, api_key_hash, created_at) VALUES (?, ?, ?, ?)')
-			.bind(input.slug, input.name, input.apiKeyHash, createdAt)
+			.prepare('INSERT INTO projects (slug, name, api_key_hash, read_token, created_at) VALUES (?, ?, ?, ?, ?)')
+			.bind(input.slug, input.name, input.apiKeyHash, input.readToken, createdAt)
 			.run()
 		return {
 			id: Number(result.meta.last_row_id),
 			slug: input.slug,
 			name: input.name,
 			apiKeyHash: input.apiKeyHash,
+			readToken: input.readToken,
 			createdAt,
 		}
 	}
@@ -115,6 +122,15 @@ export class Db {
 	async getProjectByApiKeyHash(hash: string): Promise<Project | null> {
 		const row = await this.d1.prepare('SELECT * FROM projects WHERE api_key_hash = ?').bind(hash).first<ProjectRow>()
 		return row ? toProject(row) : null
+	}
+
+	async getProjectByReadToken(token: string): Promise<Project | null> {
+		const row = await this.d1.prepare('SELECT * FROM projects WHERE read_token = ?').bind(token).first<ProjectRow>()
+		return row ? toProject(row) : null
+	}
+
+	async setReadToken(slug: string, token: string): Promise<void> {
+		await this.d1.prepare('UPDATE projects SET read_token = ? WHERE slug = ?').bind(token, slug).run()
 	}
 
 	async listProjects(): Promise<Project[]> {
@@ -177,11 +193,23 @@ export class Db {
 			.run()
 	}
 
-	async createScenario(input: { id: string; runId: string; name: string; hash?: string }): Promise<void> {
+	async createScenario(input: {
+		id: string
+		runId: string
+		name: string
+		hash?: string
+		testFile?: string
+		scenarioFile?: string
+	}): Promise<void> {
 		await this.d1
-			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)`)
-			.bind(input.id, input.runId, input.name, input.hash ?? null, Date.now())
+			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, test_file, scenario_file, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`)
+			.bind(input.id, input.runId, input.name, input.hash ?? null, input.testFile ?? null, input.scenarioFile ?? null, Date.now())
 			.run()
+	}
+
+	async getScenario(id: string): Promise<Scenario | null> {
+		const row = await this.d1.prepare('SELECT * FROM scenarios WHERE id = ?').bind(id).first<ScenarioRow>()
+		return row ? toScenario(row) : null
 	}
 
 	async finishScenario(input: { id: string; status: StepStatus; durationMs: number }): Promise<void> {
