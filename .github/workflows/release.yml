@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Parse tag
+        id: tag
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing v${VERSION}"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check harness
+        run: bunx tsc --noEmit -p packages/harness/tsconfig.json
+
+      - name: Type check CLI
+        run: bunx tsc --noEmit -p packages/cli/tsconfig.json
+
+      - name: Set version and resolve workspace deps
+        run: |
+          node -e "
+            const fs = require('fs');
+            const version = '${{ steps.tag.outputs.version }}';
+            for (const p of ['packages/harness/package.json', 'packages/cli/package.json']) {
+              const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+              pkg.version = version;
+              for (const field of ['dependencies', 'peerDependencies']) {
+                for (const [dep, val] of Object.entries(pkg[field] ?? {})) {
+                  if (String(val).startsWith('workspace:')) pkg[field][dep] = '^' + version;
+                }
+              }
+              fs.writeFileSync(p, JSON.stringify(pkg, null, '\t') + '\n');
+            }
+          "
+
+      - name: Publish @opice/harness
+        working-directory: packages/harness
+        run: npm publish --provenance --access public
+
+      - name: Publish @opice/cli
+        working-directory: packages/cli
+        run: npm publish --provenance --access public
