@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { generateApiKey, generateReadToken, hashApiKey } from './auth'
 import type { Db } from './db'
 import type { ReadScope } from './read-gate'
 import { projectAllowed } from './read-gate'
@@ -89,6 +90,29 @@ const projects = rpc.router({
 			}
 			assertProjectAllowed(ctx.scope, project.id)
 			return stripApiKey(project)
+		}),
+
+	// Create a project from the dashboard. Owner-only (a logged-in session or
+	// the global token resolves to `all`); project-scoped read tokens can't.
+	// Returns the freshly-minted secrets *once* — the api key is never readable
+	// again (only its hash is stored).
+	create: rpc.procedure
+		.input(z.object({
+			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
+			name: z.string().trim().min(1).max(120),
+		}))
+		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string(), readToken: z.string() }))
+		.handler(async ({ ctx, input }) => {
+			if (ctx.scope.kind !== 'all') forbidden()
+			const existing = await ctx.db.getProjectBySlug(input.slug)
+			if (existing) {
+				throw new RpcDispatchError({ type: 'conflict', message: `Project already exists: ${input.slug}`, httpStatus: 409 })
+			}
+			const apiKey = generateApiKey()
+			const apiKeyHash = await hashApiKey(apiKey)
+			const readToken = generateReadToken()
+			const project = await ctx.db.createProject({ slug: input.slug, name: input.name, apiKeyHash, readToken })
+			return { slug: project.slug, name: project.name, apiKey, readToken }
 		}),
 })
 

@@ -18,6 +18,7 @@ import { promises as fs } from 'node:fs'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { parseOpiceDsn } from './dsn.js'
 
 export interface ReporterConfig {
 	endpoint: string
@@ -198,9 +199,11 @@ export function setReporter(reporter: Reporter): void {
 }
 
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {
-	const endpoint = env['OPICE_ENDPOINT']
-	const projectId = env['OPICE_PROJECT']
-	const apiKey = env['OPICE_API_KEY']
+	// Individual vars win; OPICE_DSN fills any gaps (see dsn.ts).
+	const dsn = parseOpiceDsn(env['OPICE_DSN'])
+	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint
+	const projectId = env['OPICE_PROJECT'] ?? dsn?.project
+	const apiKey = env['OPICE_API_KEY'] ?? dsn?.apiKey
 	if (!endpoint || !projectId || !apiKey) {
 		return new NoopReporter()
 	}

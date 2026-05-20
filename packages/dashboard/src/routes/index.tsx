@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { EmptyState } from '../components/EmptyState'
 import { CalendarIcon, FolderIcon } from '../components/Icon'
 import { Loading } from '../components/Loading'
+import { NewProject } from '../components/NewProject'
 import { rpc } from '../lib/client'
 import { fmtRelative } from '../lib/format'
 
@@ -23,7 +24,10 @@ function ProjectsPage() {
 	return (
 		<>
 			<div className="page-head">
-				<h1>Projects</h1>
+				<div className="page-head-row">
+					<h1>Projects</h1>
+					<NewProject />
+				</div>
 				<div className="subtitle">
 					{data.length === 0
 						? 'No projects registered yet.'
@@ -35,9 +39,9 @@ function ProjectsPage() {
 				<EmptyState
 					icon={<FolderIcon size={32} />}
 					title="No projects yet"
-					hint="curl -X POST -H 'x-admin-token: …' /api/v1/admin/projects"
+					hint="Click “New project” to create one and get its OPICE_DSN"
 				>
-					Register a project with the admin endpoint, then point its CI at this worker.
+					Create a project, drop its DSN into your repo's <code>.env</code>, then let Claude Code finish the wiring.
 				</EmptyState>
 			) : (
 				<>

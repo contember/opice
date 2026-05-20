@@ -9,6 +9,7 @@
  */
 
 import { loadConfig } from '../config'
+import { parseOpiceDsn } from '../dsn'
 
 interface Run {
 	id: string
@@ -156,9 +157,9 @@ async function resolveTarget(ref: string): Promise<Target | null> {
 		return null
 	}
 
-	// Bare run id — endpoint from config/env, token from env.
+	// Bare run id — endpoint from config/env/DSN, token from env.
 	const config = await loadConfig()
-	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint
+	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
 	if (!endpoint) return null
 	return { endpoint, runId: ref, token: process.env['OPICE_READ_TOKEN'] ?? undefined }
 }

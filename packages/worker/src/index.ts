@@ -3,6 +3,7 @@ import { handleAdmin } from './routes/admin'
 import { handleAuth } from './routes/auth'
 import { handleDashboard } from './routes/dashboard'
 import { handleIngest } from './routes/ingest'
+import { handleInstallMd } from './routes/install'
 import { handleRpc } from './routes/rpc'
 import { handleScreenshot } from './routes/screenshots'
 import { buildServices, type Services } from './services'
@@ -28,6 +29,9 @@ async function route(request: Request, services: Services): Promise<Response> {
 	if (path.startsWith('/api/v1/')) {
 		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)
 		return handleIngest(request, services, segments)
+	}
+	if (path === '/install.md') {
+		return handleInstallMd(request, services)
 	}
 	if (path === '/rpc') {
 		return handleRpc(request, services)

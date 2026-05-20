@@ -38,7 +38,7 @@ export async function initCommand(opts: InitOptions): Promise<number> {
 
 	console.log()
 	console.log('Next steps:')
-	console.log('  1. Set OPICE_API_KEY as a secret (locally in .env, in CI as a repo secret).')
+	console.log('  1. Set OPICE_DSN (from the dashboard) in .env locally and as a CI repo secret.')
 	console.log('  2. Run your tests via `opice test <bun-test-args>` to stream results.')
 	return 0
 }
@@ -79,6 +79,6 @@ jobs:
       - name: Run opice browser tests
         run: bunx opice test tests/browser/
         env:
-          OPICE_API_KEY: \${{ secrets.OPICE_API_KEY }}
+          OPICE_DSN: \${{ secrets.OPICE_DSN }}
           PLAYGROUND_URL: http://localhost:5173
 `

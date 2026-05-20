@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { failuresCommand } from './commands/failures'
 import { initCommand } from './commands/init'
+import { installSkillsCommand } from './commands/install-skills'
 import { testCommand } from './commands/test'
 import { usersCommand } from './commands/users'
 
@@ -29,6 +30,11 @@ Commands:
       (--endpoint, OPICE_ENDPOINT, or opice.config.json). A password is
       generated and printed if you don't pass one.
 
+  install-skills [--global] [--ref=BRANCH]
+      Install opice's Claude Code skills + author agent into this project's
+      .claude/ (or ~/.claude with --global), fetched from GitHub. Restart
+      Claude Code afterwards to load them.
+
   help
       Show this message.
 `
@@ -44,6 +50,8 @@ async function main(argv: string[]): Promise<number> {
 			return failuresCommand(rest)
 		case 'users':
 			return usersCommand(rest)
+		case 'install-skills':
+			return installSkillsCommand(rest)
 		case 'help':
 		case '--help':
 		case '-h':

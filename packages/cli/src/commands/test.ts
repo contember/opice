@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConfig } from '../config'
+import { parseOpiceDsn } from '../dsn'
 import { detectGitMeta } from '../git'
 
 const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
@@ -15,9 +16,10 @@ interface Handoff {
 
 export async function testCommand(args: string[]): Promise<number> {
 	const config = await loadConfig()
-	const project = process.env['OPICE_PROJECT'] ?? config?.project
-	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint
-	const apiKey = process.env['OPICE_API_KEY']
+	const dsn = parseOpiceDsn(process.env['OPICE_DSN'])
+	const project = process.env['OPICE_PROJECT'] ?? config?.project ?? dsn?.project
+	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? dsn?.endpoint
+	const apiKey = process.env['OPICE_API_KEY'] ?? dsn?.apiKey
 
 	if (!project) {
 		warn('OPICE_PROJECT not set and no opice.config.json found. Run `opice init` or set the env var.')
@@ -34,6 +36,9 @@ export async function testCommand(args: string[]): Promise<number> {
 		...process.env,
 		...(project ? { OPICE_PROJECT: project } : {}),
 		...(endpoint ? { OPICE_ENDPOINT: endpoint } : {}),
+		// Resolve the api key (incl. from a DSN) into the explicit var the
+		// harness reporter reads, so a bare OPICE_DSN is enough to report.
+		...(apiKey ? { OPICE_API_KEY: apiKey } : {}),
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 	}

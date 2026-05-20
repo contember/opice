@@ -10,6 +10,7 @@
  */
 
 import { loadConfig } from '../config'
+import { parseOpiceDsn } from '../dsn'
 
 interface CreateUserFlags {
 	email?: string
@@ -32,7 +33,7 @@ export async function usersCommand(args: string[]): Promise<number> {
 		return 1
 	}
 
-	const endpoint = flags.endpoint ?? process.env['OPICE_ENDPOINT'] ?? (await loadConfig())?.endpoint
+	const endpoint = flags.endpoint ?? process.env['OPICE_ENDPOINT'] ?? (await loadConfig())?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
 	if (!endpoint) {
 		console.error('Could not determine the platform endpoint. Pass --endpoint=URL, set OPICE_ENDPOINT, or run from a project with opice.config.json.')
 		return 1
