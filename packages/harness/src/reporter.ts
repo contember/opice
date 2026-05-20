@@ -81,6 +81,7 @@ export interface RunHandoff {
 class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
+	private warnedUnreachable = false
 
 	constructor(private readonly config: ReporterConfig) {}
 
@@ -173,18 +174,50 @@ class HttpReporter implements Reporter {
 	}
 
 	private async fetch(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
-		const response = await fetch(this.config.endpoint + path, {
-			method,
-			headers: {
-				'authorization': `Bearer ${this.config.apiKey}`,
-				'content-type': 'application/json',
-			},
-			body: body == null ? undefined : JSON.stringify(body),
-		})
+		let response: Response
+		try {
+			response = await fetch(this.config.endpoint + path, {
+				method,
+				headers: {
+					'authorization': `Bearer ${this.config.apiKey}`,
+					'content-type': 'application/json',
+				},
+				body: body == null ? undefined : JSON.stringify(body),
+			})
+		} catch (err) {
+			// Network error / blocked request (e.g. a test runner that installs a
+			// DOM and routes fetch through a same-origin policy). Callers swallow
+			// reporter errors so the test still runs, so this is the one place the
+			// failure is visible — make it loud and actionable.
+			this.warnUnreachable(`${method} ${path}`, err instanceof Error ? err.message : String(err))
+			throw err
+		}
 		if (!response.ok) {
-			throw new Error(`opice reporter ${method} ${path} failed: ${response.status} ${await response.text()}`)
+			const detail = `${response.status} ${await response.text()}`.trim()
+			this.warnUnreachable(`${method} ${path}`, detail)
+			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
 		}
 		return (await response.json()) as Record<string, unknown>
+	}
+
+	/**
+	 * A configured reporter that can't reach the platform means the run is
+	 * silently NOT recorded — the most confusing failure mode in onboarding
+	 * (the test passes, but nothing shows on the dashboard). Surface it once,
+	 * with the usual culprits, instead of letting the swallowed throw vanish.
+	 */
+	private warnUnreachable(call: string, detail: string): void {
+		if (this.warnedUnreachable) return
+		this.warnedUnreachable = true
+		console.error(
+			`[opice] reporter could not reach the platform (${call}: ${detail}). `
+			+ `This run will NOT be recorded on the dashboard.\n`
+			+ `[opice] Common causes:\n`
+			+ `[opice]   - the test runner's global setup installs a DOM (happy-dom/jsdom) or mocks\n`
+			+ `[opice]     fetch, so the cross-origin POST is blocked (look for "Cross-Origin Request\n`
+			+ `[opice]     Blocked" / an OPTIONS … 401). Scope that setup so it skips the e2e dir.\n`
+			+ `[opice]   - a missing / expired OPICE_DSN api key (401), or an unreachable endpoint.`,
+		)
 	}
 }
 
