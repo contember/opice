@@ -18,6 +18,12 @@ concurrency:
   group: deploy-${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
   cancel-in-progress: false
 
+# Deploy talks to Cloudflare via CLOUDFLARE_API_TOKEN, not the GitHub token.
+# The job only needs to read the repo; the `environment:` deployment record
+# is managed by the Actions backend, not the workflow token.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

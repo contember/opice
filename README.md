@@ -101,7 +101,7 @@ Set distinct values per GitHub *environment* (`stage` / `prod`) and the workflow
 - AI in CI loop (authoring is local only)
 - Browser farm in platform (you run your own browser)
 
-See [`memory/project_opice.md`](https://github.com/matej21/opice) for the design decisions and locked-in tradeoffs.
+See the **Non-goals** and **Architecture** sections above for the design decisions and locked-in tradeoffs.
 
 ## License
 

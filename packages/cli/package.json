@@ -1,7 +1,7 @@
 {
 	"name": "@opice/cli",
 	"version": "0.0.1",
-	"private": true,
+	"description": "CLI for opice — scaffolds projects and wraps `bun test` to stream E2E results to the reporting platform",
 	"type": "module",
 	"bin": {
 		"opice": "./src/cli.ts"
@@ -12,10 +12,22 @@
 			"default": "./src/cli.ts"
 		}
 	},
+	"files": [
+		"src"
+	],
 	"scripts": {
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
 		"bun-types": "*"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/contember/opice.git",
+		"directory": "packages/cli"
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }
