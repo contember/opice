@@ -118,7 +118,7 @@ browserTest('<Scenario Title>', () => {
 			el(tid('<button-id>')).click()
 			waitFor(() => el(tid('<expected>')).exists)
 		})
-	})
+	}, 60_000)
 }, '<hash>')
 ```
 
@@ -126,6 +126,11 @@ Notes:
 
 - One top-level `test('walkthrough', ...)` keeps all steps in order in a
   single Bun test. If a step fails, the rest are skipped — what we want.
+- **Always pass the per-test timeout** (the `60_000` third arg). bun defaults
+  to 5s, but `waitFor` blocks synchronously and a real browser walk (first page
+  load, async data, a dev server compiling on the first request) blows past 5s
+  — you'd get a misleading `timed out after 5000ms` even though the assertions
+  are fine. Each `waitFor` still bounds itself; this just lifts the outer cap.
 - Use `tid('foo')` for `data-testid` selectors. Use raw selectors only
   when there's no testid.
 - Wrap each scenario step in `step('description', () => {...})` —
@@ -146,14 +151,32 @@ share a browser. One scenario per agent.
 
 ### 5. Run and verify
 
+Iterate on pass/fail with the plain runner (fast, no reporting):
+
 ```bash
 bun test <generated.test.ts>
 ```
 
-If it passes — show the user the diff and ask if they want to commit. If
-it fails — open the test file, look at the failure, propose a fix
-(usually selector or timing). Iterate until it passes or the user
-decides to stop.
+If it fails — open the test file, look at the failure, propose a fix
+(usually selector or timing). Iterate until it passes or the user decides
+to stop.
+
+Once it passes, do **one** run through the reporter and confirm the run
+actually reached the dashboard — a green test is not proof of ingest:
+
+```bash
+opice test <generated.test.ts>
+```
+
+It must print `[opice] View run: <url>`. If you instead see no such line, or a
+`[opice] reporter could not reach the platform …` warning, the test passed but
+**nothing was recorded** — stop and fix reporting before calling it done.
+The usual cause is the host project's test setup (bunfig `[test].preload`,
+vitest/jest `setupFiles`) installing a DOM (happy-dom/jsdom) or mocking `fetch`,
+which blocks the reporter's cross-origin POST; scope that setup so it skips the
+browser e2e dir. (Also check `OPICE_DSN` is set and the api key is valid.)
+
+Then show the user the diff and ask if they want to commit.
 
 ### 6. Commit (only when asked)
 
