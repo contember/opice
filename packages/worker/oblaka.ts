@@ -1,24 +1,47 @@
 import { D1Database, define, R2Bucket, Worker } from 'oblaka-iac'
 
-function envVarsFor(env: string): { READ_TOKEN: string; ADMIN_TOKEN: string } {
+interface AuthVars {
+	READ_TOKEN: string
+	ADMIN_TOKEN: string
+	BETTER_AUTH_SECRET: string
+	BETTER_AUTH_URL: string
+	BETTER_AUTH_TRUSTED_ORIGINS: string
+}
+
+function envVarsFor(env: string): AuthVars {
 	if (env === 'local') {
-		// Empty in local — the read gate is bypassed entirely so vite dev
-		// (different origin from the worker) can hit /rpc without a cookie
-		// dance. Stage/prod must set a real value.
-		return { READ_TOKEN: '', ADMIN_TOKEN: 'local-admin' }
+		// Empty READ_TOKEN in local — the read gate is bypassed entirely so vite
+		// dev (different origin from the worker) can hit /rpc without a cookie
+		// dance. Stage/prod must set real values.
+		return {
+			READ_TOKEN: '',
+			ADMIN_TOKEN: 'local-admin',
+			// Fixed dev secret — fine locally, never used in stage/prod.
+			BETTER_AUTH_SECRET: 'local-dev-better-auth-secret-not-for-production',
+			BETTER_AUTH_URL: '',
+			// The Vite dev SPA proxies to the worker from this origin.
+			BETTER_AUTH_TRUSTED_ORIGINS: 'http://localhost:18182',
+		}
 	}
-	// Stage/prod read tokens from the deploy environment. CI sets these from
-	// GitHub secrets; locally `bunx oblaka --env=stage` would need them in
-	// .env. Throws loudly if missing so we never ship an open gate.
+	// Stage/prod read secrets from the deploy environment. CI sets these from
+	// GitHub secrets. Throws loudly if missing so we never ship an open gate.
 	const readToken = process.env['OPICE_READ_TOKEN']
 	const adminToken = process.env['OPICE_ADMIN_TOKEN']
-	if (!readToken || !adminToken) {
+	const authSecret = process.env['OPICE_BETTER_AUTH_SECRET']
+	if (!readToken || !adminToken || !authSecret) {
 		throw new Error(
-			`Missing OPICE_READ_TOKEN and/or OPICE_ADMIN_TOKEN for env=${env}. ` +
+			`Missing OPICE_READ_TOKEN, OPICE_ADMIN_TOKEN and/or OPICE_BETTER_AUTH_SECRET for env=${env}. ` +
 			`Set them as environment variables before running oblaka.`,
 		)
 	}
-	return { READ_TOKEN: readToken, ADMIN_TOKEN: adminToken }
+	return {
+		READ_TOKEN: readToken,
+		ADMIN_TOKEN: adminToken,
+		BETTER_AUTH_SECRET: authSecret,
+		// Same-origin deploy (the worker serves the SPA) → URL inferred, no extra origins.
+		BETTER_AUTH_URL: process.env['OPICE_BETTER_AUTH_URL'] ?? '',
+		BETTER_AUTH_TRUSTED_ORIGINS: '',
+	}
 }
 
 const KNOWN_ENVS = new Set(['local', 'stage', 'prod'])
@@ -49,6 +72,11 @@ export default define(({ env }) => {
 			DB: new D1Database({
 				name: 'opice',
 				migrationsDir: './migrations',
+				locationHint: 'weur',
+			}),
+			AUTH_DB: new D1Database({
+				name: 'opice-auth',
+				migrationsDir: './migrations/auth',
 				locationHint: 'weur',
 			}),
 			SCREENSHOTS: new R2Bucket({

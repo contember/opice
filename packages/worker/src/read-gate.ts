@@ -8,6 +8,9 @@
  * Tokens arrive via `?token=<token>` (CLI / shared links) or the `opice_read`
  * cookie (browser, set once after the first visit with `?token=`).
  *
+ * A logged-in BetterAuth session (the operator) always resolves to `all` —
+ * login is the owner's way in; read tokens stay for shareable read-only links.
+ *
  * Local dev convenience: when the global READ_TOKEN is empty the gate is
  * disabled entirely (everything resolves to `all`).
  */
@@ -36,6 +39,10 @@ export async function resolveReadScope(request: Request, services: Services): Pr
 	// Empty global token → gate disabled (local dev).
 	if (!expected) return { kind: 'all' }
 
+	// A logged-in operator sees everything. Cheap when BetterAuth's cookie cache
+	// is warm; only hits AUTH_DB once per cache window.
+	if (await hasSession(request, services)) return { kind: 'all' }
+
 	const token = extractToken(request)
 	if (!token) return null
 	if (token === expected) return { kind: 'all' }
@@ -43,6 +50,17 @@ export async function resolveReadScope(request: Request, services: Services): Pr
 	const project = await services.db.getProjectByReadToken(token)
 	if (project) return { kind: 'project', projectId: project.id, slug: project.slug }
 	return null
+}
+
+async function hasSession(request: Request, services: Services): Promise<boolean> {
+	// No cookies → definitely no session; skip the auth machinery entirely.
+	if (!request.headers.get('cookie')) return false
+	try {
+		const session = await services.auth.api.getSession({ headers: request.headers })
+		return session !== null
+	} catch {
+		return false
+	}
 }
 
 /** Whether a scope is allowed to read data belonging to `projectId`. */

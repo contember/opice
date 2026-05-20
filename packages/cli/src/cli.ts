@@ -2,6 +2,7 @@
 import { failuresCommand } from './commands/failures'
 import { initCommand } from './commands/init'
 import { testCommand } from './commands/test'
+import { usersCommand } from './commands/users'
 
 const HELP = `opice — AI-driven E2E browser test harness
 
@@ -22,6 +23,12 @@ Commands:
       error, screenshot URL, and source files) for the re-eval workflow.
       Token comes from the URL's ?token= or OPICE_READ_TOKEN.
 
+  users create <email> [--password=...] [--name=...] [--endpoint=URL] [--admin-token=TOKEN]
+      Create a dashboard login (every user is admin). Needs the admin
+      token (--admin-token or OPICE_ADMIN_TOKEN) and the platform endpoint
+      (--endpoint, OPICE_ENDPOINT, or opice.config.json). A password is
+      generated and printed if you don't pass one.
+
   help
       Show this message.
 `
@@ -35,6 +42,8 @@ async function main(argv: string[]): Promise<number> {
 			return testCommand(rest)
 		case 'failures':
 			return failuresCommand(rest)
+		case 'users':
+			return usersCommand(rest)
 		case 'help':
 		case '--help':
 		case '-h':
