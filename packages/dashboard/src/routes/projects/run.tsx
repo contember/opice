@@ -1,5 +1,6 @@
 import { createPage, Link } from '@buzola/router'
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { ChevronIcon, ClockIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { Polaroid } from '../../components/Polaroid'
@@ -66,6 +67,8 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 
 			<ResultStrip run={r} />
 
+			<ShareLink slug={slug} runId={r.id} readToken={project.data.readToken} />
+
 			<div className="section-head">
 				<span className="label">Scenarios</span>
 				<span className="count">{scenarios.data?.length ?? 0}</span>
@@ -93,6 +96,32 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 				</div>
 			)}
 		</>
+	)
+}
+
+function ShareLink({ slug, runId, readToken }: { slug: string; runId: string; readToken: string | null }) {
+	const origin = typeof window !== 'undefined' ? window.location.origin : ''
+	const url = `${origin}/p/${slug}/r/${runId}${readToken ? `?token=${readToken}` : ''}`
+	const [copied, setCopied] = useState(false)
+
+	const copy = () => {
+		void navigator.clipboard.writeText(url).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1500)
+		})
+	}
+
+	return (
+		<div className="share-link">
+			<span className="share-label">Read-only link</span>
+			<code className="share-url">{url}</code>
+			<button type="button" className="share-copy" onClick={copy}>
+				{copied ? 'Copied' : 'Copy'}
+			</button>
+			{!readToken && (
+				<span className="share-hint">No project read token yet — link works only with the global token or a logged-in session.</span>
+			)}
+		</div>
 	)
 }
 
