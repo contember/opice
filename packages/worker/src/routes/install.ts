@@ -46,16 +46,21 @@ Also confirm \`.env\` is gitignored. If not, add it before doing anything else.
 
 ---
 
-## 1. Add the harness dependency
+## 1. Add the opice dependencies
 
-The generated tests \`import { browserTest, el, tid, step } from '@opice/harness'\`.
-Add it as a dev dependency with the project's package manager, e.g.:
+Two packages:
+- **\`@opice/harness\`** — the generated tests import from it
+  (\`import { browserTest, el, tid, step } from '@opice/harness'\`).
+- **\`@opice/cli\`** — the \`opice\` command (\`init\`, \`install-skills\`, \`test\`)
+  that the local flow and the CI workflow run.
+
+Add both as dev dependencies with the project's package manager:
 
 \`\`\`bash
-bun add -d @opice/harness    # or: npm i -D / pnpm add -D
+bun add -d @opice/harness @opice/cli    # or: npm i -D / pnpm add -D
 \`\`\`
 
-The CLI is used through \`bunx opice …\` (no install needed).
+After that the CLI runs via \`bunx opice …\` (or \`npx\`/\`pnpm exec\`).
 
 ---
 
@@ -72,15 +77,17 @@ port / \`PLAYGROUND_URL\`, and the test path. The workflow expects an
 
 ---
 
-## 3. Install the opice skills + agent
+## 3. Install the opice skills + agent — into this repo
 
 \`\`\`bash
 bunx opice install-skills
 \`\`\`
 
-This drops \`opice-author\`, \`opice-plan\`, \`opice-batch\`, \`opice-reeval\` and the
-author agent into the project's \`.claude/\`. Tell the user to **restart Claude
-Code** so they load. (Use \`--global\` to install into \`~/.claude\` instead.)
+This writes \`opice-author\`, \`opice-plan\`, \`opice-batch\`, \`opice-reeval\` and the
+author agent into **this project's** \`.claude/skills\` and \`.claude/agents\` —
+always project-local, so they live in the repo. Make sure \`.claude/skills\` and
+\`.claude/agents\` are **not** gitignored, and commit them in step 5 so the whole
+team gets them. Tell the user to **restart Claude Code** so they load.
 
 ---
 
