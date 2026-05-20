@@ -1,8 +1,11 @@
 /**
  * `GET /install.md` — the onboarding guide a user pastes into Claude Code as
  * "Fetch instructions from <origin>/install.md". It's written *to* the agent
- * running inside the user's project repo: it walks the kickoff (deps, config,
- * skills, CI secret, first scenario). Served as plain markdown.
+ * running inside the user's project repo. It is split into two phases on
+ * purpose: Phase A wires opice and *proves the reporting pipeline* with a
+ * throwaway test that does not touch the user's app or infra; Phase B is the
+ * infra-heavy part (run the real app, author real scenarios). Served as plain
+ * markdown.
  *
  * The platform origin is injected so links/commands point at this deployment.
  */
@@ -23,12 +26,26 @@ You are running inside a user's project repository. Your job is to wire up
 central dashboard at \`${origin}\`. Work *with* the user, and **confirm before
 any outward or destructive step** (pushing secrets, committing, force-anything).
 
-Read this whole guide first, then do the steps in order. Stop and ask if a
-step's assumption doesn't hold.
+This guide has **two phases**, and the order matters:
+
+- **Phase A — wire opice and *prove the pipeline*.** Get deps, config, skills
+  in place and run **one throwaway test against a public page** (no app, no
+  infra) whose only job is to confirm a run reaches the dashboard. Reporting is
+  a cross-origin POST from the test process and fails *silently* if anything in
+  the way blocks it — so you verify it in isolation before adding any of the
+  user's own variables.
+- **Phase B — set up the app and author real scenarios.** The infra-heavy part:
+  run the real app, wire CI, write scenarios for actual flows.
+
+**Do not start Phase B until Phase A's run is visible on the dashboard.** Read
+the whole guide first, then do the steps in order. Stop and ask if a step's
+assumption doesn't hold.
 
 ---
 
-## 0. Find the DSN
+# Phase A — wire opice and prove the pipeline
+
+## A0. Find the DSN
 
 The user just created a project in the opice dashboard and was told to save an
 \`OPICE_DSN\` into their local \`.env\`. Confirm it's there:
@@ -44,82 +61,130 @@ If \`.env\` has no \`OPICE_DSN\`, ask the user to paste it. Parse it:
 
 Also confirm \`.env\` is gitignored. If not, add it before doing anything else.
 
----
+## A1. Add the opice dependencies
 
-## 1. Add the opice dependencies
-
-Two packages:
 - **\`@opice/harness\`** — the generated tests import from it
   (\`import { browserTest, el, tid, step } from '@opice/harness'\`).
-- **\`@opice/cli\`** — the \`opice\` command (\`init\`, \`install-skills\`, \`test\`)
-  that the local flow and the CI workflow run.
-
-Add both as dev dependencies with the project's package manager:
+- **\`@opice/cli\`** — the \`opice\` command (\`init\`, \`install-skills\`, \`test\`).
 
 \`\`\`bash
 bun add -d @opice/harness @opice/cli    # or: npm i -D / pnpm add -D
 \`\`\`
 
-After that the CLI runs via \`bunx opice …\` (or \`npx\`/\`pnpm exec\`).
+The CLI then runs via \`bunx opice …\` (or \`npx\`/\`pnpm exec\`).
 
----
+> **Heads-up — bun version.** \`@opice/harness\` uses the \`beforeAll(fn, timeout)\`
+> hook signature. Older bun (≤ 1.3.0) rejects it with *"beforeAll() expects a
+> function as the second argument"*. If the repo pins an old bun (e.g. a
+> \`packageManager: bun@1.3.0\` field that \`setup-bun\` honors), use a recent bun
+> for the test runner.
 
-## 2. Scaffold config + CI workflow
+## A2. Scaffold config
 
 \`\`\`bash
-bunx opice init --project=<slug> --endpoint=<host> --with-workflow
+bunx opice init --project=<slug> --endpoint=<host>
 \`\`\`
 
-This writes \`opice.config.json\` and \`.github/workflows/opice.yml\`. Open the
-workflow and adjust it to *this* project: the dev-server start command, the
-port / \`PLAYGROUND_URL\`, and the test path. The workflow expects an
-\`OPICE_DSN\` repo secret (step 4).
+This writes \`opice.config.json\`. (Hold off on \`--with-workflow\` — the CI
+workflow is app-specific and belongs to Phase B.)
 
----
-
-## 3. Install the opice skills + agent — into this repo
+## A3. Install the opice skills + agent — into this repo
 
 \`\`\`bash
 bunx opice install-skills
 \`\`\`
 
-This writes \`opice-author\`, \`opice-plan\`, \`opice-batch\`, \`opice-reeval\` and the
-author agent into **this project's** \`.claude/skills\` and \`.claude/agents\` —
-always project-local, so they live in the repo. Make sure \`.claude/skills\` and
-\`.claude/agents\` are **not** gitignored, and commit them in step 5 so the whole
-team gets them. Tell the user to **restart Claude Code** so they load.
+Writes \`opice-author\`, \`opice-plan\`, \`opice-batch\`, \`opice-reeval\` and the author
+agent into **this project's** \`.claude/skills\` and \`.claude/agents\`. Make sure
+those paths are **not** gitignored. Tell the user to **restart Claude Code** so
+they load.
 
----
+## A4. ✅ Prove the pipeline — a throwaway smoke test (NO app, NO infra)
 
-## 4. Push the CI secret  ⚠️ confirm first
+This step exists to confirm, in isolation, that a run actually reaches the
+dashboard — *before* you depend on the user's app or infra. Write a tiny test
+that snapshots a stable public page:
 
-The workflow needs the DSN as a repo secret. With the user's OK:
+\`\`\`ts
+// tests/browser/_opice-smoke.test.ts  (throwaway — delete after this step)
+import { test } from 'bun:test'
+import { browserTest, el, waitFor } from '@opice/harness'
 
-\`\`\`bash
-gh secret set OPICE_DSN --body "<the OPICE_DSN value from .env>"
+browserTest('opice pipeline smoke', () => {
+	test('example.com renders', () => {
+		waitFor(() => el('main h1').text.includes('Example Domain'), { timeout: 20_000 })
+	})
+}, { url: 'https://example.com' })
 \`\`\`
 
-(If the repo uses GitHub Environments, scope it accordingly.) Never echo the
-secret into logs or commits.
+You'll need \`agent-browser\` on PATH (\`bun add -g agent-browser && agent-browser install\`),
+then run it through the reporter:
+
+\`\`\`bash
+bunx opice test tests/browser/_opice-smoke.test.ts
+\`\`\`
+
+**This step passes only when BOTH are true:**
+1. the command prints \`[opice] View run: ${origin}/p/<slug>/r/<id>\`, and
+2. that run is visible on the dashboard.
+
+If you instead see \`1 pass\` **without** a \`View run:\` line, or a
+\`[opice] reporter could not reach the platform …\` warning, the test passed but
+**nothing was recorded** — STOP and fix the wiring (see *Gotchas* below). Do not
+move on to Phase B until this run shows up on the dashboard.
+
+Once it's confirmed, **delete \`_opice-smoke.test.ts\`** — it has served its
+purpose.
 
 ---
 
-## 5. Kickoff — the first scenario
+# Phase B — set up the app and author real scenarios
 
-1. Get the app running locally (find the dev command; note the URL/port).
-2. Use the **opice-plan** skill to draft one \`*.scenario.md\` for a core flow
-   (e.g. login, or the main happy path). Review it with the user.
-3. Use **opice-author** to generate the \`*.test.ts\` from that scenario; it
-   walks the live app and verifies the test passes.
-4. Run it through the reporter:
+Only start this once Phase A's run is on the dashboard.
+
+1. **Run the app locally.** Find the dev command and the URL/port. This is the
+   infra-heavy part (databases, services, env). Get to where you can open the
+   app in a browser.
+2. **Wire CI.** Generate the workflow with \`bunx opice init --with-workflow\` (or
+   hand-write \`.github/workflows/opice.yml\`) and adapt it to *this* app: how the
+   stack starts, the readiness wait, the port / \`PLAYGROUND_URL\`, and the test
+   path. Push the DSN as a repo secret — **confirm with the user first**:
    \`\`\`bash
-   bunx opice test tests/browser/<your>.test.ts
+   gh secret set OPICE_DSN --body "<the OPICE_DSN value from .env>"
    \`\`\`
-   Open the run URL it prints and confirm the run shows up at \`${origin}\`.
-5. Commit the scenario, test, \`opice.config.json\`, the workflow, and the
+   Never echo the secret into logs or commits.
+3. **Author real scenarios.** Use **opice-plan** to draft one \`*.scenario.md\` for
+   a core flow (login, main happy path); review it with the user. Then
+   **opice-author** to generate the \`*.test.ts\`, which walks the live app and
+   verifies it passes. Confirm each new run shows on the dashboard too.
+4. **Commit** the scenarios, tests, \`opice.config.json\`, the workflow, and the
    installed \`.claude/\` extensions — atomically, with the user's review.
 
 ---
+
+## Gotchas — "the test passes but nothing shows on the dashboard"
+
+Reporting is a **cross-origin POST from the bun test process**, and reporter
+errors are swallowed so the test keeps running. So a passing test can hide a
+broken pipeline. The usual causes:
+
+- **Your test runner installs a DOM or mocks fetch.** A global test setup
+  (bunfig \`[test].preload\`, vitest/jest \`setupFiles\`) that registers
+  happy-dom/jsdom or stubs \`fetch\`/network replaces the global \`fetch\` with one
+  bound to a same-origin policy. The reporter's cross-origin POST to the
+  platform is then blocked (you'll see \`Cross-Origin Request Blocked\` /
+  \`OPTIONS … 401\`). **Fix:** scope that setup so it does *not* apply to your
+  browser e2e dir, e.g.:
+  \`\`\`ts
+  // only register the DOM for unit tests, not the real-browser e2e suite
+  if (!process.argv.some(a => a.includes('/tests/browser/'))) {
+  	GlobalRegistrator.register({ url: 'http://localhost/' })
+  }
+  \`\`\`
+- **No \`View run:\` line / a \`reporter could not reach the platform\` warning.**
+  That means nothing was recorded. Check the api key in \`OPICE_DSN\` (a 401 is a
+  bad/expired key) and that the endpoint is reachable.
+- **Old bun** — see the heads-up in A1.
 
 ## Notes
 
