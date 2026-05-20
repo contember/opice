@@ -67,11 +67,37 @@ For each coherent user flow, write a `*.scenario.md` using
   one future `step()`.
 - **Concrete and observable** — "the cart shows 2 items" beats "the cart works".
 - **Grounded** in what you actually saw: real labels, real routes, real states.
+- **Deep-link, don't click through.** Set `URL:` to the deepest stable route
+  the flow lives on (`/app/programs/create`), so the test opens straight onto
+  the surface under test. Auth is a *precondition*, not a step — if the app
+  authenticates ambiently (dev token / injected state), deep-linking lands
+  authenticated. Reserve `/` for the one login scenario and one logout scenario
+  that are actually *about* the auth transition.
+- **Assume a shared, never-reset DB.** opice runs leave data behind (seeds +
+  rows created by past runs). Write assertions that tolerate arbitrary
+  pre-existing data: assert the **presence of a uniquely-identified thing**,
+  never counts, emptiness, or "the only one". A flow that *creates* data should
+  say to stamp it with a unique per-run marker and assert on that. "Empty
+  state" / exact-count flows can't run against the shared DB — flag them as
+  needing a throwaway instance instead of writing them here.
 - **Honest about prerequisites** in the Context section (logged in? seeded?
-  feature flag?). opice-author won't set these up.
+  feature flag?). opice-author won't set these up. If a flow needs seeded data,
+  name the exact (idempotent, composable) seed in a `Seed:` field.
 - **Flagging brittleness** in Notes (missing testids, async data, dialogs).
 
 Name files after the flow: `checkout.scenario.md`, `admin-users.scenario.md`.
+
+### 3a. Maintain the suite's context/invariants file
+
+App-wide truths that hold for *every* scenario don't belong copy-pasted into
+each one. Keep them in one `invariants.md` (or `<suite>.context.md`) next to the
+scenarios, and have each scenario lean on it implicitly. Capture: base URL(s) +
+auth model (how a test arrives authenticated), selector strategy (do
+`data-testid`s exist? else role/label), first-load timeout quirks, known
+overlays/dialogs that intercept clicks, the shared-DB assertion rules above, and
+the catalog of available seeds (name → what it guarantees, and the stable ids it
+uses). opice-author is instructed to read this file before authoring, so it's
+the right home for everything that would otherwise be repeated boilerplate.
 
 ### 4. Summarize and hand off
 

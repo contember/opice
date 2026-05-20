@@ -22,6 +22,47 @@ selectors.
 It does **NOT** commit unless the user explicitly asks (per their global
 git rules).
 
+## Authoring rules — read first
+
+opice tests run against a **shared, long-lived database that is never reset**
+(per-test cleanup is too expensive). Every run leaves data behind: seeds, and
+rows created by earlier runs of *this* and *other* scenarios. The browser
+session is fresh each scenario, but the data is not. Authoring has to assume
+arbitrary pre-existing data at all times.
+
+1. **Never assert on counts, emptiness, or "the only one".** No "the list has
+   3 rows", no "No results found", no "this is the only program". These pass
+   only by luck of nobody having seeded yet. Assert the **presence of a
+   uniquely-identified thing** instead — `el(...).text` *contains* the specific
+   name/id your scenario is about.
+
+2. **Stamp anything you create with a unique per-run marker.** A scenario that
+   creates an entity must fill its name (or another searchable field) with a
+   value unique to this run — e.g. `Opice <flow> ${Date.now()}` — and assert on
+   *that exact string*. Each run then asserts on its own artifact, never
+   collides with leftovers, and the rows stay sweepable later. Never reuse a
+   fixed name for created data.
+
+3. **Deep-link to the surface under test; auth is a precondition, not a step.**
+   Use the deepest stable route in the scenario's `URL:` (e.g.
+   `/app/programs/create`), not a top-level page you click through. Don't author
+   a login/navigation preamble into scenarios that aren't *about* login — if the
+   app authenticates ambiently (dev session token, injected state), deep-linking
+   lands you already authenticated. Only start at `/` when the auth transition
+   itself is the subject.
+
+4. **Read the suite's context/invariants file before authoring.** If the
+   scenario or its directory references an ambient-context file — e.g.
+   `tests/browser/invariants.md` — read it first. It holds app-wide truths
+   (auth model, base URLs, selector strategy, first-load timeouts, available
+   seeds, known overlays) so individual scenarios stay short. Apply those
+   invariants even when a scenario doesn't restate them.
+
+5. **Fixtures must coexist.** If a scenario declares a `Seed:` precondition it
+   must be idempotent and keyed by stable ids so it composes with every other
+   seed already in the DB. Don't author against a seed that fights another for
+   the same row.
+
 ## Inputs
 
 - **scenario file**: a path to a `*.scenario.md` — the user will give you
