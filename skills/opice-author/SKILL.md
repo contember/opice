@@ -131,6 +131,18 @@ Notes:
 - Wrap each scenario step in `step('description', () => {...})` —
   the harness reporter captures duration + screenshot per step.
 - `waitFor` instead of fixed sleeps wherever the UI changes async.
+- **Source backlink:** the harness auto-captures the test file path and derives
+  the sibling `*.scenario.md` (replacing `.test.ts`). As long as the test and
+  scenario sit side by side with matching names, the platform links a failed
+  scenario back to both files automatically. If they don't match, pass the path
+  explicitly: `browserTest('…', () => {…}, { hash: '…', scenarioFile: '…' })`.
+
+### Parallel runs
+
+When dispatched by an `opice-author` agent (batch authoring), you'll be handed a
+unique browser session name like `opice-author-3`. Use it for **every**
+`agent-browser` call instead of `opice-author-$$` so concurrent authors don't
+share a browser. One scenario per agent.
 
 ### 5. Run and verify
 
