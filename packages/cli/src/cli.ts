@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { failuresCommand } from './commands/failures'
 import { initCommand } from './commands/init'
 import { testCommand } from './commands/test'
 
@@ -16,6 +17,11 @@ Commands:
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
 
+  failures <run-url|run-id> [--json]
+      Pull a failed run's details (failed scenarios, the failing step,
+      error, screenshot URL, and source files) for the re-eval workflow.
+      Token comes from the URL's ?token= or OPICE_READ_TOKEN.
+
   help
       Show this message.
 `
@@ -27,6 +33,8 @@ async function main(argv: string[]): Promise<number> {
 			return initCommand(parseInitFlags(rest))
 		case 'test':
 			return testCommand(rest)
+		case 'failures':
+			return failuresCommand(rest)
 		case 'help':
 		case '--help':
 		case '-h':
