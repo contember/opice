@@ -39,6 +39,8 @@ export interface StepEvent {
 export interface ScenarioStart {
 	name: string
 	hash?: string
+	testFile?: string
+	scenarioFile?: string
 }
 
 export interface ScenarioFinish {
@@ -111,6 +113,8 @@ class HttpReporter implements Reporter {
 		const response = await this.fetch('POST', `/api/v1/runs/${runId}/scenarios`, {
 			name: input.name,
 			hash: input.hash,
+			testFile: input.testFile,
+			scenarioFile: input.scenarioFile,
 		})
 		return response['scenarioId'] as string
 	}

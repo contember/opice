@@ -47,12 +47,12 @@ async function createRun(request: Request, services: Services, project: Project)
 }
 
 async function createScenario(request: Request, services: Services, runId: string): Promise<Response> {
-	const body = await readJson<{ name?: string; hash?: string }>(request)
+	const body = await readJson<{ name?: string; hash?: string; testFile?: string; scenarioFile?: string }>(request)
 	if (!body?.name) {
 		return badRequest('name is required')
 	}
 	const id = crypto.randomUUID()
-	await services.db.createScenario({ id, runId, name: body.name, hash: body.hash })
+	await services.db.createScenario({ id, runId, name: body.name, hash: body.hash, testFile: body.testFile, scenarioFile: body.scenarioFile })
 	return json({ scenarioId: id })
 }
 

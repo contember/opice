@@ -1,5 +1,6 @@
 import { describe, beforeAll, afterAll } from 'bun:test'
 import crypto from 'node:crypto'
+import path from 'node:path'
 import { exec, setSession } from './agent-browser.js'
 import { waitFor, screenshot } from './element.js'
 import { getReporter } from './reporter.js'
@@ -11,6 +12,40 @@ export interface BrowserTestOptions {
 	hash?: string
 	/** Override base URL (defaults to PLAYGROUND_URL env). */
 	url?: string
+	/**
+	 * Path to the human-readable `*.scenario.md` this test was authored from.
+	 * Reported to the platform so the re-eval workflow can find the source.
+	 * If omitted, defaults to the test file path with `.test.ts` → `.scenario.md`.
+	 */
+	scenarioFile?: string
+}
+
+/**
+ * Best-effort capture of the `*.test.ts` path that called `browserTest`, by
+ * walking the stack for the first `.test.` frame. Reported so a failed
+ * scenario links back to its source file. Repo-relative when possible.
+ */
+function captureTestFile(): string | undefined {
+	const stack = new Error().stack
+	if (!stack) return undefined
+	for (const line of stack.split('\n')) {
+		const match = line.match(/\(?((?:file:\/\/)?\/[^\s():]+\.test\.[tj]sx?)/)
+		if (match?.[1]) {
+			const abs = match[1].replace(/^file:\/\//, '')
+			try {
+				const rel = path.relative(process.cwd(), abs)
+				return rel.startsWith('..') ? abs : rel
+			} catch {
+				return abs
+			}
+		}
+	}
+	return undefined
+}
+
+function defaultScenarioFile(testFile: string | undefined): string | undefined {
+	if (!testFile) return undefined
+	return testFile.replace(/\.test\.[tj]sx?$/, '.scenario.md')
 }
 
 let currentScenarioId: string | null = null
@@ -27,6 +62,8 @@ let currentScenarioFailures = 0
 export function browserTest(name: string, fn: () => void, options: BrowserTestOptions | string = {}): void {
 	const opts: BrowserTestOptions = typeof options === 'string' ? { hash: options } : options
 	const reporter = getReporter()
+	const testFile = captureTestFile()
+	const scenarioFile = opts.scenarioFile ?? defaultScenarioFile(testFile)
 
 	describe(name, () => {
 		beforeAll(async () => {
@@ -35,7 +72,7 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			currentScenarioStart = Date.now()
 			currentScenarioFailures = 0
 			try {
-				currentScenarioId = await reporter.startScenario({ name, hash: opts.hash })
+				currentScenarioId = await reporter.startScenario({ name, hash: opts.hash, testFile, scenarioFile })
 			} catch {
 				currentScenarioId = null
 			}

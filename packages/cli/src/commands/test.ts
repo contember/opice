@@ -47,12 +47,12 @@ export async function testCommand(args: string[]): Promise<number> {
 
 	// After bun test exits, look for handoff files the reporter wrote and
 	// POST /finish for each run so it leaves "running" state.
-	await finalizeHandoffs(child.pid)
+	await finalizeHandoffs(child.pid, project, process.env['OPICE_READ_TOKEN'])
 
 	return exitCode
 }
 
-async function finalizeHandoffs(childPid?: number): Promise<void> {
+async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined, readToken: string | undefined): Promise<void> {
 	let files: string[]
 	try {
 		files = await fs.readdir(HANDOFF_DIR)
@@ -65,11 +65,22 @@ async function finalizeHandoffs(childPid?: number): Promise<void> {
 		try {
 			const handoff = JSON.parse(await fs.readFile(full, 'utf-8')) as Handoff
 			await finishRun(handoff)
+			printRunUrl(handoff, slug, readToken)
 		} catch (err) {
 			warn(`Failed to finalize run from ${file}: ${(err as Error).message}`)
 		} finally {
 			await fs.unlink(full).catch(() => {})
 		}
+	}
+}
+
+function printRunUrl(handoff: Handoff, slug: string | undefined, readToken: string | undefined): void {
+	if (!slug) return
+	const query = readToken ? `?token=${readToken}` : ''
+	const url = `${handoff.endpoint}/p/${slug}/r/${handoff.runId}${query}`
+	console.error(`[opice] View run: ${url}`)
+	if (!readToken) {
+		console.error('[opice] (open the dashboard for the tokened read-only link, or set OPICE_READ_TOKEN to embed it here)')
 	}
 }
 
