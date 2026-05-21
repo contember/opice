@@ -1,4 +1,10 @@
-import type { Project, Run, RunStatus, Scenario, Step, StepStatus } from './types'
+import type { Project, Run, RunSource, RunStatus, Scenario, ScenarioStatus, Step, StepStatus } from './types'
+
+// A run with no ingest activity for this long is considered abandoned: the
+// reaper finalizes it as 'incomplete', and reads display it that way even
+// before the reaper runs (so local/lopata, where cron may not fire, is correct
+// too). Generous — a slow scenario + screenshot upload must not trip it.
+export const STALE_RUN_MS = 10 * 60 * 1000
 
 // Internal D1 row shapes — snake_case as the migration defines.
 interface ProjectRow {
@@ -15,12 +21,38 @@ interface RunRow {
 	project_id: number
 	branch: string | null
 	commit_sha: string | null
-	status: RunStatus
+	status: ScenarioStatus
 	total_scenarios: number
 	passed_scenarios: number
 	failed_scenarios: number
+	source: RunSource | null
 	started_at: number
+	last_activity_at: number | null
+	reaped_at: number | null
 	finished_at: number | null
+}
+
+// Live per-run scenario tallies, joined into run reads so counts are correct
+// mid-flight (the stored *_scenarios columns are only a snapshot written at
+// finish — see finishRun). NULL when the run has no scenarios yet.
+interface RunCountsRow {
+	live_total: number | null
+	live_passed: number | null
+	live_failed: number | null
+}
+
+/**
+ * Display status. The DB only ever stores running/passed/failed; a run reads as
+ * 'incomplete' when the reaper gave up on it (reaped_at) or when it's still
+ * 'running' but hasn't been touched within STALE_RUN_MS.
+ */
+function deriveStatus(r: RunRow, now: number): RunStatus {
+	if (r.reaped_at != null) return 'incomplete'
+	if (r.status === 'running' && r.finished_at == null) {
+		const last = r.last_activity_at ?? r.started_at
+		if (now - last > STALE_RUN_MS) return 'incomplete'
+	}
+	return r.status
 }
 
 interface ScenarioRow {
@@ -30,7 +62,7 @@ interface ScenarioRow {
 	hash: string | null
 	test_file: string | null
 	scenario_file: string | null
-	status: RunStatus
+	status: ScenarioStatus
 	duration_ms: number | null
 	started_at: number
 	finished_at: number | null
@@ -57,15 +89,18 @@ const toProject = (r: ProjectRow): Project => ({
 	createdAt: r.created_at,
 })
 
-const toRun = (r: RunRow): Run => ({
+const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => ({
 	id: r.id,
 	projectId: r.project_id,
 	branch: r.branch,
 	commitSha: r.commit_sha,
-	status: r.status,
-	totalScenarios: r.total_scenarios,
-	passedScenarios: r.passed_scenarios,
-	failedScenarios: r.failed_scenarios,
+	status: deriveStatus(r, now),
+	source: r.source,
+	// Always report live counts; the stored *_scenarios columns are a stale
+	// snapshot until finish (and stay 0 for runs that never finished).
+	totalScenarios: counts.live_total ?? 0,
+	passedScenarios: counts.live_passed ?? 0,
+	failedScenarios: counts.live_failed ?? 0,
 	startedAt: r.started_at,
 	finishedAt: r.finished_at,
 })
@@ -140,11 +175,11 @@ export class Db {
 		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string }): Promise<Run> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; source?: RunSource }): Promise<Run> {
 		const startedAt = Date.now()
 		await this.d1
-			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, started_at) VALUES (?, ?, ?, ?, 'running', ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, startedAt)
+			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, source, started_at, last_activity_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.source ?? null, startedAt, startedAt)
 			.run()
 		return {
 			id: input.id,
@@ -152,6 +187,7 @@ export class Db {
 			branch: input.branch ?? null,
 			commitSha: input.commit ?? null,
 			status: 'running',
+			source: input.source ?? null,
 			totalScenarios: 0,
 			passedScenarios: 0,
 			failedScenarios: 0,
@@ -161,16 +197,56 @@ export class Db {
 	}
 
 	async getRun(id: string): Promise<Run | null> {
-		const row = await this.d1.prepare('SELECT * FROM runs WHERE id = ?').bind(id).first<RunRow>()
-		return row ? toRun(row) : null
+		const row = await this.d1
+			.prepare(`SELECT r.*,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id) AS live_total,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed
+			FROM runs r WHERE r.id = ?`)
+			.bind(id)
+			.first<RunRow & RunCountsRow>()
+		return row ? toRun(row, row, Date.now()) : null
 	}
 
 	async listRunsForProject(projectId: number, limit = 50): Promise<Run[]> {
 		const { results } = await this.d1
-			.prepare('SELECT * FROM runs WHERE project_id = ? ORDER BY started_at DESC LIMIT ?')
+			.prepare(`SELECT r.*,
+				COUNT(s.id) AS live_total,
+				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
+				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed
+			FROM runs r LEFT JOIN scenarios s ON s.run_id = r.id
+			WHERE r.project_id = ?
+			GROUP BY r.id
+			ORDER BY r.started_at DESC LIMIT ?`)
 			.bind(projectId, limit)
-			.all<RunRow>()
-		return results.map(toRun)
+			.all<RunRow & RunCountsRow>()
+		const now = Date.now()
+		return results.map((row) => toRun(row, row, now))
+	}
+
+	/** Bump a run's activity clock so the reaper doesn't treat it as stale. */
+	async touchRun(id: string): Promise<void> {
+		await this.d1
+			.prepare('UPDATE runs SET last_activity_at = ? WHERE id = ? AND finished_at IS NULL')
+			.bind(Date.now(), id)
+			.run()
+	}
+
+	/**
+	 * Finalize runs abandoned mid-flight (the CLI's POST /finish never arrived —
+	 * a crash, a kill, or a bare `bun test` that bypassed the wrapper). Marks
+	 * them reaped so they read as 'incomplete'. Counts come from scenarios at
+	 * read time, so we don't touch the snapshot columns here. Returns how many
+	 * runs were reaped.
+	 */
+	async reapStaleRuns(now: number = Date.now(), staleMs: number = STALE_RUN_MS): Promise<number> {
+		const result = await this.d1
+			.prepare(`UPDATE runs SET reaped_at = ?, finished_at = COALESCE(finished_at, ?)
+				WHERE reaped_at IS NULL AND finished_at IS NULL AND status = 'running'
+				AND COALESCE(last_activity_at, started_at) < ?`)
+			.bind(now, now, now - staleMs)
+			.run()
+		return result.meta.changes ?? 0
 	}
 
 	async finishRun(id: string): Promise<void> {

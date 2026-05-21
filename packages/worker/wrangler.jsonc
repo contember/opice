@@ -11,6 +11,11 @@
 	"observability": {
 		"enabled": true
 	},
+	"triggers": {
+		"crons": [
+			"*/5 * * * *"
+		]
+	},
 	"assets": {
 		"directory": "../dashboard/dist",
 		"binding": "ASSETS",

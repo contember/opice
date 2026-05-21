@@ -9,12 +9,14 @@ const GLYPH: Record<string, string> = {
 	passed: '✓',
 	failed: '✕',
 	running: '·',
+	incomplete: '!',
 }
 
 const LABEL: Record<string, string> = {
 	passed: 'Passed',
 	failed: 'Failed',
 	running: 'Running',
+	incomplete: 'Incomplete',
 }
 
 /**

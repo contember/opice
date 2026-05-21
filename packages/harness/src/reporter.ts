@@ -26,6 +26,8 @@ export interface ReporterConfig {
 	apiKey: string
 	branch?: string
 	commit?: string
+	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
+	source?: 'ci' | 'local'
 }
 
 export interface StepEvent {
@@ -98,6 +100,7 @@ class HttpReporter implements Reporter {
 		const response = await this.fetch('POST', '/api/v1/runs', {
 			branch: this.config.branch,
 			commit: this.config.commit,
+			source: this.config.source,
 		})
 		const runId = response['runId'] as string
 		// Synchronous write so the CLI can pick this up even if the test
@@ -243,12 +246,24 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	if (!endpoint || !projectId || !apiKey) {
 		return new NoopReporter()
 	}
+	// Reporting is opt-in outside CI. A local `bun test` while authoring would
+	// otherwise stream half-finished runs onto the shared dashboard (they never
+	// get the CLI's POST /finish, so they'd sit there as "running" forever).
+	// CI reports automatically; OPICE_REPORT=always forces it locally, =never
+	// silences it everywhere.
+	const isCI = !!(env['CI'] || env['GITHUB_ACTIONS'])
+	const mode = (env['OPICE_REPORT'] ?? 'auto').toLowerCase()
+	const shouldReport = mode === 'never' ? false : mode === 'always' ? true : isCI
+	if (!shouldReport) {
+		return new NoopReporter()
+	}
 	const reporter = new HttpReporter({
 		endpoint,
 		projectId,
 		apiKey,
 		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
+		source: isCI ? 'ci' : 'local',
 	})
 	setReporter(reporter)
 	return reporter

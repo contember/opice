@@ -63,4 +63,8 @@ Each action call auto-scrolls into view and sleeps 500ms to let the UI settle.
 ## Configuration
 
 - `PLAYGROUND_URL` — base URL for `browserTest` (default `http://localhost:15180`).
-- `OPICE_ENDPOINT`, `OPICE_PROJECT`, `OPICE_API_KEY` — reporter config (currently no-op).
+- `OPICE_ENDPOINT`, `OPICE_PROJECT`, `OPICE_API_KEY` — reporter config (or a single `OPICE_DSN`).
+- `OPICE_REPORT` — `auto` (default: report only in CI), `always` (report locally too), or
+  `never`. Outside CI, reporting is opt-in so iterating with bare `bun test` doesn't stream
+  half-finished runs onto the shared dashboard. CI-detected runs are tagged `ci`, opted-in
+  local runs `local`.

@@ -22,6 +22,13 @@ export async function handleIngest(request: Request, services: Services, path: s
 			return notFound('run not found')
 		}
 
+		// Every scenario/step write is a heartbeat — keeps the reaper from
+		// treating an in-flight run as abandoned. (finish sets finished_at
+		// itself, so it needs no touch.)
+		if (path[2] === 'scenarios') {
+			await services.db.touchRun(runId)
+		}
+
 		if (request.method === 'POST' && path[2] === 'scenarios' && path.length === 3) {
 			return createScenario(request, services, runId)
 		}
@@ -41,8 +48,9 @@ export async function handleIngest(request: Request, services: Services, path: s
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ branch?: string; commit?: string }>(request)) ?? {}
-	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit })
+	const body = (await readJson<{ branch?: string; commit?: string; source?: string }>(request)) ?? {}
+	const source = body.source === 'ci' || body.source === 'local' ? body.source : undefined
+	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, source })
 	return json({ runId: run.id })
 }
 

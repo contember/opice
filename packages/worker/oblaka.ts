@@ -59,6 +59,8 @@ export default define(({ env }) => {
 		compatibility_flags: ['nodejs_compat_v2'],
 		compatibility_date: '2025-10-01',
 		observability: { enabled: true },
+		// Reap runs abandoned mid-flight (see scheduled() in src/index.ts).
+		triggers: { crons: ['*/5 * * * *'] },
 		assets: {
 			directory: '../dashboard/dist',
 			binding: 'ASSETS',

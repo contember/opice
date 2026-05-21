@@ -93,6 +93,7 @@ function ProjectPage({ slug }: { slug: string }) {
 											<span><strong className="tabular">{r.totalScenarios}</strong> total</span>
 										</div>
 									</div>
+									{r.source === 'local' && <span className="e-chip chip chip-local" title="Reported from a local dev run">local</span>}
 									{r.branch && <span className="e-chip chip">{r.branch}</span>}
 									<div className="e-aside">
 										<span className="row">

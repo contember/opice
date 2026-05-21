@@ -21,6 +21,9 @@ function assertProjectAllowed(scope: ReadScope, projectId: number): void {
 }
 
 const StatusSchema = z.enum(['running', 'passed', 'failed'])
+// Runs add 'incomplete' — a computed display status for runs that never
+// finished (reaped or stale). Scenarios never get it.
+const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete'])
 
 const ProjectSchema = z.object({
 	id: z.number(),
@@ -35,7 +38,8 @@ const RunSchema = z.object({
 	projectId: z.number(),
 	branch: z.string().nullable(),
 	commitSha: z.string().nullable(),
-	status: StatusSchema,
+	status: RunStatusSchema,
+	source: z.enum(['ci', 'local']).nullable(),
 	totalScenarios: z.number(),
 	passedScenarios: z.number(),
 	failedScenarios: z.number(),

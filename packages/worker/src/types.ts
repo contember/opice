@@ -4,8 +4,13 @@
  * boundaries uses these camelCase DTOs.
  */
 
-export type RunStatus = 'running' | 'passed' | 'failed'
+// Stored lifecycle status for runs and scenarios.
+export type ScenarioStatus = 'running' | 'passed' | 'failed'
+// Runs add 'incomplete' — a computed display status (a run that never finished
+// and was reaped, or whose last activity went stale). Never stored.
+export type RunStatus = ScenarioStatus | 'incomplete'
 export type StepStatus = 'passed' | 'failed'
+export type RunSource = 'ci' | 'local'
 
 export interface Project {
 	id: number
@@ -22,6 +27,7 @@ export interface Run {
 	branch: string | null
 	commitSha: string | null
 	status: RunStatus
+	source: RunSource | null
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
@@ -36,7 +42,7 @@ export interface Scenario {
 	hash: string | null
 	testFile: string | null
 	scenarioFile: string | null
-	status: RunStatus
+	status: ScenarioStatus
 	durationMs: number | null
 	startedAt: number
 	finishedAt: number | null

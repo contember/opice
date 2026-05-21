@@ -13,6 +13,14 @@ export default {
 		const services = buildServices(env)
 		return route(request, services)
 	},
+
+	// Cron (see triggers.crons in oblaka.ts): finalize runs abandoned mid-flight
+	// so they stop reading as "running" forever. Reads already show stale runs
+	// as 'incomplete' lazily; this persists that and sets finished_at.
+	async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		const services = buildServices(env)
+		ctx.waitUntil(services.db.reapStaleRuns())
+	},
 }
 
 async function route(request: Request, services: Services): Promise<Response> {
