@@ -1,4 +1,4 @@
-import { command, z, type Command, type CommandCtx } from '@opice/harness'
+import { command, loadUserCommands, z, type Command, type CommandCtx } from '@opice/harness'
 import type { Locator } from 'playwright'
 
 /**
@@ -139,4 +139,45 @@ export const positionalHints: Record<string, string[]> = {
 	byText: ['text', 'action'],
 	'aria-snapshot': ['selector'],
 	eval: ['js'],
+}
+
+/** Build the full registry: built-ins + user verbs (user verbs override). */
+export async function buildRegistry(): Promise<Map<string, Command>> {
+	const registry = new Map<string, Command>()
+	for (const cmd of builtins) registry.set(cmd.name, cmd)
+	const user = await loadUserCommands()
+	for (const [name, cmd] of user) registry.set(name, cmd)
+	return registry
+}
+
+/** Field names for positional mapping: explicit hint, else object-schema keys. */
+export function positionalNames(name: string, cmd: Command): string[] {
+	if (positionalHints[name]) return positionalHints[name]!
+	if (cmd.params instanceof z.ZodObject) return Object.keys(cmd.params.shape)
+	return []
+}
+
+/** Merge parsed flags + positionals into the args object a command expects. */
+export function buildArgs(name: string, cmd: Command, flags: Record<string, unknown>, positionals: string[]): Record<string, unknown> {
+	const names = positionalNames(name, cmd)
+	const args: Record<string, unknown> = { ...flags }
+	positionals.forEach((val, i) => {
+		const key = names[i]
+		if (key && !(key in args)) args[key] = val
+	})
+	return args
+}
+
+/** One-line `<param> <param>` summary for `commands` listing. */
+export function paramSummary(cmd: Command): string {
+	if (cmd.params instanceof z.ZodObject) {
+		const keys = Object.keys(cmd.params.shape)
+		return keys.length ? keys.map((k) => `<${k}>`).join(' ') : '(no args)'
+	}
+	return ''
+}
+
+/** Is `name` a built-in (vs a user verb)? */
+export function isBuiltin(name: string): boolean {
+	return builtins.some((b) => b.name === name)
 }

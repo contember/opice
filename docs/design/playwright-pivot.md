@@ -149,6 +149,16 @@ verbs from `browser-tools.ts` register as additional MCP tools.
 > Recommendation: ship **(a)** first (closest to today, skills already shell to
 > a CLI), design the registry transport-agnostic so **(b)** is an alternate
 > front end later. `connectOverCDP` keeps (a) cheap.
+>
+> **Shipped:** a hybrid of (a) and (b). The CLI surface and `connectOverCDP` are
+> from (a), but `launch` runs a long-running server that **holds one connection
+> + page** (the statefulness of (b)) and serves verbs over a unix socket; verb
+> commands are thin socket clients. Pure per-call connect/disconnect was tried
+> and dropped because the disconnect blurs the page — a keyboard-opened Radix
+> popover closes between two commands (see §7). Holding the connection (plus
+> enabling focus emulation on the connected page) makes the daemon behave like
+> the held page in a test. MCP can still be added as another front end over the
+> same server.
 
 For the agent's "what's on screen" need, expose `locator.ariaSnapshot()` (YAML
 a11y tree) — purpose-built for agents and assertions. This replaces
@@ -256,6 +266,14 @@ repos migrate lazily; `byRole`/`byLabel` improve silently.
 - **Persistent state across CLI calls:** grabbing "the current page" each call
   (tabs, popups, navigation in flight) needs clear rules. MCP transport sidesteps
   this by holding the page in one server process — may be worth doing first.
+  - *Observed, then resolved:* per-command connect/disconnect dropped transient
+    page state — a **keyboard-opened Radix popover** blurred and closed between a
+    `byRole … press` and the follow-up option click (the disconnect blurs the
+    page; headless focus is not emulated on a `connectOverCDP`-attached page).
+    **Fix (shipped):** `launch` holds one connection + page in a long-running
+    server (§3.2) and enables `Emulation.setFocusEmulationEnabled` on it, so the
+    popover survives across separate verb commands — verified. Tests were never
+    affected (the in-process page holds one connection per scenario).
 - **Per-scenario isolation in CI:** in-process, give each `browserTest` its own
   `context` (clean cookies/storage) — cheap with Playwright.
 - **Bun + Playwright:** Playwright is Node-oriented; confirm it runs clean under

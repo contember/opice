@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { loadUserCommands, runCommand, z, type Command } from '@opice/harness'
-import { builtins, positionalHints } from './builtins.js'
-import { launch, quit, sessionAlive, setSessionName, withPage } from './session.js'
+import { buildRegistry, isBuiltin, paramSummary } from './builtins.js'
+import { launch, quit, runVerb, sessionAlive, setSessionName } from './session.js'
 
 // opice-browser must run under Node: Playwright's `connectOverCDP` websocket
 // can't complete its handshake under Bun. However it gets launched (bunx, a
@@ -21,6 +20,9 @@ function reexecUnderNodeIfBun(): void {
 const HELP = `opice-browser — stateful Playwright browser for opice authoring
 
 Usage: opice-browser [--session NAME] <command> [positionals] [--flag value]
+
+A launched session holds one browser connection + page for its whole life, so
+focus and open popovers survive between commands (verbs are socket clients).
 
 Sessions: each named session is its own browser (default: "default", or
 $OPICE_BROWSER_SESSION). opice-batch gives each parallel author its own.
@@ -75,39 +77,6 @@ function parseArgs(tokens: string[]): ParsedArgs {
 	return { flags, positionals }
 }
 
-/** Field names for positional mapping: explicit hint, else object-schema keys. */
-function positionalNames(name: string, cmd: Command): string[] {
-	if (positionalHints[name]) return positionalHints[name]!
-	if (cmd.params instanceof z.ZodObject) return Object.keys(cmd.params.shape)
-	return []
-}
-
-function paramSummary(cmd: Command): string {
-	if (cmd.params instanceof z.ZodObject) {
-		const keys = Object.keys(cmd.params.shape)
-		return keys.length ? keys.map((k) => `<${k}>`).join(' ') : '(no args)'
-	}
-	return ''
-}
-
-async function buildRegistry(): Promise<Map<string, Command>> {
-	const registry = new Map<string, Command>()
-	for (const cmd of builtins) registry.set(cmd.name, cmd)
-	const user = await loadUserCommands()
-	for (const [name, cmd] of user) registry.set(name, cmd) // user verbs override built-ins
-	return registry
-}
-
-function printResult(result: unknown): void {
-	if (result === undefined || result === null) {
-		console.log('ok')
-	} else if (typeof result === 'string') {
-		console.log(result)
-	} else {
-		console.log(JSON.stringify(result))
-	}
-}
-
 /** Consume a leading `--session NAME` / `--session=NAME` (else env / default). */
 function takeSession(argv: string[]): string[] {
 	const first = argv[0]
@@ -120,6 +89,16 @@ function takeSession(argv: string[]): string[] {
 		return argv.slice(1)
 	}
 	return argv
+}
+
+function printResult(result: unknown): void {
+	if (result === undefined || result === null) {
+		console.log('ok')
+	} else if (typeof result === 'string') {
+		console.log(result)
+	} else {
+		console.log(JSON.stringify(result))
+	}
 }
 
 async function main(rawArgv: string[]): Promise<number> {
@@ -135,52 +114,48 @@ async function main(rawArgv: string[]): Promise<number> {
 			console.log(HELP)
 			return 0
 
+		case '__serve': {
+			// Internal: the long-running server process spawned by `launch`.
+			const { runServer } = await import('./server.js')
+			await runServer({ headed: !!flags['headed'], url: typeof flags['url'] === 'string' ? flags['url'] : undefined })
+			// Block forever — the server's shutdown() calls process.exit on quit.
+			// Returning here would let the top-level process.exit kill the server.
+			await new Promise<never>(() => {})
+			return 0
+		}
+
 		case 'launch': {
 			const session = await launch({ headed: !!flags['headed'], url: positionals[0] })
-			console.error(`[opice-browser] session up (pid ${session.pid}, port ${session.port})`)
+			console.error(`[opice-browser] session up (pid ${session.serverPid}, port ${session.port})`)
 			return 0
 		}
 
 		case 'status': {
-			const session = sessionAlive()
-			console.log(session ? `alive (pid ${session.pid}, port ${session.port})` : 'no session')
+			const session = await sessionAlive()
+			console.log(session ? `alive (pid ${session.serverPid}, port ${session.port})` : 'no session')
 			return session ? 0 : 1
 		}
 
 		case 'quit':
 		case 'close': {
-			quit()
+			await quit()
 			console.error('[opice-browser] session closed')
 			return 0
 		}
 
 		case 'commands': {
+			// Listed locally — no running server needed.
 			const registry = await buildRegistry()
 			for (const cmd of registry.values()) {
-				const builtin = builtins.some((b) => b.name === cmd.name)
-				const tag = builtin ? '' : ' (user)'
+				const tag = isBuiltin(cmd.name) ? '' : ' (user)'
 				console.log(`${cmd.name} ${paramSummary(cmd)}${tag}\n    ${cmd.description ?? ''}`.trimEnd())
 			}
 			return 0
 		}
 
 		default: {
-			const registry = await buildRegistry()
-			const cmd = registry.get(name)
-			if (!cmd) {
-				console.error(`Unknown command: ${name}\n`)
-				console.error(HELP)
-				return 1
-			}
-			const names = positionalNames(name, cmd)
-			const args: Record<string, unknown> = { ...flags }
-			positionals.forEach((val, i) => {
-				const key = names[i]
-				if (key && !(key in args)) args[key] = val
-			})
 			try {
-				const result = await withPage((page) => runCommand(page, cmd, args))
-				printResult(result)
+				printResult(await runVerb(name, flags, positionals))
 				return 0
 			} catch (err) {
 				console.error(`[opice-browser] ${name} failed: ${err instanceof Error ? err.message : String(err)}`)

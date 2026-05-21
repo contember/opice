@@ -260,6 +260,11 @@ Atomic add+commit per their global rules. Never `git add -A`.
   `byRole('button', 'Save').first()` when you genuinely mean the first.
 - **Popovers / dialogs**: `await expect(byRole('dialog')).toBeVisible()` after
   clicking the trigger, then interact with content inside.
+- **Keyboard-opened popovers (Radix enum/select)**: the launched session holds
+  one connection for its whole life, so a popover opened with `press` stays open
+  for the next command's option click — drive it step by step. For a *repeated*
+  domain gesture, factor it into a compound `browser-tools.ts` verb (e.g.
+  `selectEnumOption`) the test calls too, keeping authoring and test identical.
 - **Async data**: prefer a retrying `await expect(el(x)).toHaveText(...)` on a
   stable marker over fixed `await wait(ms)`.
 - **No `data-testid` anywhere**: `byRole`/`byLabel` are reliable now, so prefer
