@@ -31,7 +31,6 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      OPICE_READ_TOKEN: ${{ secrets.OPICE_READ_TOKEN }}
       OPICE_ADMIN_TOKEN: ${{ secrets.OPICE_ADMIN_TOKEN }}
       OPICE_BETTER_AUTH_SECRET: ${{ secrets.OPICE_BETTER_AUTH_SECRET }}
     steps:
