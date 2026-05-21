@@ -51,6 +51,10 @@ export interface ElementHandle {
 	click(): void
 	fill(value: string): void
 	select(optionText: string): void
+	focus(): void
+	hover(): void
+	/** Focus the element, then send a key (e.g. `Enter`, `Escape`, `ArrowDown`). */
+	press(key: string): void
 }
 
 export function el(selector: string): ElementHandle {
@@ -88,6 +92,20 @@ export function el(selector: string): ElementHandle {
 		select(optionText: string): void {
 			exec(`agent-browser scrollintoview ${quoted}`)
 			exec(`agent-browser select ${quoted} ${q(optionText)}`)
+			Bun.sleepSync(ACTION_SETTLE_MS)
+		},
+		focus(): void {
+			exec(`agent-browser scrollintoview ${quoted}`)
+			exec(`agent-browser focus ${quoted}`)
+		},
+		hover(): void {
+			exec(`agent-browser scrollintoview ${quoted}`)
+			exec(`agent-browser hover ${quoted}`)
+			Bun.sleepSync(ACTION_SETTLE_MS)
+		},
+		press(key: string): void {
+			exec(`agent-browser focus ${quoted}`)
+			exec(`agent-browser press ${key}`)
 			Bun.sleepSync(ACTION_SETTLE_MS)
 		},
 	}

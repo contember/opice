@@ -41,9 +41,33 @@ browserTest('DataGrid', () => {
 `ElementHandle` properties:
 
 - `.exists`, `.text`, `.value`, `.isDisabled`, `.attr(name)`, `.count()`
-- `.click()`, `.fill(value)`, `.select(optionText)`
+- `.click()`, `.fill(value)`, `.select(optionText)`, `.focus()`, `.hover()`, `.press(key)`
 
 Each action call auto-scrolls into view and sleeps 500ms to let the UI settle.
+`.press(key)` focuses first, then sends the key (`Enter`, `Tab`, `Control+a`).
+
+### Accessible-name selectors
+
+For apps you can't annotate with `data-testid` (third-party UIs, generated form
+ids). These wrap agent-browser's `find` locators, so a test reads the same way
+the authoring dry-run drives the page (`byRole('button','Save').click()` ⇄
+`agent-browser find role button click --name 'Save'`). Each returns an
+`ElementHandle`.
+
+- `byRole(role, name?)` — by ARIA role, optionally filtered by accessible name.
+- `byLabel(text)` — a form control by its `<label>` (resolved via `for`/nesting).
+- `byText(text)` — a leaf element by its visible text.
+
+Actions go through `find`; queries (`.exists`, `.text`, …) and the focus/press
+path fall back to a small `eval`. Prefer `data-testid` + `el()` when you own the
+markup.
+
+### Navigation
+
+- `open(url)`, `reload()`, `back()`, `forward()` — page navigation. Use
+  `reload()` after writing auth to localStorage/cookies (an `eval`-triggered
+  reload is dropped by agent-browser).
+- `currentUrl()`, `currentPath()` — read `location.href` / `location.pathname`.
 
 ### Waiting
 
