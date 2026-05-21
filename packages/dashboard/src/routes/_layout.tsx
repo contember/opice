@@ -35,7 +35,7 @@ export default function RootLayout() {
 					</nav>
 					{session && (
 						<div className="user-menu">
-							<span className="user-email">{session.user.email}</span>
+							<Link to="settings" className="user-email">{session.user.email}</Link>
 							<button type="button" className="logout-btn" onClick={logout}>
 								Sign out
 							</button>

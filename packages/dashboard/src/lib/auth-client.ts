@@ -8,4 +8,15 @@ import { createAuthClient } from 'better-auth/react'
  */
 export const authClient = createAuthClient({ basePath: '/auth' })
 
-export const { useSession, signIn, signOut } = authClient
+export const { useSession, signIn, signOut, changePassword } = authClient
+
+/**
+ * The session's user carries a `role` column from BetterAuth's admin plugin,
+ * but the client type (built without the admin plugin) doesn't surface it.
+ * `member` is read+write; everything else (incl. the default `admin`) can
+ * manage users — mirrors `capabilitiesForRole` in the worker's principal.ts.
+ */
+export function isOperator(user: unknown): boolean {
+	if (!user || typeof user !== 'object') return false
+	return (user as { role?: string | null }).role !== 'member'
+}
