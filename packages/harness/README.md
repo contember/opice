@@ -1,93 +1,130 @@
 # @opice/harness
 
-Runtime primitives for [opice](../../README.md) — AI-driven E2E browser tests on top of [`agent-browser`](https://github.com/.../agent-browser).
+Runtime primitives for [opice](../../README.md) — AI-driven E2E browser tests on
+top of [Playwright](https://playwright.dev). The browser runs **in-process**
+under `bun test`; there is no CLI or daemon in the test path.
 
 ## Install
 
 ```bash
 bun add -D @opice/harness
+bunx playwright install chromium
 ```
 
-Requires `agent-browser` on `PATH` and a Bun test runner.
+Runs under the Bun test runner.
 
 ## Usage
 
 ```ts
-import { test, expect, describe } from 'bun:test'
-import { browserTest, el, tid, waitFor, step } from '@opice/harness'
+import { test, describe } from 'bun:test'
+import { browserTest, el, byRole, byLabel, step, expect } from '@opice/harness'
 
 browserTest('DataGrid', () => {
-  test('renders table structure', () => {
-    waitFor(() => el(tid('datagrid-table')).exists)
-    expect(el(tid('datagrid-header')).exists).toBe(true)
-  })
-
-  test('clicking a row highlights it', () => {
-    step('user clicks first row', () => {
-      el(tid('datagrid-row-0')).click()
+  test('renders and is interactive', async () => {
+    await step('table is visible', async () => {
+      await expect(el('datagrid-table')).toBeVisible()
     })
-    waitFor(() => el(`${tid('datagrid-row-0')}[data-highlighted]`).exists)
-  })
+
+    await step('clicking a row highlights it', async () => {
+      await el('datagrid-row-0').click()
+      await expect(el('datagrid-row-0')).toHaveAttribute('data-highlighted', '')
+    })
+  }, 60_000)
 }, { hash: 'datagrid' })
 ```
 
+The DSL is **async** and returns Playwright `Locator`s, so the full Locator API
+(`.click()`, `.fill()`, `.textContent()`, `.first()`, …) and the web-first
+`expect(locator)` assertions are available. `expect` is re-exported from the
+harness (Playwright's `expect`, which works under `bun:test`).
+
 ## API
 
-### Element handles
+### Locators
 
-- `el(selector)` — returns an `ElementHandle`. Plain test-ids are auto-wrapped: `el('foo')` ≡ `el('[data-testid="foo"]')`.
-- `tid(id)` — build a `[data-testid="..."]` selector string for compound selectors.
-
-`ElementHandle` properties:
-
-- `.exists`, `.text`, `.value`, `.isDisabled`, `.attr(name)`, `.count()`
-- `.click()`, `.fill(value)`, `.select(optionText)`, `.focus()`, `.hover()`, `.press(key)`
-
-Each action call auto-scrolls into view and sleeps 500ms to let the UI settle.
-`.press(key)` focuses first, then sends the key (`Enter`, `Tab`, `Control+a`).
+- `el(selector)` — a `Locator`. A bare word is a test-id (`el('foo')` ≡
+  `getByTestId('foo')`, matching `data-testid`); anything with CSS-flavoured
+  characters is a raw CSS selector (`el('main h1')`).
+- `tid(id)` — build a `[data-testid="..."]` selector string for composing into a
+  larger CSS selector: `el(`${tid('row')} button`)`.
 
 ### Accessible-name selectors
 
-For apps you can't annotate with `data-testid` (third-party UIs, generated form
-ids). Each returns an `ElementHandle`, so the full action/query surface works.
+Native Playwright accessibility locators — reliable, real user gestures. Prefer
+these (or `data-testid`) over CSS.
 
 - `byRole(role, name?)` — by ARIA role, optionally filtered by accessible name.
-- `byLabel(text)` — a form control by its `<label>` (resolved via `for`/nesting).
-- `byText(text)` — a leaf element by its visible text.
+- `byLabel(text)` — a form control by its `<label>` / `aria-label`.
+- `byText(text)` — by visible text.
 
-Resolution: a small JS resolver finds the element in-page, stamps it, and the
-handle drives it through `el()` — the same scroll-into-view + real-click +
-settle path as a test-id. (agent-browser's own `find … click` was tried but
-doesn't reliably register as a user gesture for React/controlled forms, e.g. a
-bindx submit button.) Prefer `data-testid` + `el()` when you own the markup.
+### Assertions
+
+- `expect(locator)` — Playwright's web-first, auto-retrying assertions:
+  `.toBeVisible()`, `.toHaveText()`, `.toContainText()`, `.toBeEnabled()`,
+  `.toHaveAttribute()`, … Prefer these over manual polling. Generic matchers
+  (`.toBe`, `.toEqual`) work too.
 
 ### Navigation
 
-- `open(url)`, `reload()`, `back()`, `forward()` — page navigation. Use
-  `reload()` after writing auth to localStorage/cookies (an `eval`-triggered
-  reload is dropped by agent-browser).
-- `currentUrl()`, `currentPath()` — read `location.href` / `location.pathname`.
+- `open(url)`, `reload()`, `back()`, `forward()` — page navigation (each awaits
+  the load event).
+- `currentUrl()`, `currentPath()` — read `location.href` / `location.pathname`
+  (synchronous).
 
 ### Waiting
 
-- `waitFor(condition, opts?)` — polls until the predicate is true; throws on timeout. Default 10s timeout, 200ms interval.
-- `wait(ms)` — fixed sleep. Avoid when `waitFor` works.
+- `waitFor(condition, opts?)` — polls a (possibly async) predicate until true;
+  throws on timeout (default 10s / 200ms). For predicates that don't map to a
+  retrying `expect` assertion.
+- `wait(ms)` — fixed sleep. Avoid when `waitFor` or `expect` works.
 
 ### Scenarios
 
-- `browserTest(name, fn, options?)` — top-level scenario. Opens a fresh agent-browser session in `beforeAll`, closes in `afterAll`. Pass `{ hash: 'foo' }` for `PLAYGROUND_URL#foo`, or just a string shorthand: `browserTest(name, fn, 'foo')`.
-- `step(name, fn)` — reportable step inside a scenario. Captures duration + screenshot. Reporter is a no-op until the opice platform is wired up.
+- `browserTest(name, fn, options?)` — top-level scenario. Launches a fresh
+  isolated Playwright browser + context + page in `beforeAll`, navigates to the
+  scenario URL, tears down in `afterAll`. Pass `{ hash: 'foo' }` for
+  `PLAYGROUND_URL#foo`, or a string shorthand: `browserTest(name, fn, 'foo')`.
+- `step(name, fn)` — reportable async step. `await step('…', async () => {…})`;
+  captures duration + screenshot. Reporter is a no-op until the platform is wired.
+
+### Custom verbs (user-land)
+
+Define a domain verb once in `<repo>/browser-tools.ts` and use it in **both** the
+authoring agent (`opice-browser`) and your tests:
+
+```ts
+// browser-tools.ts
+import { command, z } from '@opice/harness'
+
+export const fullEnum = command('fullEnum',
+  z.object({ label: z.string(), option: z.string() }),
+  async ({ page }, { label, option }) => {
+    await page.getByLabel(label).press('Enter')
+    await page.getByRole('button', { name: option }).click()
+  })
+```
+
+```ts
+// in a test
+import { call } from '@opice/harness'
+import { fullEnum } from '../browser-tools'
+await call(fullEnum, { label: 'Typ', option: 'Faktura' })
+```
 
 ### Misc
 
-- `screenshot(path?)` — saves a PNG, returns the path. Default path under `/tmp/`.
-- `evalJs(js)` — `agent-browser eval` passthrough.
+- `screenshot(path?)` — saves a PNG, returns the path (default under `/tmp/`).
+- `evalJs(js)` — `page.evaluate` passthrough (returns the real JS value).
+- `getPage()` / `getContext()` — the live Playwright `Page` / `BrowserContext`
+  for an escape hatch into the raw API.
 
 ## Configuration
 
 - `PLAYGROUND_URL` — base URL for `browserTest` (default `http://localhost:15180`).
+- `OPICE_HEADED` (or `PWDEBUG`) — run headed for local debugging (default headless).
 - `OPICE_ENDPOINT`, `OPICE_PROJECT`, `OPICE_API_KEY` — reporter config (or a single `OPICE_DSN`).
 - `OPICE_REPORT` — `auto` (default: report only in CI), `always` (report locally too), or
   `never`. Outside CI, reporting is opt-in so iterating with bare `bun test` doesn't stream
   half-finished runs onto the shared dashboard. CI-detected runs are tagged `ci`, opted-in
   local runs `local`.
+```

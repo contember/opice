@@ -1,9 +1,20 @@
-import { describe, beforeAll, afterAll } from 'bun:test'
-import crypto from 'node:crypto'
+import { createRequire } from 'node:module'
 import path from 'node:path'
-import { exec, setSession } from './agent-browser.js'
-import { waitFor, screenshot } from './element.js'
+import { closePage, launchPage } from './context.js'
+import { screenshot } from './element.js'
 import { getReporter } from './reporter.js'
+
+/**
+ * `bun:test` is resolved lazily, at the moment `browserTest` registers a
+ * scenario — never at module load. That keeps `@opice/harness` importable
+ * under plain Node (the `opice-browser` authoring daemon imports the command
+ * registry from this package and runs on Node, where `bun:test` doesn't
+ * exist). Tests still register synchronously: `require` is sync under Bun.
+ */
+const require = createRequire(import.meta.url)
+function bunTest(): typeof import('bun:test') {
+	return require('bun:test') as typeof import('bun:test')
+}
 
 const PLAYGROUND_URL = process.env['PLAYGROUND_URL'] ?? 'http://localhost:15180'
 
@@ -60,20 +71,20 @@ let currentScenarioStepSeq = 0
 /**
  * Register a top-level browser test scenario.
  *
- * Each `browserTest(name, fn)` opens its own agent-browser session, navigates
- * to the playground URL, runs the given `fn` (which typically contains nested
- * `describe`/`test` blocks), and closes the session in `afterAll`.
+ * Each `browserTest(name, fn)` launches its own isolated Playwright browser +
+ * context + page, navigates to the playground URL, runs the given `fn` (which
+ * typically contains nested `describe`/`test` blocks), and tears the browser
+ * down in `afterAll`.
  */
 export function browserTest(name: string, fn: () => void, options: BrowserTestOptions | string = {}): void {
 	const opts: BrowserTestOptions = typeof options === 'string' ? { hash: options } : options
 	const reporter = getReporter()
 	const testFile = captureTestFile()
 	const scenarioFile = opts.scenarioFile ?? defaultScenarioFile(testFile)
+	const { describe, beforeAll, afterAll } = bunTest()
 
 	describe(name, () => {
 		beforeAll(async () => {
-			const session = `opice-${crypto.randomUUID().slice(0, 8)}`
-			setSession(session)
 			currentScenarioStart = Date.now()
 			currentScenarioFailures = 0
 			currentScenarioStepSeq = 0
@@ -82,25 +93,18 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			} catch {
 				currentScenarioId = null
 			}
+			const page = await launchPage()
 			const base = opts.url ?? PLAYGROUND_URL
 			const url = opts.hash ? `${base}#${opts.hash}` : base
-			exec(`agent-browser open ${url}`)
-			waitFor(() => {
-				try {
-					return exec('agent-browser get title').length > 0
-				} catch {
-					return false
-				}
-			}, { timeout: 15_000 })
+			await page.goto(url)
 		}, 30_000)
 
 		afterAll(async () => {
 			try {
-				exec('agent-browser close')
+				await closePage()
 			} catch {
 				// ignore close errors
 			}
-			setSession(null)
 			if (currentScenarioId) {
 				// Drain pending step records (incl. their screenshot uploads)
 				// before marking the scenario done. step() fires recordStep
@@ -129,8 +133,11 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 /**
  * A reportable step inside a scenario. Captures duration + screenshot on
  * finish, forwards to the active reporter (no-op unless configured via env).
+ *
+ * The body may be sync or async; `step` always returns a promise, so call it
+ * with `await step('…', async () => { … })`.
  */
-export function step(name: string, fn: () => void): void {
+export async function step(name: string, fn: () => void | Promise<void>): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
@@ -138,7 +145,7 @@ export function step(name: string, fn: () => void): void {
 	let status: 'passed' | 'failed' = 'passed'
 	let error: string | undefined
 	try {
-		fn()
+		await fn()
 	} catch (e) {
 		status = 'failed'
 		error = e instanceof Error ? e.message : String(e)
@@ -148,7 +155,7 @@ export function step(name: string, fn: () => void): void {
 		const durationMs = Date.now() - start
 		let screenshotPath: string | undefined
 		try {
-			screenshotPath = screenshot()
+			screenshotPath = await screenshot()
 		} catch {
 			// screenshot failure shouldn't fail the test
 		}

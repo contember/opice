@@ -1,134 +1,91 @@
-import { exec, q } from './agent-browser.js'
+import type { Locator, Page } from 'playwright'
+import { getPage } from './context.js'
 
 const POLL_INTERVAL = 200
 const POLL_TIMEOUT = 10_000
-const ACTION_SETTLE_MS = 500
 
 /**
- * Auto-wrap bare identifiers as `[data-testid="…"]` selectors; treat anything
- * with CSS-flavoured characters as a raw selector. Heuristic — if you need a
- * plain-tag selector (e.g. `h1`), give it some structure (e.g. `main h1`) or
- * use a descendant/attribute form.
+ * Resolve a selector into a `Locator` on an explicit page — the shared core
+ * behind `el()` and the command-registry context. Bare identifiers become
+ * test-ids (`getByTestId`, matching `data-testid`); anything with CSS-flavoured
+ * characters (`[ ] . # : > ` or a space) is a raw CSS selector.
  */
-function resolveSelector(selectorOrTestId: string): string {
+export function locatorOn(page: Page, selectorOrTestId: string): Locator {
 	if (/[\[\].#:> ]/.test(selectorOrTestId)) {
-		return selectorOrTestId
+		return page.locator(selectorOrTestId)
 	}
-	return `[data-testid="${selectorOrTestId}"]`
+	return page.getByTestId(selectorOrTestId)
 }
 
 /**
- * Poll a condition until it returns true or timeout.
- * Use instead of fixed sleep — stable on both fast local and slow CI.
+ * Resolve a selector into a Playwright `Locator`.
+ *
+ * Bare identifiers are auto-wrapped as test-ids (`page.getByTestId`, which
+ * matches `data-testid` by default); anything with CSS-flavoured characters
+ * (`[ ] . # : > ` or a space) is treated as a raw CSS selector. Heuristic — if
+ * you need a plain-tag selector (e.g. `h1`), give it structure (`main h1`).
+ *
+ * The returned value is a real Playwright `Locator`, so the full Locator API
+ * (`.click()`, `.fill()`, `.textContent()`, `.first()`, `.nth()`, …) and the
+ * web-first `expect(locator)` assertions are available. All actions auto-wait
+ * for actionability and fire real user gestures.
  */
-export function waitFor(
-	condition: () => boolean,
+export function el(selectorOrTestId: string): Locator {
+	return locatorOn(getPage(), selectorOrTestId)
+}
+
+/**
+ * Build a `[data-testid="..."]` selector string, for composing into a larger
+ * CSS selector: `el(`${tid('row')} button`)`. For a plain test-id, prefer
+ * `el('row')` directly.
+ */
+export function tid(testId: string): string {
+	return `[data-testid="${testId}"]`
+}
+
+/**
+ * Poll a (possibly async) condition until it returns true or times out.
+ *
+ * Prefer Playwright's retrying assertions — `await expect(el('x')).toBeVisible()`,
+ * `.toHaveText(...)` — which auto-wait and give better failure messages. Keep
+ * `waitFor` for arbitrary predicates that don't map to a locator assertion.
+ */
+export async function waitFor(
+	condition: () => boolean | Promise<boolean>,
 	{ timeout = POLL_TIMEOUT, interval = POLL_INTERVAL, message }: { timeout?: number; interval?: number; message?: string } = {},
-): void {
+): Promise<void> {
 	const start = Date.now()
 	while (Date.now() - start < timeout) {
 		try {
-			if (condition()) return
+			if (await condition()) return
 		} catch {
 			// condition threw — treat as not yet ready
 		}
-		Bun.sleepSync(interval)
+		await new Promise((resolve) => setTimeout(resolve, interval))
 	}
-	if (!condition()) {
+	if (!(await condition())) {
 		const elapsed = Date.now() - start
 		const hint = message ?? condition.toString().slice(0, 120)
 		throw new Error(`waitFor timed out after ${elapsed}ms: ${hint}`)
 	}
 }
 
-export interface ElementHandle {
-	readonly exists: boolean
-	readonly text: string
-	readonly value: string
-	readonly isDisabled: boolean
-	attr(name: string): string
-	count(): number
-	click(): void
-	fill(value: string): void
-	select(optionText: string): void
-	focus(): void
-	hover(): void
-	/** Focus the element, then send a key (e.g. `Enter`, `Escape`, `ArrowDown`). */
-	press(key: string): void
-}
-
-export function el(selector: string): ElementHandle {
-	const sel = resolveSelector(selector)
-	const quoted = q(sel)
-	return {
-		get exists(): boolean {
-			return parseInt(exec(`agent-browser get count ${quoted}`), 10) > 0
-		},
-		get text(): string {
-			return exec(`agent-browser get text ${quoted}`)
-		},
-		get value(): string {
-			return exec(`agent-browser get value ${quoted}`)
-		},
-		get isDisabled(): boolean {
-			return exec(`agent-browser is enabled ${quoted}`) !== 'true'
-		},
-		attr(name: string): string {
-			return exec(`agent-browser get attr ${name} ${quoted}`)
-		},
-		count(): number {
-			return parseInt(exec(`agent-browser get count ${quoted}`), 10) || 0
-		},
-		click(): void {
-			exec(`agent-browser scrollintoview ${quoted}`)
-			exec(`agent-browser click ${quoted}`)
-			Bun.sleepSync(ACTION_SETTLE_MS)
-		},
-		fill(value: string): void {
-			exec(`agent-browser scrollintoview ${quoted}`)
-			exec(`agent-browser fill ${quoted} ${q(value)}`)
-			Bun.sleepSync(ACTION_SETTLE_MS)
-		},
-		select(optionText: string): void {
-			exec(`agent-browser scrollintoview ${quoted}`)
-			exec(`agent-browser select ${quoted} ${q(optionText)}`)
-			Bun.sleepSync(ACTION_SETTLE_MS)
-		},
-		focus(): void {
-			exec(`agent-browser scrollintoview ${quoted}`)
-			exec(`agent-browser focus ${quoted}`)
-		},
-		hover(): void {
-			exec(`agent-browser scrollintoview ${quoted}`)
-			exec(`agent-browser hover ${quoted}`)
-			Bun.sleepSync(ACTION_SETTLE_MS)
-		},
-		press(key: string): void {
-			exec(`agent-browser focus ${quoted}`)
-			exec(`agent-browser press ${key}`)
-			Bun.sleepSync(ACTION_SETTLE_MS)
-		},
-	}
+/** Fixed sleep. Avoid when possible — prefer `waitFor` or retrying assertions. */
+export async function wait(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
- * Build a `[data-testid="..."]` selector for compound selectors.
- * Usage: el(`${tid('parent')} button`)
+ * Evaluate JavaScript in the page and return its result. Thin wrapper over
+ * `page.evaluate`; the value is the real JS value (not a JSON string).
  */
-export function tid(testId: string): string {
-	return `[data-testid="${testId}"]`
+export function evalJs<T = unknown>(js: string): Promise<T> {
+	return getPage().evaluate(js) as Promise<T>
 }
 
-export function wait(ms: number): void {
-	Bun.sleepSync(ms)
-}
-
-export function evalJs(js: string): string {
-	return exec(`agent-browser eval ${q(js)}`)
-}
-
-export function screenshot(path?: string): string {
+/** Capture a screenshot to `path` (or a temp file) and return the path. */
+export async function screenshot(path?: string): Promise<string> {
 	const target = path ?? `/tmp/opice-screenshot-${Date.now()}.png`
-	exec(`agent-browser screenshot ${target}`)
+	await getPage().screenshot({ path: target })
 	return target
 }

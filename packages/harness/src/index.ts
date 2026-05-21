@@ -1,9 +1,10 @@
 export { el, tid, waitFor, wait, evalJs, screenshot } from './element.js'
-export type { ElementHandle } from './element.js'
 
 export { byLabel, byRole, byText } from './accessible.js'
 
 export { back, currentPath, currentUrl, forward, open, reload } from './navigation.js'
+
+export { getPage, getContext } from './context.js'
 
 export { browserTest, step } from './scenario.js'
 export type { BrowserTestOptions } from './scenario.js'
@@ -13,3 +14,13 @@ export type { Reporter, ReporterConfig, StepEvent, ScenarioStart, ScenarioFinish
 
 export { parseOpiceDsn } from './dsn.js'
 export type { OpiceDsn } from './dsn.js'
+
+export { command, call, runCommand, makeCtx, loadUserCommands, findUserCommandsFile, z } from './command.js'
+export type { Command, CommandCtx } from './command.js'
+
+// Playwright's web-first `expect` (retrying locator matchers + generic matchers)
+// works under `bun:test`; re-export it so tests use a single `expect`.
+export { expect } from '@playwright/test'
+
+// The DSL returns Playwright Locators directly — re-export the type.
+export type { Locator } from 'playwright'
