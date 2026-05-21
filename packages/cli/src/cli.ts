@@ -22,11 +22,12 @@ Commands:
   failures <run-url|run-id> [--json]
       Pull a failed run's details (failed scenarios, the failing step,
       error, screenshot URL, and source files) for the re-eval workflow.
-      Token comes from the URL's ?token= or OPICE_READ_TOKEN.
+      Read token comes from the URL's ?token= or OPICE_READ_TOKEN (a
+      read-only share link).
 
   users create <email> [--password=...] [--name=...] [--endpoint=URL] [--admin-token=TOKEN]
-      Create a dashboard login (every user is admin). Needs the admin
-      token (--admin-token or OPICE_ADMIN_TOKEN) and the platform endpoint
+      Create a dashboard login (admin role by default). Needs the bootstrap
+      admin token (--admin-token or OPICE_ADMIN_TOKEN) and the platform endpoint
       (--endpoint, OPICE_ENDPOINT, or opice.config.json). A password is
       generated and printed if you don't pass one.
 

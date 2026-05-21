@@ -2,9 +2,10 @@
  * `opice users create <email>` — create a dashboard login.
  *
  * Self-service signup is disabled on the platform; this is the sanctioned way
- * to mint an account. It calls the admin endpoint, so it needs the admin token
- * (--admin-token or OPICE_ADMIN_TOKEN) and the platform endpoint (--endpoint,
- * OPICE_ENDPOINT, or opice.config.json). Every account is a full admin.
+ * to mint an account. It calls the `admin.createUser` RPC with the bootstrap
+ * admin token as a Bearer credential (--admin-token or OPICE_ADMIN_TOKEN) and
+ * the platform endpoint (--endpoint, OPICE_ENDPOINT, or opice.config.json).
+ * Accounts are created with the `admin` role by default.
  *
  * If no password is given one is generated and printed once.
  */
@@ -50,24 +51,29 @@ export async function usersCommand(args: string[]): Promise<number> {
 
 	let response: Response
 	try {
-		response = await fetch(`${endpoint.replace(/\/$/, '')}/api/v1/admin/users`, {
+		response = await fetch(`${endpoint.replace(/\/$/, '')}/rpc`, {
 			method: 'POST',
-			headers: { 'content-type': 'application/json', 'x-admin-token': adminToken },
-			body: JSON.stringify({ email: flags.email, password, ...(flags.name ? { name: flags.name } : {}) }),
+			headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken}` },
+			body: JSON.stringify({
+				method: 'admin.createUser',
+				input: { email: flags.email, password, ...(flags.name ? { name: flags.name } : {}) },
+			}),
 		})
 	} catch (err) {
 		console.error(`[opice] request failed: ${(err as Error).message}`)
 		return 1
 	}
 
-	const data = (await response.json().catch(() => null)) as { email?: string; error?: { message?: string } } | null
-	if (!response.ok || !data || data.error) {
+	const data = (await response.json().catch(() => null)) as
+		| { result?: { email?: string }; error?: { message?: string } }
+		| null
+	if (!response.ok || !data || data.error || !data.result) {
 		const message = data?.error?.message ?? `${response.status} ${response.statusText}`
 		console.error(`[opice] could not create user: ${message}`)
 		return 1
 	}
 
-	console.log(`✓ Created user ${data.email ?? flags.email}`)
+	console.log(`✓ Created user ${data.result.email ?? flags.email}`)
 	if (generated) {
 		console.log(`  password: ${password}`)
 		console.log('  (shown once — store it in your password manager now)')

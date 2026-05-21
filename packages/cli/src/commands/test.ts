@@ -52,12 +52,12 @@ export async function testCommand(args: string[]): Promise<number> {
 
 	// After bun test exits, look for handoff files the reporter wrote and
 	// POST /finish for each run so it leaves "running" state.
-	await finalizeHandoffs(child.pid, project, process.env['OPICE_READ_TOKEN'])
+	await finalizeHandoffs(child.pid, project)
 
 	return exitCode
 }
 
-async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined, readToken: string | undefined): Promise<void> {
+async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined): Promise<void> {
 	let files: string[]
 	try {
 		files = await fs.readdir(HANDOFF_DIR)
@@ -70,7 +70,7 @@ async function finalizeHandoffs(childPid: number | undefined, slug: string | und
 		try {
 			const handoff = JSON.parse(await fs.readFile(full, 'utf-8')) as Handoff
 			await finishRun(handoff)
-			printRunUrl(handoff, slug, readToken)
+			printRunUrl(handoff, slug)
 		} catch (err) {
 			warn(`Failed to finalize run from ${file}: ${(err as Error).message}`)
 		} finally {
@@ -79,14 +79,11 @@ async function finalizeHandoffs(childPid: number | undefined, slug: string | und
 	}
 }
 
-function printRunUrl(handoff: Handoff, slug: string | undefined, readToken: string | undefined): void {
+function printRunUrl(handoff: Handoff, slug: string | undefined): void {
 	if (!slug) return
-	const query = readToken ? `?token=${readToken}` : ''
-	const url = `${handoff.endpoint}/p/${slug}/r/${handoff.runId}${query}`
+	const url = `${handoff.endpoint}/p/${slug}/r/${handoff.runId}`
 	console.error(`[opice] View run: ${url}`)
-	if (!readToken) {
-		console.error('[opice] (open the dashboard for the tokened read-only link, or set OPICE_READ_TOKEN to embed it here)')
-	}
+	console.error('[opice] (sign in to view, or create a read-only share link from the run page)')
 }
 
 async function finishRun(handoff: Handoff): Promise<void> {
