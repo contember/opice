@@ -40,8 +40,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Type check harness
-        run: bunx tsc --noEmit -p packages/harness/tsconfig.json
+      # Builds the harness + browser dist (node-condition export and the
+      # opice-browser bin both ship from dist). tsc --build also type-checks
+      # both packages.
+      - name: Build (harness + browser)
+        run: bun run build
 
       - name: Type check CLI
         run: bunx tsc --noEmit -p packages/cli/tsconfig.json
@@ -51,7 +54,7 @@ jobs:
           node -e "
             const fs = require('fs');
             const version = '${{ steps.tag.outputs.version }}';
-            for (const p of ['packages/harness/package.json', 'packages/cli/package.json']) {
+            for (const p of ['packages/harness/package.json', 'packages/browser/package.json', 'packages/cli/package.json']) {
               const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
               pkg.version = version;
               for (const field of ['dependencies', 'peerDependencies']) {
@@ -65,6 +68,10 @@ jobs:
 
       - name: Publish @opice/harness
         working-directory: packages/harness
+        run: npm publish --provenance --access public
+
+      - name: Publish @opice/browser
+        working-directory: packages/browser
         run: npm publish --provenance --access public
 
       - name: Publish @opice/cli
