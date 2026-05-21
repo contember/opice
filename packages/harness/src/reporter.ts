@@ -20,6 +20,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
 
+/** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
+const REQUEST_TIMEOUT_MS = 10_000
+/** Total cap on `flush()` waiting for pending step uploads (afterAll-bounded). */
+const FLUSH_BUDGET_MS = 15_000
+
 export interface ReporterConfig {
 	endpoint: string
 	projectId: string
@@ -161,7 +166,14 @@ class HttpReporter implements Reporter {
 	}
 
 	async flush(): Promise<void> {
-		await Promise.allSettled([...this.pending])
+		// Bound the wait: step uploads (a base64 screenshot each) pile up on a
+		// slow/contended uplink, and `flush()` is awaited in a scenario's afterAll
+		// — an unbounded wait there blows the afterAll budget and fails the
+		// scenario over *reporting*, not the test. Best-effort: stop waiting after
+		// FLUSH_BUDGET_MS; stragglers settle in the background. Pair with the
+		// per-request timeout in `fetch`.
+		const budget = new Promise<void>((resolve) => setTimeout(resolve, FLUSH_BUDGET_MS))
+		await Promise.race([Promise.allSettled([...this.pending]), budget])
 		// finishRun is the CLI's responsibility — see handoff file.
 	}
 
@@ -189,6 +201,8 @@ class HttpReporter implements Reporter {
 					'content-type': 'application/json',
 				},
 				body: body == null ? undefined : JSON.stringify(body),
+				// Don't let a stalled connection hang past the afterAll budget.
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 			})
 		} catch (err) {
 			// Network error / blocked request (e.g. a test runner that installs a

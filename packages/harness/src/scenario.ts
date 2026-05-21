@@ -102,7 +102,11 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			if (setup) await setup(getContext())
 			const base = opts.url ?? PLAYGROUND_URL
 			const url = opts.hash ? `${base}#${opts.hash}` : base
-			await page.goto(url)
+			// `domcontentloaded`, not the default `load`: an SPA paints after its JS
+				// runs and may hold `load` on a slow chunk or long-lived connection, so
+				// waiting for `load` flakily times out under CI contention. Readiness is
+				// handled by the test's retrying assertions.
+				await page.goto(url, { waitUntil: 'domcontentloaded' })
 		}, 30_000)
 
 		afterAll(async () => {
