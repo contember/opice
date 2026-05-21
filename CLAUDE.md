@@ -6,7 +6,7 @@ Two distinct things share the name "opice":
 - **The product** the test author uses — `@opice/harness` (test runtime) + `@opice/cli` (`opice` binary) + the Claude Code skills, dropped into *their* repo.
 - **This platform repo** — the Cloudflare Worker + D1 + R2 + dashboard SPA that ingests and displays runs.
 
-Tests live in the *user's* repo, not here. The browser runs in *their* CI (driven by the `agent-browser` CLI). This repo only stores and displays results. See `README.md` for the design rationale and locked-in non-goals (no visual regression, no multi-tenant, no AI in CI, no browser farm).
+Tests live in the *user's* repo, not here. The browser runs in *their* CI (Playwright in-process under `bun test`). This repo only stores and displays results. See `README.md` for the design rationale and locked-in non-goals (no visual regression, no multi-tenant, no AI in CI, no browser farm).
 
 ## Commands
 
@@ -30,13 +30,17 @@ bun test -t "scenario name substring"
 
 ## Packages
 - `packages/harness/` — test-author runtime (npm). See below.
+- `packages/browser/` — `opice-browser`, the stateful Playwright authoring CLI. See below.
 - `packages/cli/` — the `opice` binary. See below.
 - `packages/worker/` — CF Worker + D1×2 + R2 ingest/RPC/auth backend. **Read `packages/worker/CLAUDE.md`** before editing.
 - `packages/dashboard/` — React 19 SPA. **Read `packages/dashboard/CLAUDE.md`** before editing.
 - `apps/self-test/` — dogfood smoke test: this repo's dashboard test against deployed stage, gated on `OPICE_SELF_READ_TOKEN`.
 
 ### Harness (`packages/harness/`)
-The test-author-facing runtime, published to npm. `browserTest(name, fn)` wraps `bun:test` `describe` and manages an `agent-browser` session per scenario (open/close in before/afterAll). `step(name, fn)` is a reportable unit. The DSL — `el()`, `tid()`, `waitFor()` — shells out to the `agent-browser` CLI (`agent-browser.ts`); there is **no Playwright/Puppeteer**. `el('foo')` auto-wraps bare identifiers as `[data-testid="foo"]`; anything with CSS chars (`[ ] . # : > ` space) is treated as a raw selector. Prefer `data-testid`.
+The test-author-facing runtime, published to npm. **Backed by Playwright, in-process** — `bun test` drives Playwright directly; there is no CLI or daemon in the test/CI path (and no agent-browser). `browserTest(name, fn)` wraps `bun:test` `describe` and launches a fresh Playwright browser+context+page per scenario (`context.ts`; `beforeAll`/`afterAll`). `step(name, fn)` is a reportable async unit. The DSL is **async** and returns Playwright `Locator`s: `el()`/`tid()` (`element.ts`), `byRole()`/`byLabel()`/`byText()` (`accessible.ts`, native getBy*), navigation (`navigation.ts`). `el('foo')` → `getByTestId('foo')`; anything with CSS chars (`[ ] . # : > ` space) is a raw selector. `expect` is re-exported from `@playwright/test` (works under `bun:test`). `command()`/`call()`/`loadUserCommands()` (`command.ts`) are the shared registry for user-land `browser-tools.ts` verbs. **`bun:test` is lazy-`require`d in `scenario.ts`** so the package is importable under plain Node (the daemon needs that). Conditional exports: `bun`→`src/*.ts`, node→`dist/*.js` (run `bun run build`). Prefer `data-testid`, then role/label.
+
+### opice-browser (`packages/browser/`)
+The stateful authoring CLI (`@opice/browser`, bin `opice-browser`), **authoring-only — never in CI**. `launch` spawns a detached Chrome with a remote-debugging port and records a session file (`session.ts`); each verb `connectOverCDP`s, drives the live page, disconnects (state lives in the browser process). Built-in verbs (`builtins.ts`: open/click/fill/byRole/byLabel/byText/aria-snapshot/…) are defined with the same `command()` primitive as user verbs, plus any from a repo's `browser-tools.ts`. **Runs under Node, not Bun** — `connectOverCDP`'s websocket can't complete the handshake under Bun (in-process `chromium.launch()` is fine under Bun, which is why the harness can stay in-process). Bin is the built `dist/cli.js` (`#!/usr/bin/env node`); `bun run build` first. Named sessions via `--session`/`OPICE_BROWSER_SESSION` for parallel `opice-batch` authors.
 
 `reporter.ts` streams events to the platform and **auto-configures on import** from env (`OPICE_DSN` or individual `OPICE_*` vars). Reporting is **opt-in outside CI**: a local `bun test` while authoring would otherwise stream half-finished "running" runs to the shared dashboard. `OPICE_REPORT=always|never` overrides. Steps are fire-and-forget (drained by `flush()`); `POST /finish` is the **CLI's** job — the reporter writes a handoff file under `$TMPDIR/opice-handoffs/<pid>.json`, and `opice test` finalizes after `bun test` exits.
 

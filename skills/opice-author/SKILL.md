@@ -2,14 +2,15 @@
 name: opice-author
 description: >
   Author an opice E2E browser test from a human-readable scenario file.
-  Takes a `*.scenario.md`, walks the running app via agent-browser, picks
-  selectors (preferring `data-testid`), generates a `*.test.ts` using
-  `@opice/harness`, and verifies it passes by running `bun test`.
+  Takes a `*.scenario.md`, walks the running app via opice-browser (a stateful
+  Playwright browser), picks selectors (preferring `data-testid`, then
+  accessible roles/labels), generates a `*.test.ts` using `@opice/harness`, and
+  verifies it passes by running `bun test`.
 
   Trigger when the user says "/opice-author <file>", "write an opice test
   for this scenario", "generate opice test from <md file>", or hands you a
   *.scenario.md and asks for a test.
-allowed-tools: Bash(agent-browser:*), Bash(bun:*), Bash(git:*), Read, Edit, Write, Glob, Grep
+allowed-tools: Bash(opice-browser:*), Bash(bun:*), Bash(opice:*), Bash(git:*), Read, Edit, Write, Glob, Grep
 ---
 
 # opice-author — scenario → test
@@ -110,54 +111,64 @@ grep -q '@opice/harness' package.json || grep -r '@opice/harness' packages/*/pac
 
 If not installed, stop and tell the user to add it.
 
-### 3. Walk the scenario in agent-browser
+### 3. Walk the scenario in opice-browser
 
-Use a fresh session so it doesn't collide with anything else:
+`opice-browser` is a stateful Playwright browser: `launch` starts it (it
+persists between calls), then each verb drives the live page. The verbs are the
+**same vocabulary the test will use** — `byRole`/`byLabel`/`el` map 1:1 onto the
+harness DSL, so the walk is a transcript of the test you're about to write.
 
 ```bash
-agent-browser --session opice-author-$$ open <URL>#<Hash>
-agent-browser --session opice-author-$$ snapshot -i
+opice-browser launch <URL>#<Hash>
+opice-browser aria-snapshot main      # the agent's view of the page (ARIA tree)
 ```
 
 For each step:
 
-- **Snapshot** when you need fresh element refs (after a click or
-  navigation).
-- **Resolve a selector**, in this preference order:
-  1. `data-testid` if the element has one — `[data-testid="..."]`
-  2. A stable attribute or role from the a11y tree
-     (`button[aria-label="Save"]`, `[role="dialog"] input`)
-  3. Avoid index-based or class-only selectors — they break on UI changes.
-- **Perform the action** (click / fill / select).
-- **Verify the expectation** before moving on.
-- Record the selector you used. This is what goes into the generated test.
+- **`aria-snapshot`** to see what's on the page (roles + accessible names) after
+  a navigation or click. This is the agent's "what's on screen".
+- **Resolve a selector / locator**, in this preference order:
+  1. `data-testid` if the element has one — `opice-browser click <testid>` (a
+     bare word is a test-id). In the test: `el('<testid>')`.
+  2. An accessible role + name — `opice-browser byRole button click --name Save`.
+     In the test: `byRole('button', 'Save')`. Reliable now (real Playwright
+     gestures), so reach for it freely when you don't own the markup.
+  3. A `<label>` for form controls — `opice-browser byLabel Email fill --value …`
+     → `byLabel('Email')`.
+  4. Avoid index-based or class-only selectors — they break on UI changes.
+- **Perform the action** (`click` / `fill` / `press`) and watch it land.
+- **Verify the expectation** (`opice-browser text <sel>`, or re-snapshot).
+- Record the verb + selector you used. This is what goes into the test.
 
-If a step's expectation fails even though the action visibly worked,
-re-snapshot — you may have picked a brittle selector. Try a more stable
-one.
+If a domain flow needs a repeated multi-step gesture (e.g. a custom
+select widget), check for a repo `browser-tools.ts` — `opice-browser commands`
+lists any user-land verbs. Prefer a shared verb over hand-driving the sequence;
+the test can call it too (see step 4).
 
 If a step's action fails (element not present), tell the user. Don't
 fabricate selectors in the generated test that you couldn't make work
 live — that's the whole point of this skill.
+
+When done walking, `opice-browser quit` to free the browser (the test run in
+step 5 launches its own in-process browser — the daemon is authoring-only).
 
 ### 4. Generate the test file
 
 Use this template (see `test-template.ts` for the full version):
 
 ```ts
-import { test, expect, describe } from 'bun:test'
-import { browserTest, el, tid, waitFor, step } from '@opice/harness'
+import { test, describe } from 'bun:test'
+import { browserTest, el, byRole, byLabel, step, expect } from '@opice/harness'
 
 browserTest('<Scenario Title>', () => {
-	test('walkthrough', () => {
-		step('<step 1 description>', () => {
-			waitFor(() => el(tid('<test-id>')).exists)
-			expect(el(tid('<test-id>')).text).toContain('<text>')
+	test('walkthrough', async () => {
+		await step('<step 1 description>', async () => {
+			await expect(el('<test-id>')).toContainText('<text>')
 		})
 
-		step('<step 2 description>', () => {
-			el(tid('<button-id>')).click()
-			waitFor(() => el(tid('<expected>')).exists)
+		await step('<step 2 description>', async () => {
+			await byRole('button', 'Save').click()
+			await expect(el('<expected>')).toBeVisible()
 		})
 	}, 60_000)
 }, '<hash>')
@@ -165,18 +176,30 @@ browserTest('<Scenario Title>', () => {
 
 Notes:
 
+- **The DSL is async.** `el`/`byRole`/`byLabel` return Playwright `Locator`s;
+  every action and read is awaited. `step` bodies are `async` and each `step`
+  call is awaited. Forgetting an `await` is the most common authoring bug.
+- **Use retrying assertions, not manual polling.** `await expect(el(x))
+  .toHaveText(...)` / `.toContainText(...)` / `.toBeVisible()` auto-wait and
+  retry — they replace the old `waitFor(() => el(x).exists)` pattern and are far
+  less flaky. Keep `await waitFor(async () => …)` only for predicates that don't
+  map to a locator assertion.
+- `expect` comes from `@opice/harness` (Playwright's web-first `expect`), not
+  `bun:test` — import it from the harness. It also has the generic matchers
+  (`toBe`, `toEqual`) for non-locator assertions.
 - One top-level `test('walkthrough', ...)` keeps all steps in order in a
   single Bun test. If a step fails, the rest are skipped — what we want.
 - **Always pass the per-test timeout** (the `60_000` third arg). bun defaults
-  to 5s, but `waitFor` blocks synchronously and a real browser walk (first page
-  load, async data, a dev server compiling on the first request) blows past 5s
-  — you'd get a misleading `timed out after 5000ms` even though the assertions
-  are fine. Each `waitFor` still bounds itself; this just lifts the outer cap.
-- Use `tid('foo')` for `data-testid` selectors. Use raw selectors only
-  when there's no testid.
-- Wrap each scenario step in `step('description', () => {...})` —
+  to 5s, but a real browser walk (first page load, async data, a dev server
+  compiling on the first request) blows past 5s. Each retrying assertion still
+  bounds itself; this just lifts the outer cap.
+- Use a bare word in `el('foo')` for `data-testid`; `el('main h1')` (CSS chars)
+  for a raw selector. `byRole`/`byLabel` for accessible roles/labels.
+- A repo's user-land verb is callable in the test: `import { fullEnum } from
+  '../browser-tools'` then `await call(fullEnum, { … })` (typed against its
+  schema) — the same verb you used while walking.
+- Wrap each scenario step in `await step('description', async () => {...})` —
   the harness reporter captures duration + screenshot per step.
-- `waitFor` instead of fixed sleeps wherever the UI changes async.
 - **Source backlink:** the harness auto-captures the test file path and derives
   the sibling `*.scenario.md` (replacing `.test.ts`). As long as the test and
   scenario sit side by side with matching names, the platform links a failed
@@ -186,9 +209,10 @@ Notes:
 ### Parallel runs
 
 When dispatched by an `opice-author` agent (batch authoring), you'll be handed a
-unique browser session name like `opice-author-3`. Use it for **every**
-`agent-browser` call instead of `opice-author-$$` so concurrent authors don't
-share a browser. One scenario per agent.
+unique browser session name like `opice-author-3`. Pass it as `--session
+<name>` on **every** `opice-browser` call (or export `OPICE_BROWSER_SESSION`
+once) so concurrent authors each drive their own browser. One scenario per
+agent. Run `opice-browser --session <name> quit` when done.
 
 ### 5. Run and verify
 
@@ -231,17 +255,15 @@ Atomic add+commit per their global rules. Never `git add -A`.
 
 ## Edge cases
 
-- **Multiple `data-testid`s collide**: namespace via parent selector — see
-  `bindx/tests/browser/dataGrid.test.ts` for the `const scope = tid('datagrid-example')`
-  pattern, then `el(\`${scope} ${tid('row-0')}\`)`.
-- **Popovers / dialogs**: most use `role="dialog"`. After clicking the
-  trigger, `waitFor(() => el('[role="dialog"]').exists)` before
-  interacting with content inside.
-- **Async data**: prefer `waitFor` on a stable marker (e.g. a specific row
-  text) rather than fixed `wait(ms)`.
-- **No `data-testid` anywhere**: tell the user this will be brittle and
-  recommend adding testids first. Generate the test anyway with
-  best-effort selectors.
+- **Multiple matches (strict mode)**: a Locator that matches >1 element throws
+  on action. Narrow it — `el(\`${tid('datagrid')} ${tid('row-0')}\`)`, or
+  `byRole('button', 'Save').first()` when you genuinely mean the first.
+- **Popovers / dialogs**: `await expect(byRole('dialog')).toBeVisible()` after
+  clicking the trigger, then interact with content inside.
+- **Async data**: prefer a retrying `await expect(el(x)).toHaveText(...)` on a
+  stable marker over fixed `await wait(ms)`.
+- **No `data-testid` anywhere**: `byRole`/`byLabel` are reliable now, so prefer
+  them over CSS; still suggest the user add test-ids for the most brittle spots.
 
 ## Files in this skill
 

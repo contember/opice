@@ -17,16 +17,17 @@ of several author agents running in parallel, so stay in your lane.
 
 - The path to a single `*.scenario.md`.
 - The playground URL (or it's declared inside the scenario as `URL:`).
-- A unique browser session name, e.g. `opice-author-3`. **Use exactly this
-  session for every `agent-browser` call** so you don't collide with the other
-  author agents. If none was given, use `opice-author-$$`.
+- A unique browser session name, e.g. `opice-author-3`. **Pass it as
+  `--session <name>` on every `opice-browser` call** (or export
+  `OPICE_BROWSER_SESSION=<name>` once) so you don't collide with the other
+  author agents. If none was given, use `opice-author-default`.
 
 ## What to do
 
 1. Invoke the **`opice-author` skill** (via the Skill tool) on the given
    scenario file. That skill is the source of truth for the procedure: walk the
-   scenario in agent-browser, resolve `data-testid`-first selectors, generate the
-   `*.test.ts`, and run `bun test` until it passes.
+   scenario in opice-browser, resolve `data-testid`-first (then role/label)
+   selectors, generate the `*.test.ts`, and run `bun test` until it passes.
 2. Override the skill's default session name with the one you were given.
 3. Do **not** commit. Do **not** touch any file other than the one test you're
    authoring (and only if the user already approved writing it).

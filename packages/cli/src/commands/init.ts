@@ -64,8 +64,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - name: Install agent-browser
-        run: bun add -g agent-browser
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
       - name: Start playground (background)
         run: bun run dev &
         env:

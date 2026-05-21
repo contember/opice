@@ -9,7 +9,7 @@ description: >
 
   Trigger on "/opice-batch", "author all the opice scenarios", "generate tests
   for these scenarios", or any request to author more than a couple at once.
-allowed-tools: Agent, Bash(agent-browser:*), Bash(bun:*), Read, Glob, Grep
+allowed-tools: Agent, Bash(opice-browser:*), Bash(bun:*), Read, Glob, Grep
 ---
 
 # opice-batch — author many scenarios via parallel agents
@@ -32,9 +32,8 @@ orchestrator (you) only holds the verdicts.
 
 - Glob the scenario files. List them. Confirm the set with the user if it's
   large or the output paths would overwrite existing tests.
-- Confirm the playground is running (`curl -sf <URL>` or an `agent-browser`
-  probe). If it isn't, start it or tell the user — don't dispatch agents at a
-  dead app.
+- Confirm the playground is running (`curl -sf <URL>`). If it isn't, start it or
+  tell the user — don't dispatch agents at a dead app.
 
 ### 2. Fan out, capped
 

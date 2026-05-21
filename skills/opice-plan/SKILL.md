@@ -9,7 +9,7 @@ description: >
   Trigger when the user says "/opice-plan", "plan opice scenarios for …",
   "what should we E2E test here", or hands you a feature/app and asks for test
   scenarios.
-allowed-tools: Bash(agent-browser:*), Read, Write, Glob, Grep
+allowed-tools: Bash(opice-browser:*), Read, Write, Glob, Grep
 ---
 
 # opice-plan — brief → scenarios
@@ -43,14 +43,15 @@ not. Aim for scenarios a reviewer can confirm at a glance.
 Use a throwaway session:
 
 ```bash
-agent-browser --session opice-plan-$$ open <URL>
-agent-browser --session opice-plan-$$ snapshot -i
+opice-browser --session opice-plan launch <URL>
+opice-browser --session opice-plan aria-snapshot main
 ```
 
 Walk the surface enough to ground scenarios in reality — what pages, controls,
 roles, and states actually exist. You're mapping the territory, **not** resolving
 selectors or proving steps. Visit the main routes/hashes the brief touches.
-Note where `data-testid`s exist (good) or are missing (flag it).
+Note where `data-testid`s exist (good) or are missing (flag it). Run
+`opice-browser --session opice-plan quit` when done.
 
 Stay lightweight: a few snapshots across the relevant screens, not an
 exhaustive crawl. If the app needs auth or seeded data to reach a flow, note it

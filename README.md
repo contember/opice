@@ -9,14 +9,14 @@ AI-driven E2E browser test harness. Human-readable scenarios → LLM-generated t
 A monkey-testing harness (hence "opice") for web apps:
 
 1. You write a human-readable scenario in markdown (`login.scenario.md`).
-2. The `opice-author` Claude Code skill walks the running app via [`agent-browser`](https://github.com/.../agent-browser), generates a `*.test.ts` file with `data-testid` selectors, verifies it passes, commits.
+2. The `opice-author` Claude Code skill walks the running app via `opice-browser` (a stateful [Playwright](https://playwright.dev) browser), generates a `*.test.ts` file with `data-testid`/role/label selectors, verifies it passes, commits.
 3. CI runs the generated tests deterministically (no LLM in the loop) via `opice test`, streaming results + screenshots to the central reporting platform.
 4. The dashboard SPA shows the runs / scenarios / steps / screenshots, type-safely fetched via the worker's tRPC-like `/rpc` endpoint.
 
 ## Architecture
 
 - **Tests live in your repo.** Reviewed in PRs, atomic with UI changes, debuggable locally.
-- **Browser runs in CI** (or locally), driven by `agent-browser` CLI. No remote browser farm.
+- **Browser runs in CI** (or locally) — Playwright in-process under `bun test`. No remote browser farm.
 - **Reporting platform on Cloudflare:** Worker (`/api/v1/*` ingest, `/rpc` for dashboard, `/screenshots/*` proxy), D1 for run metadata, R2 for screenshots, served SPA via `ASSETS` binding.
 - **Dashboard SPA** with buzola routing + React Query, RPC client typed from the worker's `AppRouter`.
 - **AI authoring is local** — Claude Code skill on your machine. No server-side LLM.
@@ -26,7 +26,8 @@ A monkey-testing harness (hence "opice") for web apps:
 ```
 opice/
 ├── packages/
-│   ├── harness/    # @opice/harness — runtime: el(), tid(), waitFor(), browserTest(), step()
+│   ├── harness/    # @opice/harness — Playwright runtime: el(), byRole(), browserTest(), step(), command()
+│   ├── browser/    # @opice/browser — opice-browser: stateful Playwright CLI for authoring (CDP)
 │   ├── worker/     # CF Worker — D1 + R2 + ingest API + /rpc + dashboard ASSETS
 │   ├── dashboard/  # React SPA (buzola + react-query), built into worker/ASSETS
 │   └── cli/        # opice CLI — init + test wrapper

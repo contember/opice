@@ -10,7 +10,7 @@ description: >
   Trigger when the user says "/opice-reeval <url>", "look at this failed run
   <url>", "this opice run failed, fix it", "re-eval the failing CI", or pastes a
   dashboard run link and asks what broke.
-allowed-tools: Bash(opice:*), Bash(bunx opice:*), Bash(agent-browser:*), Bash(bun:*), Bash(gh:*), Bash(curl:*), Bash(git:*), Read, Edit, Write, Glob, Grep
+allowed-tools: Bash(opice:*), Bash(bunx opice:*), Bash(opice-browser:*), Bash(bun:*), Bash(gh:*), Bash(curl:*), Bash(git:*), Read, Edit, Write, Glob, Grep
 ---
 
 # opice-reeval — diagnose & fix a failed run
@@ -93,16 +93,16 @@ Reproduce the scenario in a real browser the same way `opice-author` does —
 re-snapshot, follow the scenario's steps, and find where reality diverges:
 
 ```bash
-agent-browser --session opice-reeval-$$ open <URL>#<hash>
-agent-browser --session opice-reeval-$$ snapshot -i
+opice-browser launch <URL>#<hash>
+opice-browser aria-snapshot main      # the agent's view; re-run after each step
 ```
 
 Classify the divergence:
 
 - **Selector drift** (testid/label/role changed, element moved): update the
-  selector to a stable one. Test fix. ✔
-- **Timing** (assertion ran before async UI settled): replace fixed waits with
-  `waitFor` on a stable marker. Test fix. ✔
+  selector/locator to a stable one (`el`/`byRole`/`byLabel`). Test fix. ✔
+- **Timing** (assertion ran before async UI settled): replace fixed waits with a
+  retrying `await expect(el(x)).toHaveText(...)` on a stable marker. Test fix. ✔
 - **Scenario wrong** (the scenario described behaviour the app never had / no
   longer should have): the scenario is the bug — update the `*.scenario.md` and
   regenerate the step, and say so. ✔ (with the user's nod)
