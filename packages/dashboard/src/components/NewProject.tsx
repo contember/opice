@@ -7,7 +7,6 @@ interface Created {
 	slug: string
 	name: string
 	apiKey: string
-	readToken: string
 }
 
 /**

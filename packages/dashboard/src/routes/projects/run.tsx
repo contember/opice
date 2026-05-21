@@ -1,11 +1,12 @@
 import { createPage, Link } from '@buzola/router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ChevronIcon, ClockIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { Polaroid } from '../../components/Polaroid'
 import { ResultStrip } from '../../components/Stat'
 import { StatusMark, StatusMarkInline } from '../../components/StatusBadge'
+import { useSession } from '../../lib/auth-client'
 import { rpc } from '../../lib/client'
 import { fmtDate, fmtDuration, fmtRelative } from '../../lib/format'
 
@@ -67,7 +68,7 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 
 			<ResultStrip run={r} />
 
-			<ShareLink slug={slug} runId={r.id} readToken={project.data.readToken} />
+			<ShareManager slug={slug} runId={r.id} />
 
 			<div className="section-head">
 				<span className="label">Scenarios</span>
@@ -99,28 +100,97 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	)
 }
 
-function ShareLink({ slug, runId, readToken }: { slug: string; runId: string; readToken: string | null }) {
+/**
+ * Operator-only share management. Mints/lists/revokes read-only links scoped to
+ * *this run* (a `read` token with `run_id` set). Hidden for share-link visitors
+ * (no session) — they already arrived via such a link, and the `shares.*` RPCs
+ * require the `write` capability they don't have.
+ */
+function ShareManager({ slug, runId }: { slug: string; runId: string }) {
+	const { data: session } = useSession()
+	const queryClient = useQueryClient()
 	const origin = typeof window !== 'undefined' ? window.location.origin : ''
-	const url = `${origin}/p/${slug}/r/${runId}${readToken ? `?token=${readToken}` : ''}`
-	const [copied, setCopied] = useState(false)
+	const [minted, setMinted] = useState<string | null>(null)
 
+	const shares = useQuery({
+		queryKey: ['shares.list', runId],
+		queryFn: () => rpc.shares.list({ runId }),
+		enabled: !!session,
+	})
+
+	const create = useMutation({
+		mutationFn: () => rpc.shares.create({ runId }),
+		onSuccess: ({ token }) => {
+			setMinted(`${origin}/p/${slug}/r/${runId}?token=${token}`)
+			queryClient.invalidateQueries({ queryKey: ['shares.list', runId] })
+		},
+	})
+
+	const revoke = useMutation({
+		mutationFn: (tokenId: string) => rpc.shares.revoke({ tokenId }),
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shares.list', runId] }),
+	})
+
+	// Share-link visitors (no session) don't manage shares.
+	if (!session) return null
+
+	return (
+		<div className="share-link">
+			<div className="share-head">
+				<span className="share-label">Read-only links</span>
+				<button type="button" className="share-copy" onClick={() => create.mutate()} disabled={create.isPending}>
+					{create.isPending ? 'Creating…' : '+ Create link'}
+				</button>
+			</div>
+
+			{minted && (
+				<div className="share-minted">
+					<CopyUrl url={minted} />
+					<span className="share-hint">Shown once — copy it now. It grants read-only access to this run only.</span>
+				</div>
+			)}
+
+			{shares.data && shares.data.length > 0 ? (
+				<ul className="share-list">
+					{shares.data.map((s) => (
+						<li key={s.id} className="share-row">
+							<code className="share-id">{s.id.slice(0, 8)}…</code>
+							<span className="share-meta">
+								{s.expiresAt ? `expires ${fmtRelative(s.expiresAt)}` : 'no expiry'}
+								{s.lastUsedAt ? ` · used ${fmtRelative(s.lastUsedAt)}` : ' · never used'}
+							</span>
+							<button
+								type="button"
+								className="share-copy"
+								onClick={() => revoke.mutate(s.id)}
+								disabled={revoke.isPending}
+							>
+								Revoke
+							</button>
+						</li>
+					))}
+				</ul>
+			) : (
+				<span className="share-hint">No active share links. Anyone with a link can view this run read-only.</span>
+			)}
+		</div>
+	)
+}
+
+function CopyUrl({ url }: { url: string }) {
+	const [copied, setCopied] = useState(false)
 	const copy = () => {
 		void navigator.clipboard.writeText(url).then(() => {
 			setCopied(true)
 			setTimeout(() => setCopied(false), 1500)
 		})
 	}
-
 	return (
-		<div className="share-link">
-			<span className="share-label">Read-only link</span>
+		<div className="share-copy-row">
 			<code className="share-url">{url}</code>
 			<button type="button" className="share-copy" onClick={copy}>
 				{copied ? 'Copied' : 'Copy'}
 			</button>
-			{!readToken && (
-				<span className="share-hint">No project read token yet — link works only with the global token or a logged-in session.</span>
-			)}
 		</div>
 	)
 }
