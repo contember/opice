@@ -1,8 +1,9 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, launchPage } from './context.js'
+import { closePage, getContext, launchPage } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter } from './reporter.js'
+import { loadUserSetup } from './setup.js'
 
 /**
  * `bun:test` is resolved lazily, at the moment `browserTest` registers a
@@ -94,6 +95,11 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 				currentScenarioId = null
 			}
 			const page = await launchPage()
+			// Repo-level context setup (browser-setup.ts) runs before the first
+			// navigation, so an addInitScript it registers fires before the app's
+			// own scripts on first paint.
+			const setup = await loadUserSetup()
+			if (setup) await setup(getContext())
 			const base = opts.url ?? PLAYGROUND_URL
 			const url = opts.hash ? `${base}#${opts.hash}` : base
 			await page.goto(url)

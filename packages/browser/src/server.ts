@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer, type Socket } from 'node:net'
 import { mkdirSync, rmSync } from 'node:fs'
-import { runCommand, type Command } from '@opice/harness'
+import { loadUserSetup, runCommand, type Command } from '@opice/harness'
 import { chromium, type Browser, type Page } from 'playwright'
 import { buildArgs, buildRegistry } from './builtins.js'
 import { profileDir, type Session, sessionFile, socketPath, writeSession } from './session.js'
@@ -56,13 +56,22 @@ export async function runServer(opts: ServeOptions): Promise<void> {
 	const userDataDir = profileDir()
 	mkdirSync(userDataDir, { recursive: true })
 
+	// Always boot Chrome on about:blank, never the requested URL: the launch URL
+	// is navigated via Playwright below (after browser-setup.ts runs), so its
+	// init scripts apply to the first real paint just like in a test.
 	const chrome = spawn(chromium.executablePath(), [
 		`--remote-debugging-port=${port}`,
 		`--user-data-dir=${userDataDir}`,
 		'--no-first-run',
 		'--no-default-browser-check',
+		// Match the test harness's default viewport. A connectOverCDP page has no
+		// Playwright viewport emulation, so without this the headless window is
+		// ~800×600 and portalled content (a popover's lower options, a long form)
+		// renders off-fold — Playwright then refuses to click "outside of the
+		// viewport". Keep authoring and tests seeing the same layout.
+		'--window-size=1280,720',
 		...(opts.headed ? [] : ['--headless=new']),
-		opts.url ?? 'about:blank',
+		'about:blank',
 	], { detached: true, stdio: 'ignore' })
 	chrome.unref()
 	if (chrome.pid == null) throw new Error('Failed to spawn Chrome')
@@ -83,6 +92,13 @@ export async function runServer(opts: ServeOptions): Promise<void> {
 	} catch {
 		// non-fatal: focus-trap popovers may close between verbs without it
 	}
+
+	// Repo-level context setup (browser-setup.ts) before the first navigation —
+	// the same hook the test harness runs, so the authored page matches the test
+	// page (e.g. both suppress dev-only chrome via an addInitScript flag).
+	const setup = await loadUserSetup()
+	if (setup) await setup(context)
+	if (opts.url) await page.goto(opts.url)
 
 	const registry: Map<string, Command> = await buildRegistry()
 

@@ -18,6 +18,9 @@ export type { OpiceDsn } from './dsn.js'
 export { command, call, runCommand, makeCtx, loadUserCommands, findUserCommandsFile, z } from './command.js'
 export type { Command, CommandCtx } from './command.js'
 
+export { loadUserSetup, findUserSetupFile } from './setup.js'
+export type { BrowserSetup } from './setup.js'
+
 // Playwright's web-first `expect` (retrying locator matchers + generic matchers)
 // works under `bun:test`; re-export it so tests use a single `expect`.
 export { expect } from '@playwright/test'

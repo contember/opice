@@ -111,6 +111,28 @@ import { fullEnum } from '../browser-tools'
 await call(fullEnum, { label: 'Typ', option: 'Faktura' })
 ```
 
+### Context setup (user-land)
+
+Export `setup(context)` from `<repo>/browser-setup.ts` to configure the browser
+**context** once, **before the first navigation** — on both faces (the test
+harness runs it in `beforeAll` before `page.goto`; the `opice-browser` server
+runs it after connecting, before navigating to the launch URL). Because it runs
+pre-navigation, an `addInitScript` here fires before the app's own scripts on
+first paint — the place to seed storage/cookies, grant permissions, or set a
+boot-time flag (e.g. "automated run — skip dev-only chrome"). Keep it
+idempotent.
+
+```ts
+// browser-setup.ts
+import type { BrowserSetup } from '@opice/harness'
+
+export const setup: BrowserSetup = async (context) => {
+  await context.addInitScript(() => {
+    try { localStorage.setItem('app:e2e', '1') } catch {}
+  })
+}
+```
+
 ### Misc
 
 - `screenshot(path?)` — saves a PNG, returns the path (default under `/tmp/`).
