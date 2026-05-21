@@ -1,12 +1,19 @@
-import { authenticateProject } from '../auth'
 import { badRequest, json, notFound, readJson, unauthorized } from '../http'
+import { authenticate, has } from '../principal'
 import type { Services } from '../services'
 import type { Project, StepStatus } from '../types'
 
 const ACCEPTED_STATUSES: readonly StepStatus[] = ['passed', 'failed']
 
 export async function handleIngest(request: Request, services: Services, path: string[]): Promise<Response> {
-	const project = await authenticateProject(request, services.db)
+	// Ingest needs a write capability scoped to exactly one project: a CI/local
+	// write token. (Sessions and admin tokens carry write too, but the scope must
+	// resolve to a single project — reporting always targets one project.)
+	const principal = await authenticate(request, services)
+	if (!principal || !has(principal, 'write') || principal.scope.kind !== 'project') {
+		return unauthorized()
+	}
+	const project = await services.db.getProjectBySlug(principal.scope.slug)
 	if (!project) {
 		return unauthorized()
 	}

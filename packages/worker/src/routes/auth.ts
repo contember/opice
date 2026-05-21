@@ -5,7 +5,7 @@ import type { Services } from '../services'
  * get-session, …).
  *
  * Self-service signup is closed: opice accounts are created by an operator
- * (`POST /api/v1/admin/users` / `opice users create`). We block the public
+ * (the `admin.createUser` RPC / `opice users create`). We block the public
  * `/auth/sign-up/*` route here so the only way in is an operator-issued
  * account. Everything else passes straight through to BetterAuth.
  */

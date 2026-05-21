@@ -1,4 +1,4 @@
-import { readAccessRedirect } from '../read-gate'
+import { readAccessRedirect } from '../principal'
 import type { Services } from '../services'
 
 /**

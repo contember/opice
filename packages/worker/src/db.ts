@@ -1,4 +1,4 @@
-import type { Project, Run, RunSource, RunStatus, Scenario, ScenarioStatus, Step, StepStatus } from './types'
+import type { Capability, Project, Run, RunSource, RunStatus, Scenario, ScenarioStatus, Step, StepStatus, Token } from './types'
 
 // A run with no ingest activity for this long is considered abandoned: the
 // reaper finalizes it as 'incomplete', and reads display it that way even
@@ -11,9 +11,22 @@ interface ProjectRow {
 	id: number
 	slug: string
 	name: string
-	api_key_hash: string
-	read_token: string | null
 	created_at: number
+}
+
+interface TokenRow {
+	id: string
+	token_hash: string
+	capability: Capability
+	project_id: number | null
+	project_slug: string | null
+	run_id: string | null
+	label: string | null
+	created_by: string | null
+	created_at: number
+	expires_at: number | null
+	last_used_at: number | null
+	revoked_at: number | null
 }
 
 interface RunRow {
@@ -84,9 +97,22 @@ const toProject = (r: ProjectRow): Project => ({
 	id: r.id,
 	slug: r.slug,
 	name: r.name,
-	apiKeyHash: r.api_key_hash,
-	readToken: r.read_token,
 	createdAt: r.created_at,
+})
+
+const toToken = (r: TokenRow): Token => ({
+	id: r.id,
+	tokenHash: r.token_hash,
+	capability: r.capability,
+	projectId: r.project_id,
+	projectSlug: r.project_slug,
+	runId: r.run_id,
+	label: r.label,
+	createdBy: r.created_by,
+	createdAt: r.created_at,
+	expiresAt: r.expires_at,
+	lastUsedAt: r.last_used_at,
+	revokedAt: r.revoked_at,
 })
 
 const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => ({
@@ -133,18 +159,16 @@ const toStep = (r: StepRow): Step => ({
 export class Db {
 	constructor(private readonly d1: D1Database) {}
 
-	async createProject(input: { slug: string; name: string; apiKeyHash: string; readToken: string }): Promise<Project> {
+	async createProject(input: { slug: string; name: string }): Promise<Project> {
 		const createdAt = Date.now()
 		const result = await this.d1
-			.prepare('INSERT INTO projects (slug, name, api_key_hash, read_token, created_at) VALUES (?, ?, ?, ?, ?)')
-			.bind(input.slug, input.name, input.apiKeyHash, input.readToken, createdAt)
+			.prepare('INSERT INTO projects (slug, name, created_at) VALUES (?, ?, ?)')
+			.bind(input.slug, input.name, createdAt)
 			.run()
 		return {
 			id: Number(result.meta.last_row_id),
 			slug: input.slug,
 			name: input.name,
-			apiKeyHash: input.apiKeyHash,
-			readToken: input.readToken,
 			createdAt,
 		}
 	}
@@ -154,18 +178,81 @@ export class Db {
 		return row ? toProject(row) : null
 	}
 
-	async getProjectByApiKeyHash(hash: string): Promise<Project | null> {
-		const row = await this.d1.prepare('SELECT * FROM projects WHERE api_key_hash = ?').bind(hash).first<ProjectRow>()
-		return row ? toProject(row) : null
+	// ---- Tokens (machine + share credentials; see migration 0003) -----------
+
+	/** Mint a token row. The caller hashes the secret; we never see plaintext. */
+	async createToken(input: {
+		id: string
+		tokenHash: string
+		capability: Capability
+		projectId?: number | null
+		runId?: string | null
+		label?: string | null
+		createdBy?: string | null
+		expiresAt?: number | null
+	}): Promise<void> {
+		await this.d1
+			.prepare(`INSERT INTO tokens (id, token_hash, capability, project_id, run_id, label, created_by, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.bind(
+				input.id,
+				input.tokenHash,
+				input.capability,
+				input.projectId ?? null,
+				input.runId ?? null,
+				input.label ?? null,
+				input.createdBy ?? null,
+				Date.now(),
+				input.expiresAt ?? null,
+			)
+			.run()
 	}
 
-	async getProjectByReadToken(token: string): Promise<Project | null> {
-		const row = await this.d1.prepare('SELECT * FROM projects WHERE read_token = ?').bind(token).first<ProjectRow>()
-		return row ? toProject(row) : null
+	/** Resolve a token by its secret's hash, joining the project slug for scope. */
+	async getTokenByHash(tokenHash: string): Promise<Token | null> {
+		const row = await this.d1
+			.prepare(`SELECT t.*, p.slug AS project_slug
+				FROM tokens t LEFT JOIN projects p ON p.id = t.project_id
+				WHERE t.token_hash = ?`)
+			.bind(tokenHash)
+			.first<TokenRow>()
+		return row ? toToken(row) : null
 	}
 
-	async setReadToken(slug: string, token: string): Promise<void> {
-		await this.d1.prepare('UPDATE projects SET read_token = ? WHERE slug = ?').bind(token, slug).run()
+	async getTokenById(id: string): Promise<Token | null> {
+		const row = await this.d1
+			.prepare(`SELECT t.*, p.slug AS project_slug
+				FROM tokens t LEFT JOIN projects p ON p.id = t.project_id
+				WHERE t.id = ?`)
+			.bind(id)
+			.first<TokenRow>()
+		return row ? toToken(row) : null
+	}
+
+	/** List active (non-revoked) tokens for a project, or all when projectId is null. */
+	async listTokens(projectId: number | null): Promise<Token[]> {
+		const query = projectId == null
+			? this.d1.prepare(`SELECT t.*, p.slug AS project_slug FROM tokens t
+				LEFT JOIN projects p ON p.id = t.project_id
+				WHERE t.revoked_at IS NULL ORDER BY t.created_at DESC`)
+			: this.d1.prepare(`SELECT t.*, p.slug AS project_slug FROM tokens t
+				LEFT JOIN projects p ON p.id = t.project_id
+				WHERE t.revoked_at IS NULL AND t.project_id = ? ORDER BY t.created_at DESC`).bind(projectId)
+		const { results } = await query.all<TokenRow>()
+		return results.map(toToken)
+	}
+
+	async revokeToken(id: string): Promise<boolean> {
+		const result = await this.d1
+			.prepare('UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+			.bind(Date.now(), id)
+			.run()
+		return (result.meta.changes ?? 0) > 0
+	}
+
+	/** Best-effort activity stamp for audit; failures are non-fatal to the request. */
+	async touchToken(id: string): Promise<void> {
+		await this.d1.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(Date.now(), id).run()
 	}
 
 	async listProjects(): Promise<Project[]> {

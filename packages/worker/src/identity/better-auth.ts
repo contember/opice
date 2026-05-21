@@ -1,4 +1,5 @@
 import { type Auth, betterAuth, type BetterAuthOptions } from 'better-auth'
+import { admin } from 'better-auth/plugins'
 
 export interface AuthConfig {
 	/** Signing secret for session cookies/tokens. Must be ≥ 32 chars. */
@@ -24,13 +25,18 @@ export interface AuthFactoryDeps {
 
 /**
  * Opice's BetterAuth instance: email + password only. No email verification,
- * no password-reset mail, no social providers — opice ships no mailer. There
- * is a single implicit role: every account is a full-access admin.
+ * no password-reset mail, no social providers — opice ships no mailer.
+ *
+ * The `admin` plugin adds a `role` column to the user table. Opice reads it in
+ * `principal.ts` to map a session to capabilities: `admin` → full access,
+ * `member` → read+write (no user/token management). New accounts default to
+ * `admin` (the historical "every account is a full operator"), explicitly
+ * downgradable via `admin.createUser`.
  *
  * Self-service signup is intentionally NOT disabled at the config level (the
  * server-side `auth.api.signUpEmail` we use for operator-created accounts must
  * keep working); instead the public `/auth/sign-up/*` route is blocked in
- * `routes/auth.ts`. Accounts are created via `POST /api/v1/admin/users`.
+ * `routes/auth.ts`. Accounts are created via the `admin.createUser` RPC.
  */
 export function buildAuthOptions(deps: AuthFactoryDeps): BetterAuthOptions {
 	const { config, database } = deps
@@ -40,9 +46,10 @@ export function buildAuthOptions(deps: AuthFactoryDeps): BetterAuthOptions {
 		secret: config.secret,
 		basePath: '/auth',
 		database,
+		plugins: [admin({ defaultRole: 'admin', adminRoles: ['admin'] })],
 		session: {
 			// Stash the session in a short-lived signed cookie so the per-request
-			// `getSession` in the read gate doesn't hit AUTH_DB on every call.
+			// `getSession` in the resolver doesn't hit AUTH_DB on every call.
 			cookieCache: { enabled: true, maxAge: 5 * 60 },
 		},
 		emailAndPassword: {

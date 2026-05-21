@@ -8,7 +8,7 @@ export interface Env {
 	AUTH_DB: D1Database
 	SCREENSHOTS: R2Bucket
 	ASSETS: Fetcher
-	READ_TOKEN: string
+	/** Bootstrap root-admin credential (Bearer). Lets an operator mint the first user/token. */
 	ADMIN_TOKEN: string
 	/** BetterAuth session signing secret (≥ 32 chars). */
 	BETTER_AUTH_SECRET: string

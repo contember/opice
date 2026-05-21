@@ -12,13 +12,38 @@ export type RunStatus = ScenarioStatus | 'incomplete'
 export type StepStatus = 'passed' | 'failed'
 export type RunSource = 'ci' | 'local'
 
+/**
+ * What a credential is allowed to do. `read` < `write` < `admin` in privilege,
+ * but they are tracked as an explicit set per principal rather than a level, so
+ * a CI key can be `write`-only without implying `read` of the dashboard.
+ */
+export type Capability = 'read' | 'write' | 'admin'
+
 export interface Project {
 	id: number
 	slug: string
 	name: string
-	apiKeyHash: string
-	readToken: string | null
 	createdAt: number
+}
+
+/**
+ * A machine / share credential (see migration 0003). The plaintext secret is
+ * never stored — only `tokenHash`. `projectSlug` is denormalized in on read via
+ * a join so the resolver can build a scope without a second query.
+ */
+export interface Token {
+	id: string
+	tokenHash: string
+	capability: Capability
+	projectId: number | null
+	projectSlug: string | null
+	runId: string | null
+	label: string | null
+	createdBy: string | null
+	createdAt: number
+	expiresAt: number | null
+	lastUsedAt: number | null
+	revokedAt: number | null
 }
 
 export interface Run {

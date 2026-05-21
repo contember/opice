@@ -190,8 +190,10 @@ broken pipeline. The usual causes:
 
 - **DSN model:** \`OPICE_DSN\` is the one value to set (locally + CI). Individual
   \`OPICE_*\` vars override it if present.
-- **Auth/roles:** the dashboard is email+password; everyone who logs in is an
-  admin. Shareable read-only links use \`?token=…\`.
+- **Auth/roles:** the dashboard is email+password (BetterAuth); accounts are
+  operator-created and default to the \`admin\` role. Reporting authenticates with
+  the project's write API key (the \`OPICE_DSN\`). Shareable read-only links are
+  minted per-run from the run page and carry a \`?token=…\` scoped to that one run.
 - Done well, the loop is: write a scenario → author a test → CI runs it
   deterministically → results land in the dashboard.
 `

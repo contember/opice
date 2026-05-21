@@ -11,14 +11,17 @@ import { D1Dialect } from './identity/d1-dialect'
 export interface Services {
 	readonly db: Db
 	readonly auth: AuthInstance
+	/** Raw BetterAuth D1, for the few operator ops not exposed by the auth API (role set). */
+	readonly authDb: D1Database
 	readonly screenshots: R2Bucket
 	readonly assets: Fetcher
 	readonly config: Config
 }
 
 export interface Config {
-	readonly readToken: string
+	/** Bootstrap root-admin credential (Bearer). Mints the first account/token. */
 	readonly adminToken: string
+	/** Deploy environment name; `local` disables the auth gate (see principal.ts). */
 	readonly environment: string
 }
 
@@ -35,10 +38,10 @@ export function buildServices(env: Env): Services {
 					: {}),
 			},
 		}),
+		authDb: env.AUTH_DB,
 		screenshots: env.SCREENSHOTS,
 		assets: env.ASSETS,
 		config: {
-			readToken: env.READ_TOKEN,
 			adminToken: env.ADMIN_TOKEN,
 			environment: env.ENVIRONMENT,
 		},

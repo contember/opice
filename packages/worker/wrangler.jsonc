@@ -25,7 +25,6 @@
 	},
 	"vars": {
 		"ENVIRONMENT": "local",
-		"READ_TOKEN": "",
 		"ADMIN_TOKEN": "local-admin",
 		"BETTER_AUTH_SECRET": "local-dev-better-auth-secret-not-for-production",
 		"BETTER_AUTH_URL": "",

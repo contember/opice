@@ -1,5 +1,4 @@
 import type { Env } from './env'
-import { handleAdmin } from './routes/admin'
 import { handleAuth } from './routes/auth'
 import { handleDashboard } from './routes/dashboard'
 import { handleIngest } from './routes/ingest'
@@ -29,10 +28,6 @@ async function route(request: Request, services: Services): Promise<Response> {
 
 	if (path.startsWith('/auth/')) {
 		return handleAuth(request, services, path.slice('/auth/'.length))
-	}
-	if (path.startsWith('/api/v1/admin/')) {
-		const segments = path.slice('/api/v1/admin/'.length).split('/').filter(Boolean)
-		return handleAdmin(request, services, segments)
 	}
 	if (path.startsWith('/api/v1/')) {
 		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)
