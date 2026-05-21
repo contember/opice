@@ -30,6 +30,8 @@ export interface ReporterConfig {
 
 export interface StepEvent {
 	scenarioId: string
+	/** Authoring order within the scenario, assigned at step() call time. */
+	sequence: number
 	name: string
 	status: 'passed' | 'failed'
 	durationMs: number
@@ -136,6 +138,7 @@ class HttpReporter implements Reporter {
 			? await this.encodeScreenshot(event.screenshotPath)
 			: undefined
 		await this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+			sequence: event.sequence,
 			name: event.name,
 			status: event.status,
 			durationMs: event.durationMs,

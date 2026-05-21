@@ -229,17 +229,27 @@ export class Db {
 
 	async createStep(input: {
 		scenarioId: string
+		/**
+		 * Authoring order from the harness. Authoritative when provided —
+		 * step POSTs arrive fire-and-forget, so deriving order from arrival
+		 * (MAX+1) reshuffles them by screenshot-encoding latency. Older
+		 * clients omit it; fall back to MAX+1 for those.
+		 */
+		sequence?: number
 		name: string
 		status: StepStatus
 		durationMs: number
 		error?: string
 		screenshotKey?: string
 	}): Promise<number> {
-		const next = await this.d1
-			.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS next FROM steps WHERE scenario_id = ?')
-			.bind(input.scenarioId)
-			.first<{ next: number }>()
-		const sequence = next?.next ?? 0
+		let sequence = input.sequence
+		if (typeof sequence !== 'number') {
+			const next = await this.d1
+				.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS next FROM steps WHERE scenario_id = ?')
+				.bind(input.scenarioId)
+				.first<{ next: number }>()
+			sequence = next?.next ?? 0
+		}
 		const result = await this.d1
 			.prepare(`INSERT INTO steps (scenario_id, sequence, name, status, duration_ms, error, screenshot_r2_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(

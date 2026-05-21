@@ -73,6 +73,7 @@ async function createStep(
 	scenarioId: string,
 ): Promise<Response> {
 	const body = await readJson<{
+		sequence?: number
 		name?: string
 		status?: StepStatus
 		durationMs?: number
@@ -85,6 +86,7 @@ async function createStep(
 
 	const stepId = await services.db.createStep({
 		scenarioId,
+		sequence: typeof body.sequence === 'number' ? body.sequence : undefined,
 		name: body.name,
 		status: body.status,
 		durationMs: body.durationMs,

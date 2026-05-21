@@ -51,6 +51,11 @@ function defaultScenarioFile(testFile: string | undefined): string | undefined {
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
+// Monotonic per-scenario step counter. Assigned synchronously at each step()
+// call so order reflects authoring order — step records are POSTed
+// fire-and-forget and would otherwise be sequenced by arrival order at the
+// worker, which screenshot-encoding latency can reshuffle.
+let currentScenarioStepSeq = 0
 
 /**
  * Register a top-level browser test scenario.
@@ -71,6 +76,7 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			setSession(session)
 			currentScenarioStart = Date.now()
 			currentScenarioFailures = 0
+			currentScenarioStepSeq = 0
 			try {
 				currentScenarioId = await reporter.startScenario({ name, hash: opts.hash, testFile, scenarioFile })
 			} catch {
@@ -126,6 +132,8 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
  */
 export function step(name: string, fn: () => void): void {
 	const reporter = getReporter()
+	// Capture order at call time, before the fire-and-forget record below.
+	const sequence = currentScenarioStepSeq++
 	const start = Date.now()
 	let status: 'passed' | 'failed' = 'passed'
 	let error: string | undefined
@@ -147,6 +155,7 @@ export function step(name: string, fn: () => void): void {
 		if (currentScenarioId) {
 			void reporter.recordStep({
 				scenarioId: currentScenarioId,
+				sequence,
 				name,
 				status,
 				durationMs,
