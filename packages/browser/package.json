@@ -1,0 +1,33 @@
+{
+	"name": "@opice/browser",
+	"version": "0.0.1",
+	"description": "opice-browser — stateful Playwright browser for opice test authoring (CLI over CDP)",
+	"type": "module",
+	"bin": {
+		"opice-browser": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc --build",
+		"typecheck": "tsc --build"
+	},
+	"dependencies": {
+		"@opice/harness": "workspace:*",
+		"playwright": "^1.60.0",
+		"zod": "^4.4.3"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/contember/opice.git",
+		"directory": "packages/browser"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"devDependencies": {
+		"@types/node": "^25.9.1"
+	}
+}
