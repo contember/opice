@@ -1,4 +1,3 @@
-import { exec, q } from './agent-browser.js'
 import { el, type ElementHandle, evalJs } from './element.js'
 
 /**
@@ -6,17 +5,19 @@ import { el, type ElementHandle, evalJs } from './element.js'
  *
  * opice prefers `data-testid` (see `el`), but real apps often can't be
  * annotated — third-party UIs, generated form-field ids, components you don't
- * own. These wrap agent-browser's own `find` locators, so a test reads the same
- * way the authoring dry-run drives the page:
+ * own. agent-browser's own `find` locators look like the natural fit, but its
+ * `find … click` dispatches a click that React/controlled-form components don't
+ * reliably treat as a user gesture (a bindx submit button, for one, simply
+ * doesn't fire). So we resolve the element ourselves: a small JS resolver runs
+ * in the page, finds it by ARIA role + accessible name (or its `<label>`),
+ * stamps it with a unique `data-opice-ref`, and the returned handle drives it
+ * through `el()` — the same scroll-into-view + real-click + settle path as a
+ * test-id selector. The resolver re-runs on every access, so a handle survives
+ * client-side re-renders.
  *
- *     byRole('button', 'Save').click()   ⇄   agent-browser find role button click --name 'Save'
- *     byLabel('Email').fill('a@b.c')     ⇄   agent-browser find label 'Email' fill 'a@b.c'
- *
- * `find` covers actions only (click/fill/hover/check/…). Queries (`exists`,
- * `text`, …) and the focus/press path (Radix popovers open on focus+Enter, and
- * `find focus` is unreliable) fall back to a small `eval` against the same
- * accessible-name predicate. Accessible name is a pragmatic approximation
- * (`aria-label` || text || value), not the full ARIA computation.
+ * Accessible name here is a pragmatic approximation (`aria-label` || text ||
+ * value), not the full ARIA name computation — enough for buttons, links,
+ * headings, and labelled form controls.
  */
 
 let counter = 0
@@ -25,16 +26,7 @@ let counter = 0
 const HELPERS = `const __norm = s => (s||'').replace(/\\s+/g,' ').replace(/\\*/g,'').trim().toLowerCase();`
 	+ `const __match = (text, want) => { const a = __norm(text), b = __norm(want); return a === b || (b.length > 0 && a.includes(b)); };`
 
-interface Locator {
-	/** agent-browser `find` locator + value, e.g. `role button` or `label 'Email'`. */
-	readonly findPart: string
-	/** Options appended after the `find` action, e.g. ` --name 'Save'`. */
-	readonly findOpts: string
-	/** JS expression evaluating to the target `Element | null` in the page. */
-	readonly nodeExpr: string
-	readonly describe: string
-}
-
+/** agent-browser `eval` returns a JSON-encoded result; unwrap strings safely. */
 function parseEval(raw: string): string {
 	try {
 		const value: unknown = JSON.parse(raw)
@@ -44,142 +36,82 @@ function parseEval(raw: string): string {
 	}
 }
 
-/** Evaluate `nodeExpr` and return whether it found an element. */
-function probe(loc: Locator, expr: string): string {
-	return parseEval(evalJs(`(() => { ${HELPERS} const node = (${loc.nodeExpr}); return (${expr}); })()`))
-}
-
-/** Stamp the matched element with a fresh `data-opice-ref` and return its selector. */
-function stamp(loc: Locator): string {
+/**
+ * Build an ElementHandle around a JS *expression* that evaluates to the target
+ * `Element | null` in the page. Every handle method re-evaluates the
+ * expression, (re-)stamps the match with a unique `data-opice-ref`, then
+ * delegates to `el()` against that stamp — so the handle survives re-renders.
+ */
+function handleFor(nodeExpr: string, describe: string): ElementHandle {
 	const ref = `opice-${++counter}`
-	const ok = parseEval(evalJs(
-		`(() => {`
-			+ `document.querySelectorAll('[data-opice-ref="${ref}"]').forEach(e => e.removeAttribute('data-opice-ref'));`
-			+ HELPERS
-			+ `const node = (${loc.nodeExpr});`
-			+ `if (!node) return 'NONE';`
-			+ `node.setAttribute('data-opice-ref', '${ref}');`
-			+ `return 'OK';`
-			+ `})()`,
-	))
-	if (ok !== 'OK') throw new Error(`${loc.describe} not found`)
-	return `[data-opice-ref="${ref}"]`
-}
+	const target = `[data-opice-ref="${ref}"]`
 
-function handleFor(loc: Locator): ElementHandle {
-	const find = (action: string, text?: string): void => {
-		const textArg = text === undefined ? '' : ` ${q(text)}`
-		exec(`agent-browser find ${loc.findPart} ${action}${textArg}${loc.findOpts}`)
+	const resolve = (): boolean => {
+		const result = parseEval(evalJs(
+			`(() => {`
+				+ `document.querySelectorAll('[data-opice-ref="${ref}"]').forEach(e => e.removeAttribute('data-opice-ref'));`
+				+ HELPERS
+				+ `const node = (${nodeExpr});`
+				+ `if (!node) return 'NONE';`
+				+ `node.setAttribute('data-opice-ref', '${ref}');`
+				+ `return 'OK';`
+				+ `})()`,
+		))
+		return result === 'OK'
 	}
+
+	const need = (op: string): void => {
+		if (!resolve()) throw new Error(`${describe} not found (cannot ${op})`)
+	}
+
 	return {
-		// Queries — small eval against the accessible-name predicate.
 		get exists(): boolean {
-			return probe(loc, '!!node') === 'true'
+			return resolve() && el(target).exists
 		},
 		get text(): string {
-			return probe(loc, "node ? (node.textContent||'') : ''")
+			return resolve() ? el(target).text : ''
 		},
 		get value(): string {
-			return probe(loc, "node ? (node.value||'') : ''")
+			return resolve() ? el(target).value : ''
 		},
 		get isDisabled(): boolean {
-			return probe(loc, '!!(node && (node.disabled || node.getAttribute(\'aria-disabled\') === \'true\'))') === 'true'
+			need('read disabled')
+			return el(target).isDisabled
 		},
 		attr(name: string): string {
-			return probe(loc, `node ? (node.getAttribute(${JSON.stringify(name)})||'') : ''`)
+			return resolve() ? el(target).attr(name) : ''
 		},
-		// Accessible handles target a single element (the first match). For real
-		// counts use `el('css').count()`.
 		count(): number {
-			return probe(loc, '!!node') === 'true' ? 1 : 0
+			return resolve() ? el(target).count() : 0
 		},
-		// Actions — agent-browser `find` passthrough (mirrors the authoring dry-run).
 		click(): void {
-			find('click')
+			need('click')
+			el(target).click()
 		},
 		fill(value: string): void {
-			find('fill', value)
+			need('fill')
+			el(target).fill(value)
 		},
 		select(optionText: string): void {
-			el(stamp(loc)).select(optionText)
+			need('select')
+			el(target).select(optionText)
 		},
 		focus(): void {
-			el(stamp(loc)).focus()
+			need('focus')
+			el(target).focus()
 		},
 		hover(): void {
-			find('hover')
+			need('hover')
+			el(target).hover()
 		},
 		press(key: string): void {
-			el(stamp(loc)).press(key)
+			need('press')
+			el(target).press(key)
 		},
 	}
 }
 
-/**
- * Find an element by ARIA role and (optionally) its accessible name.
- * `byRole('button', 'Save').click()` → `agent-browser find role button click --name 'Save'`.
- */
-export function byRole(role: string, name?: string): ElementHandle {
-	const sel = roleSelector(role)
-	const nodeExpr = `(() => {`
-		+ `const __sel = ${JSON.stringify(sel)};`
-		+ `const __want = ${JSON.stringify(name ?? null)};`
-		+ `const __accName = e => e.getAttribute('aria-label') || e.textContent || e.value || '';`
-		+ `return Array.from(document.querySelectorAll(__sel)).find(e => __want == null ? true : __match(__accName(e), __want)) || null;`
-		+ `})()`
-	return handleFor({
-		findPart: `role ${role}`,
-		findOpts: name === undefined ? '' : ` --name ${q(name)}`,
-		nodeExpr,
-		describe: `byRole(${role}${name ? `, ${JSON.stringify(name)}` : ''})`,
-	})
-}
-
-/**
- * Find a form control by its visible `<label>` text (resolved via `for`→id, a
- * nested control, or the next control after the label).
- * `byLabel('Email').fill('x')` → `agent-browser find label 'Email' fill 'x'`.
- */
-export function byLabel(text: string): ElementHandle {
-	const controls = 'input,textarea,select,button,[role=textbox],[role=combobox]'
-	const nodeExpr = `(() => {`
-		+ `const __want = ${JSON.stringify(text)};`
-		+ `const __label = Array.from(document.querySelectorAll('label')).find(l => __match(l.textContent, __want));`
-		+ `if (!__label) return null;`
-		+ `const __id = __label.getAttribute('for');`
-		+ `if (__id) { const c = document.getElementById(__id); if (c) return c; }`
-		+ `const __nested = __label.querySelector(${JSON.stringify(controls)}); if (__nested) return __nested;`
-		+ `let __n = __label.nextElementSibling;`
-		+ `while (__n) {`
-		+ `if (__n.matches && __n.matches(${JSON.stringify(controls)})) return __n;`
-		+ `const __inner = __n.querySelector && __n.querySelector(${JSON.stringify(controls)}); if (__inner) return __inner;`
-		+ `__n = __n.nextElementSibling;`
-		+ `}`
-		+ `return null;`
-		+ `})()`
-	return handleFor({
-		findPart: `label ${q(text)}`,
-		findOpts: '',
-		nodeExpr,
-		describe: `byLabel(${JSON.stringify(text)})`,
-	})
-}
-
-/**
- * Find a leaf element by its visible text.
- * `byText('Saved').exists` / `byText('Continue').click()`.
- */
-export function byText(text: string): ElementHandle {
-	const nodeExpr = `(Array.from(document.querySelectorAll('body *')).find(e => e.children.length === 0 && __match(e.textContent, ${JSON.stringify(text)})) || null)`
-	return handleFor({
-		findPart: `text ${q(text)}`,
-		findOpts: '',
-		nodeExpr,
-		describe: `byText(${JSON.stringify(text)})`,
-	})
-}
-
-/** CSS candidates per ARIA role (for the query/focus fallback predicate). */
+/** CSS candidates per ARIA role. */
 function roleSelector(role: string): string {
 	switch (role) {
 		case 'button':
@@ -201,4 +133,48 @@ function roleSelector(role: string): string {
 		default:
 			return `[role=${role}]`
 	}
+}
+
+/**
+ * Find an element by ARIA role and (optionally) its accessible name.
+ * Accessible name is approximated as `aria-label` || text || value.
+ */
+export function byRole(role: string, name?: string): ElementHandle {
+	const nodeExpr = `(() => {`
+		+ `const __sel = ${JSON.stringify(roleSelector(role))};`
+		+ `const __want = ${JSON.stringify(name ?? null)};`
+		+ `const __accName = e => e.getAttribute('aria-label') || e.textContent || e.value || '';`
+		+ `return Array.from(document.querySelectorAll(__sel)).find(e => __want == null ? true : __match(__accName(e), __want)) || null;`
+		+ `})()`
+	return handleFor(nodeExpr, `byRole(${role}${name ? `, ${JSON.stringify(name)}` : ''})`)
+}
+
+/**
+ * Find a form control by its visible `<label>` text. Resolves the control via
+ * `for`→id, a nested control, or the next control after the label.
+ */
+export function byLabel(text: string): ElementHandle {
+	const controls = 'input,textarea,select,button,[role=textbox],[role=combobox]'
+	const nodeExpr = `(() => {`
+		+ `const __want = ${JSON.stringify(text)};`
+		+ `const __label = Array.from(document.querySelectorAll('label')).find(l => __match(l.textContent, __want));`
+		+ `if (!__label) return null;`
+		+ `const __id = __label.getAttribute('for');`
+		+ `if (__id) { const c = document.getElementById(__id); if (c) return c; }`
+		+ `const __nested = __label.querySelector(${JSON.stringify(controls)}); if (__nested) return __nested;`
+		+ `let __n = __label.nextElementSibling;`
+		+ `while (__n) {`
+		+ `if (__n.matches && __n.matches(${JSON.stringify(controls)})) return __n;`
+		+ `const __inner = __n.querySelector && __n.querySelector(${JSON.stringify(controls)}); if (__inner) return __inner;`
+		+ `__n = __n.nextElementSibling;`
+		+ `}`
+		+ `return null;`
+		+ `})()`
+	return handleFor(nodeExpr, `byLabel(${JSON.stringify(text)})`)
+}
+
+/** Find a leaf element by its visible text (first match). */
+export function byText(text: string): ElementHandle {
+	const nodeExpr = `(Array.from(document.querySelectorAll('body *')).find(e => e.children.length === 0 && __match(e.textContent, ${JSON.stringify(text)})) || null)`
+	return handleFor(nodeExpr, `byText(${JSON.stringify(text)})`)
 }

@@ -1,6 +1,6 @@
 {
 	"name": "@opice/harness",
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"description": "Runtime primitives for opice — AI-driven E2E browser tests on top of agent-browser",
 	"type": "module",
 	"main": "./src/index.ts",

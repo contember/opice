@@ -49,18 +49,17 @@ Each action call auto-scrolls into view and sleeps 500ms to let the UI settle.
 ### Accessible-name selectors
 
 For apps you can't annotate with `data-testid` (third-party UIs, generated form
-ids). These wrap agent-browser's `find` locators, so a test reads the same way
-the authoring dry-run drives the page (`byRole('button','Save').click()` ⇄
-`agent-browser find role button click --name 'Save'`). Each returns an
-`ElementHandle`.
+ids). Each returns an `ElementHandle`, so the full action/query surface works.
 
 - `byRole(role, name?)` — by ARIA role, optionally filtered by accessible name.
 - `byLabel(text)` — a form control by its `<label>` (resolved via `for`/nesting).
 - `byText(text)` — a leaf element by its visible text.
 
-Actions go through `find`; queries (`.exists`, `.text`, …) and the focus/press
-path fall back to a small `eval`. Prefer `data-testid` + `el()` when you own the
-markup.
+Resolution: a small JS resolver finds the element in-page, stamps it, and the
+handle drives it through `el()` — the same scroll-into-view + real-click +
+settle path as a test-id. (agent-browser's own `find … click` was tried but
+doesn't reliably register as a user gesture for React/controlled forms, e.g. a
+bindx submit button.) Prefer `data-testid` + `el()` when you own the markup.
 
 ### Navigation
 
