@@ -269,6 +269,30 @@ Atomic add+commit per their global rules. Never `git add -A`.
   stable marker over fixed `await wait(ms)`.
 - **No `data-testid` anywhere**: `byRole`/`byLabel` are reliable now, so prefer
   them over CSS; still suggest the user add test-ids for the most brittle spots.
+- **Actions that trigger an async write** (autosave, optimistic UI, a mutation
+  on select): doing several back-to-back races — an in-flight write re-renders
+  the list and **detaches the element you're about to click**, so the next
+  action times out on a "visible, enabled, stable" element. After each such
+  step, **assert the result landed** (`await expect(byText(thatItem))
+  .toBeVisible()`) before the next one; the retrying assertion waits out the
+  write + re-render. Don't paper over it with `wait(ms)`.
+- **SSR / hydrated apps (Next.js, etc.)**: filling a form right after `open()`
+  can set the DOM value but **miss the framework's state** — the `onChange`
+  handlers attach during hydration, so the form submits empty and the page
+  doesn't advance. `await getPage().waitForLoadState('networkidle')` before
+  interacting, and prefer `pressSequentially` over `fill` for the inputs.
+- **A write "won't save" with no visible error**: optimistic UIs often show the
+  change and swallow a server-side rejection (e.g. an ACL/validation error rolls
+  the mutation back; it's gone on reload, no toast). Don't assume a selector
+  bug — instrument the request in `opice-browser`: `eval` a `window.fetch`
+  wrapper that logs the API response body, and read the real error there. This
+  is the fastest way to tell a test problem from an app bug.
+- **Cross-origin flows** (the scenario spans two hosts, e.g. an app + a public
+  site): one browser context spans both, but auth usually doesn't — a
+  localStorage/injected token for host A won't carry to host B, which may use
+  its own cookie login. Do B's login through its real UI, and **probe
+  reachability from the test process** (`await fetch(otherBase)`), not the page
+  (cross-origin), so you can guard/skip the second-host steps when it's down.
 
 ## Files in this skill
 
