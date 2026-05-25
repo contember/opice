@@ -407,6 +407,12 @@ main {
 .status-dot.running { background: var(--run); color: #fff; animation: breathe 1.6s ease-in-out infinite; }
 .status-dot.incomplete { background: var(--text-soft); color: #fff; }
 
+/* Step-level mark — smaller and hollow so steps visibly recede under the solid
+ * scenario mark. A failed step stays filled red so regressions still pop. */
+.status-dot.mini { width: 14px; height: 14px; font-size: 8px; border-width: 1.5px; }
+.status-dot.mini.passed  { background: transparent; color: var(--pass); border-color: color-mix(in srgb, var(--pass) 55%, transparent); }
+.status-dot.mini.running { background: transparent; color: var(--run);  border-color: color-mix(in srgb, var(--run) 55%, transparent); }
+
 @keyframes breathe {
 	0%, 100% { opacity: 1; }
 	50% { opacity: 0.55; }
@@ -565,6 +571,70 @@ main {
 
 .entry .e-chip { flex-shrink: 0; }
 
+/* Project prefix on a cross-project run row. */
+.entry .e-title .e-project { color: var(--text-mute); font-weight: 500; }
+
+/* ---------------- Last-run summary (project list) ---------------- */
+
+.last-run {
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	font-family: var(--font-sans);
+	font-size: 12px;
+	color: var(--text-mute);
+}
+.last-run:hover { text-decoration: none; }
+.last-run:hover .last-run-counts { color: var(--accent); }
+.last-run .last-run-counts {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 3px;
+	color: var(--text-soft);
+}
+.last-run .last-run-counts strong { font-weight: 600; }
+.last-run .last-run-counts .sep { color: var(--text-faint); }
+.last-run .last-run-failed { color: var(--fail); }
+.last-run .last-run-time {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	color: var(--text-mute);
+}
+.last-run .last-run-time .icon { color: var(--text-faint); }
+.last-run .tabular { font-variant-numeric: tabular-nums; }
+
+/* ---------------- Pagination ---------------- */
+
+.pagination {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 12px;
+	font-family: var(--font-sans);
+	font-size: 12px;
+	color: var(--text-mute);
+}
+.pagination .pull { margin-left: auto; }
+.pagination .range { font-variant-numeric: tabular-nums; }
+.pagination .page-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 12px;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--surface);
+	color: var(--text-soft);
+	font-family: var(--font-sans);
+	font-size: 12px;
+	cursor: pointer;
+}
+.pagination .page-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.pagination .page-btn:disabled { opacity: 0.4; cursor: default; }
+.pagination .page-btn .flip { transform: rotate(180deg); }
+
 /* ---------------- Summary strip (run header) ---------------- */
 
 .summary {
@@ -663,8 +733,8 @@ main {
 }
 .scenario .s-name {
 	font-family: var(--font-sans);
-	font-size: 13.5px;
-	font-weight: 500;
+	font-size: 14px;
+	font-weight: 600;
 	color: var(--text);
 	flex: 1;
 	min-width: 0;
@@ -696,19 +766,26 @@ main {
 }
 .scenario .s-aside .icon { color: var(--text-faint); }
 
-.scenario[open] > summary { border-bottom: 1px solid var(--border-soft); }
+/* An open scenario reads as the header of its steps: tinted bar + heavier rule. */
+.scenario[open] > summary {
+	background: var(--accent-tint);
+	border-bottom: 1px solid var(--border);
+}
+.scenario[open] > summary:hover { background: var(--accent-tint); }
 
-/* steps inside a scenario */
+/* steps inside a scenario — visibly nested: indented block with a left rail and
+ * a recessed background, so a step row never reads as a sibling scenario. */
 .steps {
 	background: var(--surface-2);
 	padding: 4px 0;
+	box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .step {
 	display: grid;
-	grid-template-columns: 24px 1fr auto;
+	grid-template-columns: 18px 1fr auto;
 	column-gap: 10px;
 	align-items: baseline;
-	padding: 8px 16px 8px 38px;
+	padding: 7px 16px 7px 44px;
 	border-top: 1px solid var(--border-soft);
 }
 .step:first-child { border-top: none; }
@@ -716,8 +793,9 @@ main {
 .step .step-name {
 	grid-column: 2;
 	font-family: var(--font-sans);
-	font-size: 13px;
-	color: var(--text);
+	font-size: 12.5px;
+	font-weight: 400;
+	color: var(--text-soft);
 }
 .step .duration {
 	grid-column: 3;

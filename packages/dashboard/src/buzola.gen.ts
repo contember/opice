@@ -9,7 +9,8 @@ import Route0 from './routes/_layout';
 const Route1 = () => import('./routes/index').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 const Route2 = () => import('./routes/projects/detail').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 const Route3 = () => import('./routes/projects/run').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
-const Route4 = () => import('./routes/settings').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
+const Route4 = () => import('./routes/runs').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
+const Route5 = () => import('./routes/settings').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 
 // Module augmentation for type-safe page-centric routing
 declare module '@buzola/router' {
@@ -17,6 +18,7 @@ declare module '@buzola/router' {
     'index': {};
     'projects/detail': { slug: string };
     'projects/run': { slug: string; runId: string };
+    'runs': {};
     'settings': {};
   }
 }
@@ -26,6 +28,7 @@ export const pageRegistry: Record<string, string> = {
   'index': '/',
   'projects/detail': '/p/:slug',
   'projects/run': '/p/:slug/r/:runId',
+  'runs': '/runs',
   'settings': '/settings',
 };
 
@@ -54,9 +57,14 @@ const routeConfigs: RouteConfig[] = [
         preload: Route3,
       },
       {
-        path: '/settings',
+        path: '/runs',
         component: lazy(Route4),
         preload: Route4,
+      },
+      {
+        path: '/settings',
+        component: lazy(Route5),
+        preload: Route5,
       },
     ],
   },

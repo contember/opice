@@ -247,7 +247,7 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 				<div className="steps">
 					{steps.data.map(st => (
 						<div className="step" key={st.id}>
-							<span className="step-mark"><StatusMark status={st.status} /></span>
+							<span className="step-mark"><StatusMark status={st.status} className="mini" /></span>
 							<span className="step-name">{st.name}</span>
 							<span className="duration">{fmtDuration(st.durationMs)}</span>
 							{(st.error || st.screenshotUrl) && (

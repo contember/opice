@@ -4,12 +4,15 @@ import { EmptyState } from '../components/EmptyState'
 import { CalendarIcon, FolderIcon } from '../components/Icon'
 import { Loading } from '../components/Loading'
 import { NewProject } from '../components/NewProject'
+import { StatusMark } from '../components/StatusBadge'
 import { rpc } from '../lib/client'
 import { fmtRelative } from '../lib/format'
 
 export default createPage()
 	.route('/')
 	.render(() => <ProjectsPage />)
+
+type Project = Awaited<ReturnType<typeof rpc.projects.list>>[number]
 
 function ProjectsPage() {
 	const { data, isLoading, error } = useQuery({
@@ -62,19 +65,45 @@ function ProjectsPage() {
 									</div>
 									<div className="e-meta">
 										<code>{p.slug}</code>
+										<span className="sep">·</span>
+										<span>added {fmtRelative(p.createdAt)}</span>
 									</div>
 								</div>
-								<div className="e-aside">
-									<span className="row">
-										<CalendarIcon className="icon" />
-										<span>added {fmtRelative(p.createdAt)}</span>
-									</span>
-								</div>
+								<LastRunSummary slug={p.slug} run={p.lastRun} />
 							</div>
 						))}
 					</div>
 				</>
 			)}
 		</>
+	)
+}
+
+/** Compact headline-run summary shown on the right of a project row. */
+function LastRunSummary({ slug, run }: { slug: string; run: Project['lastRun'] }) {
+	if (!run) {
+		return (
+			<div className="e-aside">
+				<span className="muted">no runs yet</span>
+			</div>
+		)
+	}
+	return (
+		<Link to="projects/run" params={{ slug, runId: run.id }} className="last-run">
+			<StatusMark status={run.status} />
+			<span className="last-run-counts">
+				<strong className="tabular">{run.passedScenarios}</strong>
+				<span className="sep">/</span>
+				<span className="tabular">{run.totalScenarios}</span>
+			</span>
+			{run.failedScenarios > 0 && (
+				<span className="last-run-failed tabular">{run.failedScenarios} failed</span>
+			)}
+			{run.branch && <span className="chip">{run.branch}</span>}
+			<span className="last-run-time">
+				<CalendarIcon className="icon" />
+				{fmtRelative(run.startedAt)}
+			</span>
+		</Link>
 	)
 }

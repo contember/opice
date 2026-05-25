@@ -7,6 +7,7 @@ import { signOut, useSession } from '../lib/auth-client'
 export default function RootLayout() {
 	const { pathname } = useRoute()
 	const isProjects = pathname === '/' || pathname.startsWith('/p/')
+	const isRuns = pathname === '/runs'
 	const { data: session } = useSession()
 	const queryClient = useQueryClient()
 
@@ -31,6 +32,9 @@ export default function RootLayout() {
 					<nav className="main">
 						<Link to="index" className={isProjects ? 'active' : ''}>
 							Projects
+						</Link>
+						<Link to="runs" className={isRuns ? 'active' : ''}>
+							All runs
 						</Link>
 					</nav>
 					{session && (
