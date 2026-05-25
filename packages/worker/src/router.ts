@@ -58,6 +58,16 @@ const RunSchema = z.object({
 	finishedAt: z.number().nullable(),
 })
 
+// A run plus its project's slug + name, for the cross-project feed.
+const RunWithProjectSchema = RunSchema.extend({
+	projectSlug: z.string(),
+	projectName: z.string(),
+})
+
+// A page of runs + whether another page exists (offset pagination).
+const RunPageSchema = z.object({ runs: z.array(RunSchema), hasMore: z.boolean() })
+const RunWithProjectPageSchema = z.object({ runs: z.array(RunWithProjectSchema), hasMore: z.boolean() })
+
 const ScenarioSchema = z.object({
 	id: z.string(),
 	runId: z.string(),
@@ -122,12 +132,17 @@ function toTokenSummary(t: {
 const projects = rpc.router({
 	list: rpc.procedure
 		.input(z.void())
-		.output(z.array(ProjectSchema))
+		.output(z.array(ProjectSchema.extend({ lastRun: RunSchema.nullable() })))
 		.handler(async ({ ctx }) => {
 			requireCap(ctx, 'read')
 			const all = await ctx.services.db.listProjects()
 			const scope = ctx.principal.scope
-			return scope.kind === 'all' ? all : all.filter(p => p.id === scope.projectId)
+			const visible = scope.kind === 'all' ? all : all.filter(p => p.id === scope.projectId)
+			// Attach each project's headline run (latest on main/master, else latest)
+			// so the list can show a status summary without a per-row request.
+			const lastRuns = await ctx.services.db.listLastRunByProject()
+			const byProject = new Map(lastRuns.map(r => [r.projectId, r]))
+			return visible.map(p => ({ ...p, lastRun: byProject.get(p.id) ?? null }))
 		}),
 
 	get: rpc.procedure
@@ -168,15 +183,34 @@ const projects = rpc.router({
 
 const runs = rpc.router({
 	listForProject: rpc.procedure
-		.input(z.object({ projectSlug: z.string(), limit: z.number().min(1).max(200).default(50) }))
-		.output(z.array(RunSchema))
+		.input(z.object({
+			projectSlug: z.string(),
+			limit: z.number().min(1).max(200).default(50),
+			offset: z.number().min(0).default(0),
+		}))
+		.output(RunPageSchema)
 		.handler(async ({ ctx, input }) => {
 			requireCap(ctx, 'read')
 			const project = await ctx.services.db.getProjectBySlug(input.projectSlug)
 			if (!project) notFound(`Project not found: ${input.projectSlug}`)
 			// A run-scoped share link can see its run but not the project's run list.
 			assertScope(canListRuns(ctx.principal.scope, project.id))
-			return ctx.services.db.listRunsForProject(project.id, input.limit)
+			return ctx.services.db.listRunsForProject(project.id, { limit: input.limit, offset: input.offset })
+		}),
+
+	// Cross-project feed — every project's runs, newest first. Only a global
+	// principal (an operator session, or a project-less read token) may browse it;
+	// a project- or run-scoped credential is confined to its own project.
+	listAll: rpc.procedure
+		.input(z.object({
+			limit: z.number().min(1).max(200).default(50),
+			offset: z.number().min(0).default(0),
+		}))
+		.output(RunWithProjectPageSchema)
+		.handler(async ({ ctx, input }) => {
+			requireCap(ctx, 'read')
+			assertScope(ctx.principal.scope.kind === 'all')
+			return ctx.services.db.listAllRuns({ limit: input.limit, offset: input.offset })
 		}),
 
 	get: rpc.procedure

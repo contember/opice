@@ -1,4 +1,4 @@
-import type { Capability, Project, Run, RunSource, RunStatus, Scenario, ScenarioStatus, Step, StepStatus, Token } from './types'
+import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepStatus, Token } from './types'
 
 // A run with no ingest activity for this long is considered abandoned: the
 // reaper finalizes it as 'incomplete', and reads display it that way even
@@ -295,7 +295,9 @@ export class Db {
 		return row ? toRun(row, row, Date.now()) : null
 	}
 
-	async listRunsForProject(projectId: number, limit = 50): Promise<Run[]> {
+	async listRunsForProject(projectId: number, opts: { limit: number; offset: number }): Promise<{ runs: Run[]; hasMore: boolean }> {
+		// Fetch one extra row to learn whether a further page exists without a
+		// separate COUNT query.
 		const { results } = await this.d1
 			.prepare(`SELECT r.*,
 				COUNT(s.id) AS live_total,
@@ -304,8 +306,56 @@ export class Db {
 			FROM runs r LEFT JOIN scenarios s ON s.run_id = r.id
 			WHERE r.project_id = ?
 			GROUP BY r.id
-			ORDER BY r.started_at DESC LIMIT ?`)
-			.bind(projectId, limit)
+			ORDER BY r.started_at DESC LIMIT ? OFFSET ?`)
+			.bind(projectId, opts.limit + 1, opts.offset)
+			.all<RunRow & RunCountsRow>()
+		const now = Date.now()
+		const hasMore = results.length > opts.limit
+		return { runs: results.slice(0, opts.limit).map((row) => toRun(row, row, now)), hasMore }
+	}
+
+	/** Cross-project run feed, newest first, each row carrying its project's slug + name. */
+	async listAllRuns(opts: { limit: number; offset: number }): Promise<{ runs: RunWithProject[]; hasMore: boolean }> {
+		const { results } = await this.d1
+			.prepare(`SELECT r.*, p.slug AS project_slug, p.name AS project_name,
+				COUNT(s.id) AS live_total,
+				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
+				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed
+			FROM runs r JOIN projects p ON p.id = r.project_id
+			LEFT JOIN scenarios s ON s.run_id = r.id
+			GROUP BY r.id
+			ORDER BY r.started_at DESC LIMIT ? OFFSET ?`)
+			.bind(opts.limit + 1, opts.offset)
+			.all<RunRow & RunCountsRow & { project_slug: string; project_name: string }>()
+		const now = Date.now()
+		const hasMore = results.length > opts.limit
+		const runs = results.slice(0, opts.limit).map((row) => ({
+			...toRun(row, row, now),
+			projectSlug: row.project_slug,
+			projectName: row.project_name,
+		}))
+		return { runs, hasMore }
+	}
+
+	/**
+	 * The "headline" run per project for dashboard summaries: the most recent run
+	 * on `main`/`master`, falling back to the most recent run on any branch when
+	 * the project has never reported a main/master run. One row per project.
+	 */
+	async listLastRunByProject(): Promise<Run[]> {
+		const { results } = await this.d1
+			.prepare(`WITH ranked AS (
+				SELECT r.id, ROW_NUMBER() OVER (
+					PARTITION BY r.project_id
+					ORDER BY (CASE WHEN r.branch IN ('main', 'master') THEN 0 ELSE 1 END), r.started_at DESC
+				) AS rn
+				FROM runs r
+			)
+			SELECT r.*,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id) AS live_total,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed
+			FROM runs r JOIN ranked ON ranked.id = r.id AND ranked.rn = 1`)
 			.all<RunRow & RunCountsRow>()
 		const now = Date.now()
 		return results.map((row) => toRun(row, row, now))

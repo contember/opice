@@ -60,6 +60,12 @@ export interface Run {
 	finishedAt: number | null
 }
 
+/** A run carrying its project's slug + name, for the cross-project feed. */
+export interface RunWithProject extends Run {
+	projectSlug: string
+	projectName: string
+}
+
 export interface Scenario {
 	id: string
 	runId: string
