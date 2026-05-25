@@ -406,12 +406,19 @@ main {
 .status-dot.failed  { background: var(--fail); color: #fff; }
 .status-dot.running { background: var(--run); color: #fff; animation: breathe 1.6s ease-in-out infinite; }
 .status-dot.incomplete { background: var(--text-soft); color: #fff; }
+/* Tolerated known failures (step.fixme) and the scenario/run warning they roll
+ * up into: solid amber, but static — only a live 'running' dot pulses. */
+.status-dot.warning,
+.status-dot.fixme,
+.status-dot.fixmepass { background: var(--run); color: #fff; }
 
 /* Step-level mark — smaller and hollow so steps visibly recede under the solid
  * scenario mark. A failed step stays filled red so regressions still pop. */
 .status-dot.mini { width: 14px; height: 14px; font-size: 8px; border-width: 1.5px; }
 .status-dot.mini.passed  { background: transparent; color: var(--pass); border-color: color-mix(in srgb, var(--pass) 55%, transparent); }
 .status-dot.mini.running { background: transparent; color: var(--run);  border-color: color-mix(in srgb, var(--run) 55%, transparent); }
+.status-dot.mini.fixme,
+.status-dot.mini.fixmepass { background: transparent; color: var(--run); border-color: color-mix(in srgb, var(--run) 55%, transparent); }
 
 @keyframes breathe {
 	0%, 100% { opacity: 1; }
@@ -432,6 +439,7 @@ main {
 .status-inline.passed  { color: var(--pass);  background: var(--pass-soft); border-color: color-mix(in srgb, var(--pass) 30%, transparent); }
 .status-inline.failed  { color: var(--fail);  background: var(--fail-soft); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
 .status-inline.running { color: var(--run);   background: var(--run-soft);  border-color: color-mix(in srgb, var(--run)  30%, transparent); }
+.status-inline.warning { color: var(--run);   background: var(--run-soft);  border-color: color-mix(in srgb, var(--run)  30%, transparent); }
 .status-inline.incomplete { color: var(--text-soft); background: color-mix(in srgb, var(--text-soft) 12%, transparent); border-color: color-mix(in srgb, var(--text-soft) 30%, transparent); }
 .status-inline .status-dot { width: 12px; height: 12px; font-size: 8px; }
 
@@ -677,6 +685,7 @@ main {
 .summary .cell .v.passed  { color: var(--pass); }
 .summary .cell .v.failed  { color: var(--fail); }
 .summary .cell .v.running { color: var(--run); }
+.summary .cell .v.warning { color: var(--run); }
 
 .summary .bar {
 	flex-basis: 100%;
@@ -688,6 +697,7 @@ main {
 .summary .bar .seg.passed  { background: var(--pass); }
 .summary .bar .seg.failed  { background: var(--fail); }
 .summary .bar .seg.running { background: var(--run); }
+.summary .bar .seg.warning { background: var(--run); }
 
 /* ---------------- Scenarios (denser list with steps) ---------------- */
 
@@ -818,6 +828,18 @@ main {
 	border-left: 3px solid var(--fail);
 	padding: 8px 12px;
 	white-space: pre-wrap;
+	border-radius: 0 4px 4px 0;
+}
+/* Tolerated known-failure note (step.fixme reason) — amber, above any error. */
+.step .step-reason {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--run);
+	background: var(--run-soft);
+	border: 1px solid color-mix(in srgb, var(--run) 30%, transparent);
+	border-left: 3px solid var(--run);
+	padding: 8px 12px;
+	margin-bottom: 6px;
 	border-radius: 0 4px 4px 0;
 }
 

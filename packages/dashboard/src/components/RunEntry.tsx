@@ -7,11 +7,12 @@ interface RunLike {
 	id: string
 	branch: string | null
 	commitSha: string | null
-	status: 'running' | 'passed' | 'failed' | 'incomplete'
+	status: 'running' | 'passed' | 'failed' | 'incomplete' | 'warning'
 	source: 'ci' | 'local' | null
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
+	warningScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -43,6 +44,12 @@ export function RunEntry({ run: r, slug, projectName }: { run: RunLike; slug: st
 						<>
 							<span className="sep">·</span>
 							<span style={{ color: 'var(--fail)' }}><strong className="tabular" style={{ color: 'var(--fail)' }}>{r.failedScenarios}</strong> failed</span>
+						</>
+					)}
+					{r.warningScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--run)' }}><strong className="tabular" style={{ color: 'var(--run)' }}>{r.warningScenarios}</strong> warning</span>
 						</>
 					)}
 					<span className="sep">·</span>

@@ -140,27 +140,35 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 	})
 }
 
-/**
- * A reportable step inside a scenario. Captures duration + screenshot on
- * finish, forwards to the active reporter (no-op unless configured via env).
- *
- * The body may be sync or async; `step` always returns a promise, so call it
- * with `await step('…', async () => { … })`.
- */
-export async function step(name: string, fn: () => void | Promise<void>): Promise<void> {
+type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass'
+
+async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason?: string): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
 	const start = Date.now()
-	let status: 'passed' | 'failed' = 'passed'
+	const fixme = fixmeReason !== undefined
+	let status: StepStatus = 'passed'
 	let error: string | undefined
 	try {
 		await fn()
+		// A fixme step that *passes* is a stale marker: surface it as an
+		// 'fixmepass' warning so the author knows they can drop the marker,
+		// rather than letting it pass silently.
+		if (fixme) status = 'fixmepass'
 	} catch (e) {
-		status = 'failed'
 		error = e instanceof Error ? e.message : String(e)
-		currentScenarioFailures++
-		throw e
+		if (fixme) {
+			// Known / tolerated failure. Record it as 'fixme', but DON'T count it
+			// toward scenario failures and DON'T re-throw — that's the whole point
+			// of step.fixme: the scenario (and the CI run) stay green, the failure
+			// surfaces as an amber warning on the dashboard.
+			status = 'fixme'
+		} else {
+			status = 'failed'
+			currentScenarioFailures++
+			throw e
+		}
 	} finally {
 		const durationMs = Date.now() - start
 		let screenshotPath: string | undefined
@@ -177,8 +185,32 @@ export async function step(name: string, fn: () => void | Promise<void>): Promis
 				status,
 				durationMs,
 				error,
+				reason: fixmeReason,
 				screenshotPath,
 			})
 		}
 	}
 }
+
+/**
+ * A reportable step inside a scenario. Captures duration + screenshot on
+ * finish, forwards to the active reporter (no-op unless configured via env).
+ *
+ * The body may be sync or async; `step` always returns a promise, so call it
+ * with `await step('…', async () => { … })`.
+ *
+ * `step.fixme(name, reason, fn)` marks a **known, tolerated failure**: the body
+ * still runs, but a failure inside it does NOT fail the scenario or the CI run —
+ * it's reported as an amber warning instead. The `reason` is mandatory (use it
+ * to reference a ticket, e.g. 'BUG-123: tax rounding off by 1c'). If a fixme
+ * step unexpectedly *passes*, it's flagged too ('fixmepass') so a stale marker
+ * doesn't linger. Unlike Playwright's `test.fixme()`, which **skips** the test,
+ * `step.fixme` **runs** it — the mandatory reason is there to keep them apart.
+ */
+export const step = Object.assign(
+	(name: string, fn: () => void | Promise<void>): Promise<void> => runStep(name, fn),
+	{
+		fixme: (name: string, reason: string, fn: () => void | Promise<void>): Promise<void> =>
+			runStep(name, fn, reason),
+	},
+)

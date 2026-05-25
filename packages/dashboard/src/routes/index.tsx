@@ -99,6 +99,9 @@ function LastRunSummary({ slug, run }: { slug: string; run: Project['lastRun'] }
 			{run.failedScenarios > 0 && (
 				<span className="last-run-failed tabular">{run.failedScenarios} failed</span>
 			)}
+			{run.warningScenarios > 0 && (
+				<span className="tabular" style={{ color: 'var(--run)' }}>{run.warningScenarios} warning</span>
+			)}
 			{run.branch && <span className="chip">{run.branch}</span>}
 			<span className="last-run-time">
 				<CalendarIcon className="icon" />

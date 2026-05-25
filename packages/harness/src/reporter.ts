@@ -40,9 +40,16 @@ export interface StepEvent {
 	/** Authoring order within the scenario, assigned at step() call time. */
 	sequence: number
 	name: string
-	status: 'passed' | 'failed'
+	/**
+	 * 'fixme' (a step.fixme that failed, as expected) and 'fixmepass' (a
+	 * step.fixme that unexpectedly passed) are tolerated warnings — neither
+	 * fails the scenario.
+	 */
+	status: 'passed' | 'failed' | 'fixme' | 'fixmepass'
 	durationMs: number
 	error?: string
+	/** Mandatory note from step.fixme — why the failure is tolerated. */
+	reason?: string
 	screenshotPath?: string
 }
 
@@ -151,6 +158,7 @@ class HttpReporter implements Reporter {
 			status: event.status,
 			durationMs: event.durationMs,
 			error: event.error,
+			reason: event.reason,
 			screenshot,
 		})
 	}

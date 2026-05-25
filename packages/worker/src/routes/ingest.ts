@@ -1,9 +1,12 @@
 import { badRequest, json, notFound, readJson, unauthorized } from '../http'
 import { authenticate, has } from '../principal'
 import type { Services } from '../services'
-import type { Project, StepStatus } from '../types'
+import type { Project, ScenarioStatus, StepStatus } from '../types'
 
-const ACCEPTED_STATUSES: readonly StepStatus[] = ['passed', 'failed']
+// Steps accept the tolerated fixme markers; scenario finish does not (a scenario
+// is only ever passed/failed — a fixme step surfaces as a derived warning).
+const ACCEPTED_STEP_STATUSES: readonly StepStatus[] = ['passed', 'failed', 'fixme', 'fixmepass']
+const ACCEPTED_SCENARIO_STATUSES: readonly ScenarioStatus[] = ['passed', 'failed']
 
 export async function handleIngest(request: Request, services: Services, path: string[]): Promise<Response> {
 	// Ingest needs a write capability scoped to exactly one project: a CI/local
@@ -72,8 +75,8 @@ async function createScenario(request: Request, services: Services, runId: strin
 }
 
 async function finishScenario(request: Request, services: Services, scenarioId: string): Promise<Response> {
-	const body = await readJson<{ status?: StepStatus; durationMs?: number }>(request)
-	if (!body?.status || !ACCEPTED_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
+	const body = await readJson<{ status?: ScenarioStatus; durationMs?: number }>(request)
+	if (!body?.status || !ACCEPTED_SCENARIO_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
 		return badRequest('status (passed|failed) and durationMs are required')
 	}
 	await services.db.finishScenario({ id: scenarioId, status: body.status, durationMs: body.durationMs })
@@ -93,10 +96,11 @@ async function createStep(
 		status?: StepStatus
 		durationMs?: number
 		error?: string
+		reason?: string
 		screenshot?: string
 	}>(request)
-	if (!body?.name || !body.status || !ACCEPTED_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
-		return badRequest('name, status (passed|failed), durationMs are required')
+	if (!body?.name || !body.status || !ACCEPTED_STEP_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
+		return badRequest('name, status (passed|failed|fixme|fixmepass), durationMs are required')
 	}
 
 	const stepId = await services.db.createStep({
@@ -106,6 +110,7 @@ async function createStep(
 		status: body.status,
 		durationMs: body.durationMs,
 		error: body.error,
+		reason: body.reason,
 	})
 
 	if (body.screenshot) {

@@ -6,10 +6,16 @@
 
 // Stored lifecycle status for runs and scenarios.
 export type ScenarioStatus = 'running' | 'passed' | 'failed'
+// On read, a passed scenario/run that contains a tolerated fixme step is shown
+// as 'warning' (amber) — computed, never stored, like 'incomplete'.
+export type ScenarioDisplayStatus = ScenarioStatus | 'warning'
 // Runs add 'incomplete' — a computed display status (a run that never finished
-// and was reaped, or whose last activity went stale). Never stored.
-export type RunStatus = ScenarioStatus | 'incomplete'
-export type StepStatus = 'passed' | 'failed'
+// and was reaped, or whose last activity went stale) — and 'warning'. Neither
+// is stored; both are derived at read time.
+export type RunStatus = ScenarioStatus | 'incomplete' | 'warning'
+// 'fixme'/'fixmepass' are tolerated known-failure markers (see step.fixme):
+// 'fixme' failed as expected, 'fixmepass' unexpectedly passed.
+export type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass'
 export type RunSource = 'ci' | 'local'
 
 /**
@@ -56,6 +62,8 @@ export interface Run {
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
+	/** Subset of passed scenarios that carry a tolerated fixme step. */
+	warningScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -73,7 +81,7 @@ export interface Scenario {
 	hash: string | null
 	testFile: string | null
 	scenarioFile: string | null
-	status: ScenarioStatus
+	status: ScenarioDisplayStatus
 	durationMs: number | null
 	startedAt: number
 	finishedAt: number | null
@@ -87,6 +95,8 @@ export interface Step {
 	status: StepStatus
 	durationMs: number
 	error: string | null
+	/** Mandatory note from step.fixme (why the failure is tolerated). */
+	reason: string | null
 	screenshotKey: string | null
 	createdAt: number
 }

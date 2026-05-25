@@ -33,9 +33,11 @@ function assertScope(ok: boolean): void {
 	if (!ok) forbidden()
 }
 
-const StatusSchema = z.enum(['running', 'passed', 'failed'])
-// Runs add the computed 'incomplete' display status (reaped / went stale).
-const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete'])
+// Scenarios add the computed 'warning' display status (a passed scenario that
+// carries a tolerated fixme step).
+const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning'])
+// Runs add 'incomplete' (reaped / went stale) and 'warning' — both computed.
+const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete', 'warning'])
 
 const ProjectSchema = z.object({
 	id: z.number(),
@@ -54,6 +56,7 @@ const RunSchema = z.object({
 	totalScenarios: z.number(),
 	passedScenarios: z.number(),
 	failedScenarios: z.number(),
+	warningScenarios: z.number(),
 	startedAt: z.number(),
 	finishedAt: z.number().nullable(),
 })
@@ -86,9 +89,10 @@ const StepSchema = z.object({
 	scenarioId: z.string(),
 	sequence: z.number(),
 	name: z.string(),
-	status: z.enum(['passed', 'failed']),
+	status: z.enum(['passed', 'failed', 'fixme', 'fixmepass']),
 	durationMs: z.number(),
 	error: z.string().nullable(),
+	reason: z.string().nullable(),
 	screenshotUrl: z.string().nullable(),
 	createdAt: z.number(),
 })

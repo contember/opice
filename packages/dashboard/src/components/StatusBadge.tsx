@@ -10,6 +10,9 @@ const GLYPH: Record<string, string> = {
 	failed: '✕',
 	running: '·',
 	incomplete: '!',
+	warning: '!',
+	fixme: '~',
+	fixmepass: '!',
 }
 
 const LABEL: Record<string, string> = {
@@ -17,6 +20,9 @@ const LABEL: Record<string, string> = {
 	failed: 'Failed',
 	running: 'Running',
 	incomplete: 'Incomplete',
+	warning: 'Warning',
+	fixme: 'Known failure',
+	fixmepass: 'Unexpected pass',
 }
 
 /**

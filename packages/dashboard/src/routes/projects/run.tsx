@@ -199,7 +199,7 @@ interface ScenarioProps {
 	index: number
 	scenarioId: string
 	name: string
-	status: 'running' | 'passed' | 'failed'
+	status: 'running' | 'passed' | 'failed' | 'warning'
 	hash: string | null
 	durationMs: number | null
 }
@@ -211,9 +211,10 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 	})
 
 	const failedCount = steps.data?.filter(s => s.status === 'failed').length ?? 0
+	const fixmeCount = steps.data?.filter(s => s.status === 'fixme' || s.status === 'fixmepass').length ?? 0
 
 	return (
-		<details className="scenario" open={status === 'failed'}>
+		<details className="scenario" open={status === 'failed' || status === 'warning'}>
 			<summary>
 				<ChevronIcon className="chevron" />
 				<StatusMark status={status} />
@@ -225,6 +226,9 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 							{steps.data.length} {steps.data.length === 1 ? 'step' : 'steps'}
 							{failedCount > 0 && (
 								<span style={{ color: 'var(--fail)' }}> · {failedCount} failed</span>
+							)}
+							{fixmeCount > 0 && (
+								<span style={{ color: 'var(--run)' }}> · {fixmeCount} known</span>
 							)}
 						</span>
 					)}
@@ -250,8 +254,13 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 							<span className="step-mark"><StatusMark status={st.status} className="mini" /></span>
 							<span className="step-name">{st.name}</span>
 							<span className="duration">{fmtDuration(st.durationMs)}</span>
-							{(st.error || st.screenshotUrl) && (
+							{(st.error || st.reason || st.screenshotUrl) && (
 								<div className="step-detail">
+									{st.reason && (
+										<div className="step-reason">
+											{st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}
+										</div>
+									)}
 									{st.error && <div className="step-error">{st.error}</div>}
 									{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
 								</div>
