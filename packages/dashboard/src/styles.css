@@ -758,6 +758,20 @@ main.wide { max-width: 1360px; }
 	border: 1px solid var(--border-soft);
 	background: var(--surface-2);
 }
+/* Flaky: a passed scenario that needed a retry. Amber like the warning state,
+ * since it's a "passed, but pay attention" signal — not a failure. */
+.flaky-badge {
+	flex-shrink: 0;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--run);
+	background: var(--run-soft);
+	border: 1px solid color-mix(in srgb, var(--run) 30%, transparent);
+	border-radius: 999px;
+	padding: 1px 6px;
+}
 .wb-group-head {
 	font-family: var(--font-sans);
 	font-size: 10.5px;

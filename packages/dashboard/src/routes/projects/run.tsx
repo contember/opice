@@ -26,7 +26,12 @@ interface Scenario {
 	seeds: string[]
 	roles: string[]
 	durationMs: number | null
+	attempts: number
 }
+
+// A passed scenario that needed more than one attempt is flaky — it failed at
+// least once before passing within the retry budget.
+const isFlaky = (s: Scenario): boolean => s.status === 'passed' && s.attempts > 1
 
 // Filter tabs, surfacing problems first. 'all' is always present; the rest only
 // render when the run actually carries scenarios in that state.
@@ -297,6 +302,7 @@ function ScenarioRow({
 		>
 			<StatusMark status={s.status} className="mini" />
 			<span className="wb-item-name">{s.name}</span>
+			{isFlaky(s) && <span className="flaky-badge" title={`Passed after ${s.attempts} attempts`}>flaky</span>}
 			{showFeature && s.feature && <span className="wb-item-feature">{s.feature}</span>}
 			<span className="wb-item-dur tabular">{fmtDuration(s.durationMs)}</span>
 		</button>
@@ -315,6 +321,7 @@ function ScenarioDetail({ scenario: s }: { scenario: Scenario }) {
 		<>
 			<div className="wb-detail-bar">
 				<StatusMarkInline status={s.status} />
+				{isFlaky(s) && <span className="flaky-badge" title={`Passed after ${s.attempts} attempts`}>flaky · {s.attempts}×</span>}
 				{s.hash && <span className="hash">#{s.hash}</span>}
 				<span className="pull" />
 				<span className="wb-detail-dur">
