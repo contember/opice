@@ -1,25 +1,34 @@
 ---
 name: opice-plan
 description: >
-  Phase 1 of opice authoring: turn a rough testing brief into reviewable
-  *skeleton* `*.test.ts` files — metadata-first `browserTest`, pending `step`
-  stubs carrying `intent` + `hint`, and `invariant.todo` acceptances. Lightly
-  explores the running app to ground the skeletons in the real UI. Does NOT
-  author executable steps (that's opice-author, phase 2) — it produces the
-  skeleton a human reviews first.
+  Phase 1 of opice authoring: turn a rough testing brief (and/or supplied
+  scenarios, a spec, or just the codebase) into reviewable *skeleton*
+  `*.test.ts` files — metadata-first `browserTest`, pending `step` stubs
+  carrying `intent` + `hint`, and `invariant.todo` acceptances. Grounds the
+  skeletons in real flows using whatever's available — supplied docs, code
+  exploration, and/or a light browse of the running app. Does NOT author
+  executable steps (that's opice-author, phase 2) — it produces the skeleton a
+  human reviews first.
 
   Trigger when the user says "/opice-plan", "plan opice scenarios for …",
-  "what should we E2E test here", or hands you a feature/app and asks for test
-  scenarios.
+  "what should we E2E test here", hands you a feature/app/spec, or gives you
+  rough scenarios to turn into tests.
 allowed-tools: Bash(opice-browser:*), Bash(bun:*), Read, Write, Glob, Grep
 ---
 
 # opice-plan — brief → skeleton tests (phase 1)
 
 This skill is the **planning** half of opice authoring. You take a loose brief
-("test the checkout flow", "cover the admin dashboard") plus the running app,
-and you produce reviewable **skeleton `*.test.ts` files**. You do **not** write
-executable steps — that's `opice-author` (phase 2), run per skeleton.
+("test the checkout flow", "cover the admin dashboard") — and/or supplied
+scenarios, a spec, or just the codebase — and you produce reviewable **skeleton
+`*.test.ts` files**. You do **not** write executable steps — that's
+`opice-author` (phase 2), run per skeleton.
+
+You only need enough grounding to get the *structure* right: the flows, the
+step outline, the metadata (`feature`/`seeds`/`roles`), the `intent`, and a
+`hint` per step telling the author what to do live. The precise selectors and
+the real rendered labels are `opice-author`'s job in phase 2 — so planning can
+stay light and does **not** require a running app.
 
 ## Why a skeleton `.test.ts`, not a `.scenario.md`
 
@@ -36,9 +45,15 @@ tests are not. Aim for a skeleton a reviewer can confirm at a glance.
 
 ## Inputs
 
-- **brief**: what the user wants covered (a sentence, a feature, a page).
-- **app URL**: the running playground/app. If not given, check `PLAYGROUND_URL`,
-  then ask.
+- **brief**: what the user wants covered (a sentence, a feature, a page). May be
+  thin if other inputs are rich.
+- **supplied material** (optional, any of): rough scenarios the user already
+  wrote, a PRD / spec / acceptance criteria, a list of flows, a Figma, a ticket.
+  When given, this is your *primary* source — turn it into skeletons rather than
+  re-deriving the flows yourself.
+- **app URL** (optional): the running app. Only needed if you choose to confirm
+  things live (see grounding below). If not given, check `PLAYGROUND_URL`; don't
+  block on it — code/docs may be enough.
 - **output dir**: where the skeleton `*.test.ts` files go. Default: a
   `tests/browser/` dir next to the app, mirroring any existing test files.
   Confirm before writing into a new location.
@@ -51,24 +66,47 @@ tests are not. Aim for a skeleton a reviewer can confirm at a glance.
   naming, structure, and granularity.
 - Read the brief. List the distinct user flows / features it implies.
 
-### 2. Lightly explore the app (don't author)
+### 2. Ground the scenarios — pick the source(s) that fit
 
-Use a throwaway session:
+You need enough grounding to get the flows, step outline, and metadata right —
+**not** real selectors or proven steps (that's phase 2). Use whichever of these
+is available; combine them. None is mandatory, and a running app is **not**
+required.
+
+**a) Supplied scenarios / spec (if given).** This is the strongest signal — the
+user already told you the flows. Map each supplied scenario/acceptance criterion
+to a skeleton, lift the structure and intent straight from it, and only fill
+gaps (metadata, missing edge steps) from code/app. Don't second-guess flows
+the user handed you.
+
+**b) Explore the codebase (no running app needed).** Often the fastest, fullest
+source — and it works offline:
+- Routes / pages → the deep-link `url` per scenario (route files, the router,
+  `*.page.tsx`, etc.).
+- Components / JSX → existing `data-testid`s (great), accessible labels, headings
+  → grounds step names and what's assertable; flag where test-ids are missing.
+- ACL / auth / roles → the `roles` metadata and which identity a flow acts as.
+- Seed definitions / fixtures → the `seeds` metadata (name → what it guarantees).
+- Feature/requirement ids in code or docs → the `feature` metadata.
+Use Glob/Grep/Read. This alone is usually enough to write solid skeletons.
+
+**c) Light browse of the running app (optional).** Only when the app is up and
+you want to confirm real labels/states or you can't tell the flow from code. A
+throwaway session:
 
 ```bash
 opice-browser --session opice-plan launch <URL>
 opice-browser --session opice-plan aria-snapshot main
 ```
 
-Walk the surface enough to ground the skeleton in reality — what pages,
-controls, roles, and states actually exist. You're mapping the territory,
-**not** resolving selectors or proving steps (that's phase 2). Visit the main
-routes/hashes the brief touches. Note where `data-testid`s exist (good) or are
-missing (flag it). Run `opice-browser --session opice-plan quit` when done.
+Stay lightweight — a few snapshots across the relevant screens, never an
+exhaustive crawl, never resolving selectors. `opice-browser --session opice-plan
+quit` when done.
 
-Stay lightweight: a few snapshots across the relevant screens, not an
-exhaustive crawl. If the app needs auth or seeded data to reach a flow, note it
-in the metadata (`seeds`, `roles`) rather than trying to set it up.
+Whatever you couldn't pin down here, **defer to phase 2 via the step `hint`**
+("confirm the exact button label live", "verify this field is a custom picker") —
+that's exactly what hints are for. If a flow needs auth/seeded data to reach,
+record it in `seeds`/`roles`, don't set it up.
 
 ### 3. Write one skeleton `*.test.ts` per flow
 
