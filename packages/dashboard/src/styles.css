@@ -224,6 +224,8 @@ main {
 	margin: 0 auto;
 	padding: 20px 24px 80px;
 }
+/* The run view breaks out to a wider column for its master/detail workbench. */
+main.wide { max-width: 1360px; }
 
 .breadcrumb {
 	font-family: var(--font-sans);
@@ -402,6 +404,7 @@ main {
 	font-weight: 700;
 	border: 1px solid transparent;
 }
+.status-dot svg { width: 62%; height: 62%; display: block; }
 .status-dot.passed  { background: var(--pass); color: #fff; }
 .status-dot.failed  { background: var(--fail); color: #fff; }
 .status-dot.running { background: var(--run); color: #fff; animation: breathe 1.6s ease-in-out infinite; }
@@ -643,167 +646,221 @@ main {
 .pagination .page-btn:disabled { opacity: 0.4; cursor: default; }
 .pagination .page-btn .flip { transform: rotate(180deg); }
 
-/* ---------------- Summary strip (run header) ---------------- */
+/* ---------------- Workbench (run master/detail) ---------------- */
 
-.summary {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 0;
+.workbench {
+	margin-top: 24px;
 	border: 1px solid var(--border);
-	border-radius: 6px;
-	background: var(--surface);
-	overflow: hidden;
-	margin-bottom: 24px;
-}
-.summary .cell {
-	flex: 1 1 auto;
-	min-width: 140px;
-	padding: 10px 16px;
-	border-right: 1px solid var(--border-soft);
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-}
-.summary .cell:last-child { border-right: none; }
-.summary .cell .k {
-	font-family: var(--font-sans);
-	font-size: 10.5px;
-	font-weight: 600;
-	color: var(--text-mute);
-	letter-spacing: 0.06em;
-	text-transform: uppercase;
-}
-.summary .cell .v {
-	font-family: var(--font-mono);
-	font-size: 15px;
-	font-weight: 500;
-	color: var(--text);
-	font-variant-numeric: tabular-nums;
-	letter-spacing: -0.01em;
-}
-.summary .cell .v.passed  { color: var(--pass); }
-.summary .cell .v.failed  { color: var(--fail); }
-.summary .cell .v.running { color: var(--run); }
-.summary .cell .v.warning { color: var(--run); }
-
-.summary .bar {
-	flex-basis: 100%;
-	display: flex;
-	height: 4px;
-	background: var(--surface-2);
-	border-top: 1px solid var(--border-soft);
-}
-.summary .bar .seg.passed  { background: var(--pass); }
-.summary .bar .seg.failed  { background: var(--fail); }
-.summary .bar .seg.running { background: var(--run); }
-.summary .bar .seg.warning { background: var(--run); }
-
-/* ---------------- Scenarios (denser list with steps) ---------------- */
-
-.scenarios {
-	border: 1px solid var(--border);
-	border-radius: 6px;
+	border-radius: 8px;
 	background: var(--surface);
 	overflow: hidden;
 }
 
-.scenario {
-	border-top: 1px solid var(--border-soft);
-}
-.scenario:first-child { border-top: none; }
-
-.scenario > summary {
-	cursor: pointer;
-	outline: none;
-	list-style: none;
+/* Top bar: status filter tabs on the left, scenario search on the right. */
+.wb-bar {
 	display: flex;
 	align-items: center;
 	gap: 12px;
 	padding: 10px 14px;
-	min-height: 44px;
+	border-bottom: 1px solid var(--border);
+	background: var(--surface-2);
 }
-.scenario > summary:hover { background: var(--surface-hover); }
-.scenario > summary::-webkit-details-marker { display: none; }
-.scenario .chevron {
+.wb-tabs {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	flex-wrap: wrap;
+	flex: 1;
+	min-width: 0;
+}
+.wb-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 28px;
+	font-family: var(--font-sans);
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--text-mute);
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 999px;
+	padding: 0 11px;
+	cursor: pointer;
+	transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.wb-tab:hover { color: var(--text); background: var(--surface-hover); }
+.wb-tab.active {
+	color: var(--text);
+	background: var(--accent-tint);
+	border-color: var(--accent-soft);
+}
+.wb-tab .status-dot { margin-left: -2px; }
+.wb-tab-count {
+	font-family: var(--font-mono);
+	font-size: 11px;
 	color: var(--text-faint);
-	transition: transform 0.15s;
-	flex-shrink: 0;
-	width: 12px;
+	font-variant-numeric: tabular-nums;
 }
-.scenario[open] > summary .chevron { transform: rotate(90deg); }
+.wb-tab.active .wb-tab-count { color: var(--accent); }
 
-.scenario .s-num {
+.wb-search {
+	flex-shrink: 0;
+	width: 220px;
+	max-width: 40%;
+	height: 28px;
+	font-family: var(--font-sans);
+	font-size: 12.5px;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0 11px;
+	transition: border-color 0.12s;
+}
+.wb-search:focus { outline: none; border-color: var(--accent); }
+.wb-search::placeholder { color: var(--text-faint); }
+
+/* Two panes: a scrollable scenario list and a scrollable detail, each holding
+ * its own scroll so the bar above stays put — the panel feel of the mockup. */
+.wb-body {
+	display: grid;
+	grid-template-columns: 320px 1fr;
+	height: calc(100vh - 300px);
+	min-height: 460px;
+}
+.wb-list {
+	overflow-y: auto;
+	border-right: 1px solid var(--border);
+	background: var(--surface);
+}
+.wb-list-empty,
+.wb-detail-empty {
+	padding: 24px 16px;
+	color: var(--text-mute);
+	font-size: 12.5px;
+}
+
+.wb-group { padding-bottom: 6px; }
+.wb-group + .wb-group { border-top: 1px solid var(--border-soft); }
+.wb-group-head {
+	font-family: var(--font-sans);
+	font-size: 10.5px;
+	font-weight: 600;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--text-faint);
+	padding: 14px 16px 7px;
+}
+
+.wb-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	text-align: left;
+	background: transparent;
+	border: none;
+	border-left: 2px solid transparent;
+	padding: 8px 14px 8px 14px;
+	cursor: pointer;
+	font: inherit;
+	color: var(--text);
+	transition: background 0.1s;
+}
+.wb-item:hover { background: var(--surface-hover); }
+.wb-item.active {
+	background: var(--accent-tint);
+	border-left-color: var(--accent);
+}
+.wb-item .status-dot { flex-shrink: 0; }
+.wb-item-name {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.4;
+	letter-spacing: -0.005em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.wb-item.active .wb-item-name { font-weight: 600; }
+.wb-item-dur {
+	flex-shrink: 0;
+	padding-left: 6px;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--text-faint);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Detail pane. */
+.wb-detail {
+	overflow-y: auto;
+	padding: 22px 28px 32px;
+}
+.wb-detail-bar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 14px;
+}
+.wb-detail-bar .pull { flex: 1; }
+.wb-detail-bar .hash {
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	color: var(--text-faint);
-	font-variant-numeric: tabular-nums;
-	flex-shrink: 0;
-	min-width: 28px;
 }
-.scenario .s-name {
-	font-family: var(--font-sans);
-	font-size: 14px;
-	font-weight: 600;
-	color: var(--text);
-	flex: 1;
-	min-width: 0;
-	letter-spacing: -0.005em;
-}
-.scenario .s-aside {
-	display: flex;
-	gap: 10px;
+.wb-detail-dur {
+	display: inline-flex;
 	align-items: center;
+	gap: 5px;
 	font-family: var(--font-sans);
 	font-size: 12px;
 	color: var(--text-mute);
-	flex-shrink: 0;
-	font-variant-numeric: tabular-nums;
 }
-.scenario .s-aside .hash {
-	font-family: var(--font-mono);
+.wb-detail-dur .icon { color: var(--text-faint); }
+.wb-detail-title {
+	font-family: var(--font-sans);
+	font-size: 21px;
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: -0.015em;
+	color: var(--text);
+	margin: 0 0 14px;
+}
+.wb-detail .s-meta { padding: 0; margin: 0 0 18px; }
+
+.wb-detail-source {
+	margin-top: 18px;
+	color: var(--text-faint);
+	font-family: var(--font-sans);
 	font-size: 11px;
+}
+.wb-detail-source code {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
 	color: var(--text-mute);
-	background: var(--surface-2);
-	border: 1px solid var(--border-soft);
-	border-radius: 3px;
-	padding: 1px 6px;
 }
-.scenario .s-aside .duration {
-	display: inline-flex;
-	gap: 5px;
-	align-items: center;
-}
-.scenario .s-aside .icon { color: var(--text-faint); }
 
-/* An open scenario reads as the header of its steps: tinted bar + heavier rule. */
-.scenario[open] > summary {
-	background: var(--accent-tint);
-	border-bottom: 1px solid var(--border);
-}
-.scenario[open] > summary:hover { background: var(--accent-tint); }
-
-/* steps inside a scenario — visibly nested: indented block with a left rail and
- * a recessed background, so a step row never reads as a sibling scenario. */
-.steps {
-	background: var(--surface-2);
-	padding: 4px 0;
-	box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
-}
+/* Steps in the detail pane — a flat hairline-ruled list (no card, no rail), so
+ * it doesn't read as a box nested inside the pane inside the workbench. */
+.steps { padding: 0; }
 .step {
 	display: grid;
-	grid-template-columns: 18px 1fr auto;
-	column-gap: 10px;
-	align-items: baseline;
-	padding: 7px 16px 7px 44px;
+	grid-template-columns: 16px 1fr auto;
+	column-gap: 11px;
+	align-items: center;
+	padding: 9px 2px;
 	border-top: 1px solid var(--border-soft);
 }
 .step:first-child { border-top: none; }
-.step .step-mark { grid-column: 1; transform: translateY(2px); }
+.step .step-mark { grid-column: 1; }
 .step .step-name {
 	grid-column: 2;
 	font-family: var(--font-sans);
-	font-size: 12.5px;
+	font-size: 13px;
 	font-weight: 400;
 	color: var(--text-soft);
 }
@@ -811,7 +868,7 @@ main {
 	grid-column: 3;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
-	color: var(--text-mute);
+	color: var(--text-faint);
 	font-variant-numeric: tabular-nums;
 }
 .step .step-detail {
@@ -999,8 +1056,13 @@ main {
 	.page-head h1 { font-size: 18px; }
 	.entry { flex-wrap: wrap; }
 	.entry .e-aside { width: 100%; align-items: flex-start; flex-direction: row; flex-wrap: wrap; gap: 8px 14px; }
-	.scenario .s-aside .hash { display: none; }
 	.toolbar { overflow-x: auto; white-space: nowrap; }
+
+	/* Workbench: stack list over detail, drop the fixed-height inner scroll. */
+	.wb-bar { flex-wrap: wrap; }
+	.wb-search { width: 100%; max-width: none; }
+	.wb-body { grid-template-columns: 1fr; height: auto; min-height: 0; }
+	.wb-list { border-right: none; border-bottom: 1px solid var(--border); max-height: 320px; }
 }
 
 /* ── auth ──────────────────────────────────────────────────────────── */
@@ -1284,18 +1346,14 @@ main {
 .status-dot.mini.pending { background: transparent; color: var(--text-faint); border-color: color-mix(in srgb, var(--text-faint) 55%, transparent); border-style: dashed; }
 .status-inline.pending { color: var(--text-soft); background: color-mix(in srgb, var(--text-soft) 12%, transparent); border-color: color-mix(in srgb, var(--text-soft) 30%, transparent); }
 
-/* Incomplete summary cell + progress segment (a scenario carrying a pending step). */
-.summary .cell .v.incomplete { color: var(--text-mute); }
-.summary .bar .seg.incomplete { background: color-mix(in srgb, var(--text-faint) 60%, transparent); }
-
 /* Scenario metadata row (browserTest feature/seeds/roles). */
-.scenario .s-meta {
+.s-meta {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
 	padding: 8px 16px 4px;
 }
-.scenario .s-meta .meta-chip {
+.s-meta .meta-chip {
 	font-family: var(--font-mono);
 	font-size: 11px;
 	line-height: 1.4;
@@ -1305,9 +1363,9 @@ main {
 	color: var(--text-mute);
 	background: var(--surface-2);
 }
-.scenario .s-meta .meta-chip.feature { color: var(--accent); background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
-.scenario .s-meta .meta-chip.seed::before { content: 'seed '; color: var(--text-faint); }
-.scenario .s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
+.s-meta .meta-chip.feature { color: var(--accent); background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.s-meta .meta-chip.seed::before { content: 'seed '; color: var(--text-faint); }
+.s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
 
 /* A step's durable intent (phase-1 contract) — quiet, above any error. */
 .step .step-intent {
@@ -1319,8 +1377,8 @@ main {
 	margin-bottom: 6px;
 }
 
-/* Invariant: a scenario-level acceptance, marked apart from procedural steps. */
-.step.invariant { background: color-mix(in srgb, var(--accent-tint) 50%, transparent); }
+/* Invariant: a scenario-level acceptance, set apart by its tag (not a fill band,
+ * which would read as another box in the flat list). */
 .step .step-kind {
 	display: inline-block;
 	font-family: var(--font-mono);

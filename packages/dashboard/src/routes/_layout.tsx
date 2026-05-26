@@ -8,6 +8,9 @@ export default function RootLayout() {
 	const { pathname } = useRoute()
 	const isProjects = pathname === '/' || pathname.startsWith('/p/')
 	const isRuns = pathname === '/runs'
+	// The run view is a wide master/detail workbench — let it break out of the
+	// reading-width content column the rest of the app uses.
+	const isRunView = pathname.includes('/r/')
 	const { data: session } = useSession()
 	const queryClient = useQueryClient()
 
@@ -47,7 +50,7 @@ export default function RootLayout() {
 					)}
 				</div>
 			</header>
-			<main>
+			<main className={isRunView ? 'wide' : ''}>
 				<Outlet />
 			</main>
 			<ThemeSwitcher />

@@ -1,10 +1,9 @@
 import { createPage, Link } from '@buzola/router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
-import { ChevronIcon, ClockIcon } from '../../components/Icon'
+import { useEffect, useMemo, useState } from 'react'
+import { ClockIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { Polaroid } from '../../components/Polaroid'
-import { ResultStrip } from '../../components/Stat'
 import { StatusMark, StatusMarkInline } from '../../components/StatusBadge'
 import { useSession } from '../../lib/auth-client'
 import { rpc } from '../../lib/client'
@@ -14,6 +13,31 @@ export default createPage()
 	.params({ slug: 'string', runId: 'string' })
 	.route('/p/:slug/r/:runId')
 	.render(({ params }) => <RunPage slug={params.slug} runId={params.runId} />)
+
+type ScenarioStatus = 'running' | 'passed' | 'failed' | 'warning' | 'incomplete'
+
+interface Scenario {
+	id: string
+	name: string
+	status: ScenarioStatus
+	hash: string | null
+	testFile: string | null
+	feature: string | null
+	seeds: string[]
+	roles: string[]
+	durationMs: number | null
+}
+
+// Filter tabs, surfacing problems first. 'all' is always present; the rest only
+// render when the run actually carries scenarios in that state.
+const FILTER_ORDER: ScenarioStatus[] = ['failed', 'warning', 'incomplete', 'running', 'passed']
+const FILTER_LABEL: Record<ScenarioStatus, string> = {
+	failed: 'Failed',
+	warning: 'Warnings',
+	incomplete: 'Incomplete',
+	running: 'Running',
+	passed: 'Passed',
+}
 
 function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	const project = useQuery({
@@ -63,16 +87,13 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 					)}
 					<span className="sep">·</span>
 					<span title={fmtDate(r.startedAt)}>started {fmtRelative(r.startedAt)}</span>
+					{r.finishedAt && (
+						<>
+							<span className="sep">·</span>
+							<span className="tabular">{fmtDuration(r.finishedAt - r.startedAt)}</span>
+						</>
+					)}
 				</div>
-			</div>
-
-			<ResultStrip run={r} />
-
-			<ShareManager slug={slug} runId={r.id} />
-
-			<div className="section-head">
-				<span className="label">Scenarios</span>
-				<span className="count">{scenarios.data?.length ?? 0}</span>
 			</div>
 
 			{scenarios.isLoading ? (
@@ -82,24 +103,228 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 					<div className="empty-title">No scenarios reported</div>
 				</div>
 			) : (
-				<div className="scenarios">
-					{scenarios.data.map((s, i) => (
-						<ScenarioBlock
-							key={s.id}
-							index={i + 1}
-							scenarioId={s.id}
-							name={s.name}
-							status={s.status}
-							hash={s.hash}
-							feature={s.feature}
-							seeds={s.seeds}
-							roles={s.roles}
-							durationMs={s.durationMs}
-						/>
+				<Workbench scenarios={scenarios.data} />
+			)}
+
+			<ShareManager slug={slug} runId={r.id} />
+		</>
+	)
+}
+
+/**
+ * Master/detail browser for a run's scenarios: filter tabs + search across the
+ * top, a feature-grouped scenario list on the left, and the selected scenario's
+ * metadata + steps on the right. Steps are fetched lazily for the *selected*
+ * scenario only — the list stands on the scenario-level status the run already
+ * carries, so opening a run doesn't fan out one steps query per scenario.
+ */
+function Workbench({ scenarios }: { scenarios: Scenario[] }) {
+	const [filter, setFilter] = useState<ScenarioStatus | 'all'>('all')
+	const [query, setQuery] = useState('')
+	const [selectedId, setSelectedId] = useState<string | null>(null)
+
+	const counts = useMemo(() => {
+		const c: Record<string, number> = {}
+		for (const s of scenarios) c[s.status] = (c[s.status] ?? 0) + 1
+		return c
+	}, [scenarios])
+
+	const filtered = useMemo(() => {
+		const q = query.trim().toLowerCase()
+		return scenarios.filter(s => {
+			if (filter !== 'all' && s.status !== filter) return false
+			if (q && !s.name.toLowerCase().includes(q) && !(s.feature ?? '').toLowerCase().includes(q)) {
+				return false
+			}
+			return true
+		})
+	}, [scenarios, filter, query])
+
+	// Group by feature, preserving first-seen order for both groups and rows.
+	const groups = useMemo(() => {
+		const map = new Map<string, Scenario[]>()
+		for (const s of filtered) {
+			const key = s.feature ?? ''
+			const list = map.get(key)
+			if (list) list.push(s)
+			else map.set(key, [s])
+		}
+		return [...map.entries()]
+	}, [filtered])
+
+	// Keep a valid selection: when the current pick falls out of the filter,
+	// jump to the first problem scenario (failed > warning > incomplete), else
+	// the first row in view.
+	useEffect(() => {
+		if (filtered.length === 0) {
+			setSelectedId(null)
+			return
+		}
+		if (selectedId && filtered.some(s => s.id === selectedId)) return
+		const firstBad =
+			filtered.find(s => s.status === 'failed') ??
+			filtered.find(s => s.status === 'warning' || s.status === 'incomplete')
+		setSelectedId((firstBad ?? filtered[0]!).id)
+	}, [filtered, selectedId])
+
+	const selected = scenarios.find(s => s.id === selectedId) ?? null
+
+	return (
+		<div className="workbench">
+			<div className="wb-bar">
+				<div className="wb-tabs">
+					<button
+						type="button"
+						className={`wb-tab${filter === 'all' ? ' active' : ''}`}
+						onClick={() => setFilter('all')}
+					>
+						All <span className="wb-tab-count">{scenarios.length}</span>
+					</button>
+					{FILTER_ORDER.filter(st => counts[st]).map(st => (
+						<button
+							key={st}
+							type="button"
+							className={`wb-tab${filter === st ? ' active' : ''}`}
+							onClick={() => setFilter(st)}
+						>
+							<StatusMark status={st} className="mini" />
+							{FILTER_LABEL[st]} <span className="wb-tab-count">{counts[st]}</span>
+						</button>
 					))}
+				</div>
+				<input
+					className="wb-search"
+					type="search"
+					placeholder="Search scenarios…"
+					value={query}
+					onChange={e => setQuery(e.target.value)}
+				/>
+			</div>
+
+			<div className="wb-body">
+				<div className="wb-list">
+					{filtered.length === 0 ? (
+						<div className="wb-list-empty">No scenarios match.</div>
+					) : (
+						groups.map(([feature, items]) => (
+							<div className="wb-group" key={feature || '∅'}>
+								<div className="wb-group-head">{feature || 'No feature'}</div>
+								{items.map(s => (
+									<button
+										key={s.id}
+										type="button"
+										className={`wb-item${s.id === selectedId ? ' active' : ''}`}
+										onClick={() => setSelectedId(s.id)}
+									>
+										<StatusMark status={s.status} className="mini" />
+										<span className="wb-item-name">{s.name}</span>
+										<span className="wb-item-dur tabular">{fmtDuration(s.durationMs)}</span>
+									</button>
+								))}
+							</div>
+						))
+					)}
+				</div>
+
+				<div className="wb-detail">
+					{selected ? (
+						<ScenarioDetail scenario={selected} />
+					) : (
+						<div className="wb-detail-empty">Select a scenario.</div>
+					)}
+				</div>
+			</div>
+		</div>
+	)
+}
+
+function ScenarioDetail({ scenario: s }: { scenario: Scenario }) {
+	const steps = useQuery({
+		queryKey: ['scenarios.steps', s.id],
+		queryFn: () => rpc.scenarios.steps({ scenarioId: s.id }),
+	})
+
+	const hasMeta = !!s.feature || s.seeds.length > 0 || s.roles.length > 0
+
+	return (
+		<>
+			<div className="wb-detail-bar">
+				<StatusMarkInline status={s.status} />
+				{s.hash && <span className="hash">#{s.hash}</span>}
+				<span className="pull" />
+				<span className="wb-detail-dur">
+					<ClockIcon className="icon" />
+					<span className="tabular">{fmtDuration(s.durationMs)}</span>
+				</span>
+			</div>
+
+			<h2 className="wb-detail-title">{s.name}</h2>
+
+			{hasMeta && (
+				<div className="s-meta">
+					{s.feature && <span className="meta-chip feature" title="Feature / requirement">{s.feature}</span>}
+					{s.seeds.map(x => <span key={`seed-${x}`} className="meta-chip seed" title="Required seed">{x}</span>)}
+					{s.roles.map(x => <span key={`role-${x}`} className="meta-chip role" title="Acting role">{x}</span>)}
+				</div>
+			)}
+
+			{steps.isLoading ? (
+				<Loading message="Loading steps…" />
+			) : !steps.data || steps.data.length === 0 ? (
+				<div className="muted" style={{ padding: '12px 0', fontSize: 12.5 }}>No steps recorded.</div>
+			) : (
+				<div className="steps">
+					{steps.data.map(st => <StepRow key={st.id} step={st} />)}
+				</div>
+			)}
+
+			{s.testFile && (
+				<div className="wb-detail-source">
+					<code>{s.testFile}</code>
 				</div>
 			)}
 		</>
+	)
+}
+
+interface Step {
+	id: number
+	kind: 'step' | 'invariant'
+	name: string
+	status: 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
+	durationMs: number
+	error: string | null
+	intent: string | null
+	reason: string | null
+	screenshotUrl: string | null
+}
+
+function StepRow({ step: st }: { step: Step }) {
+	// A pending step with a reason is 'blocked' (feature not built); without, a
+	// plain todo awaiting authoring.
+	const blocked = st.status === 'pending' && !!st.reason
+	const display = blocked ? 'blocked' : st.status
+	return (
+		<div className={`step${st.kind === 'invariant' ? ' invariant' : ''}${st.status === 'pending' ? ' pending' : ''}${blocked ? ' blocked' : ''}`}>
+			<span className="step-mark"><StatusMark status={display} className="mini" /></span>
+			<span className="step-name">
+				{st.kind === 'invariant' && <span className="step-kind" title="Scenario-level acceptance">invariant</span>}
+				{st.name}
+			</span>
+			<span className="duration">{st.status === 'pending' ? (blocked ? 'blocked' : 'not authored') : fmtDuration(st.durationMs)}</span>
+			{(st.intent || st.error || st.reason || st.screenshotUrl) && (
+				<div className="step-detail">
+					{st.intent && <div className="step-intent">{st.intent}</div>}
+					{st.reason && (
+						<div className="step-reason">
+							{blocked ? 'Blocked' : st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}
+						</div>
+					)}
+					{st.error && <div className="step-error">{st.error}</div>}
+					{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
+				</div>
+			)}
+		</div>
 	)
 }
 
@@ -195,113 +420,5 @@ function CopyUrl({ url }: { url: string }) {
 				{copied ? 'Copied' : 'Copy'}
 			</button>
 		</div>
-	)
-}
-
-interface ScenarioProps {
-	index: number
-	scenarioId: string
-	name: string
-	status: 'running' | 'passed' | 'failed' | 'warning' | 'incomplete'
-	hash: string | null
-	feature: string | null
-	seeds: string[]
-	roles: string[]
-	durationMs: number | null
-}
-
-function ScenarioBlock({ index, scenarioId, name, status, hash, feature, seeds, roles, durationMs }: ScenarioProps) {
-	const steps = useQuery({
-		queryKey: ['scenarios.steps', scenarioId],
-		queryFn: () => rpc.scenarios.steps({ scenarioId }),
-	})
-
-	const failedCount = steps.data?.filter(s => s.status === 'failed').length ?? 0
-	const fixmeCount = steps.data?.filter(s => s.status === 'fixme' || s.status === 'fixmepass').length ?? 0
-	// A pending step with a reason is 'blocked' (feature not built); without, it's
-	// a plain todo awaiting authoring.
-	const todoCount = steps.data?.filter(s => s.status === 'pending' && !s.reason).length ?? 0
-	const blockedCount = steps.data?.filter(s => s.status === 'pending' && !!s.reason).length ?? 0
-	const hasMeta = !!feature || seeds.length > 0 || roles.length > 0
-
-	return (
-		<details className="scenario" open={status === 'failed' || status === 'warning' || status === 'incomplete'}>
-			<summary>
-				<ChevronIcon className="chevron" />
-				<StatusMark status={status} />
-				<span className="s-num">#{String(index).padStart(2, '0')}</span>
-				<span className="s-name">{name}</span>
-				<span className="s-aside">
-					{steps.data && steps.data.length > 0 && (
-						<span>
-							{steps.data.length} {steps.data.length === 1 ? 'step' : 'steps'}
-							{failedCount > 0 && (
-								<span style={{ color: 'var(--fail)' }}> · {failedCount} failed</span>
-							)}
-							{fixmeCount > 0 && (
-								<span style={{ color: 'var(--run)' }}> · {fixmeCount} known</span>
-							)}
-							{todoCount > 0 && (
-								<span style={{ color: 'var(--text-soft)' }}> · {todoCount} pending</span>
-							)}
-							{blockedCount > 0 && (
-								<span style={{ color: 'var(--run)' }}> · {blockedCount} blocked</span>
-							)}
-						</span>
-					)}
-					{hash && <span className="hash">#{hash}</span>}
-					<span className="duration">
-						<ClockIcon className="icon" />
-						<span className="tabular">{fmtDuration(durationMs)}</span>
-					</span>
-				</span>
-			</summary>
-			{hasMeta && (
-				<div className="s-meta">
-					{feature && <span className="meta-chip feature" title="Feature / requirement">{feature}</span>}
-					{seeds.map(s => <span key={`seed-${s}`} className="meta-chip seed" title="Required seed">{s}</span>)}
-					{roles.map(r => <span key={`role-${r}`} className="meta-chip role" title="Acting role">{r}</span>)}
-				</div>
-			)}
-			{steps.isLoading ? (
-				<div className="steps"><Loading message="Loading steps…" /></div>
-			) : !steps.data || steps.data.length === 0 ? (
-				<div className="steps">
-					<div className="muted" style={{ padding: '12px 16px', fontSize: 12.5 }}>
-						No steps recorded.
-					</div>
-				</div>
-			) : (
-				<div className="steps">
-					{steps.data.map(st => {
-						// A pending step with a reason is 'blocked' (feature not built).
-						const blocked = st.status === 'pending' && !!st.reason
-						const display = blocked ? 'blocked' : st.status
-						return (
-							<div className={`step${st.kind === 'invariant' ? ' invariant' : ''}${st.status === 'pending' ? ' pending' : ''}${blocked ? ' blocked' : ''}`} key={st.id}>
-								<span className="step-mark"><StatusMark status={display} className="mini" /></span>
-								<span className="step-name">
-									{st.kind === 'invariant' && <span className="step-kind" title="Scenario-level acceptance">invariant</span>}
-									{st.name}
-								</span>
-								<span className="duration">{st.status === 'pending' ? (blocked ? 'blocked' : 'not authored') : fmtDuration(st.durationMs)}</span>
-								{(st.intent || st.error || st.reason || st.screenshotUrl) && (
-									<div className="step-detail">
-										{st.intent && <div className="step-intent">{st.intent}</div>}
-										{st.reason && (
-											<div className="step-reason">
-												{blocked ? 'Blocked' : st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}
-											</div>
-										)}
-										{st.error && <div className="step-error">{st.error}</div>}
-										{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
-									</div>
-								)}
-							</div>
-						)
-					})}
-				</div>
-			)}
-		</details>
 	)
 }
