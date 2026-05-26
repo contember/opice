@@ -102,11 +102,16 @@ function toStringArray(value: unknown): string[] | undefined {
 }
 
 async function finishScenario(request: Request, services: Services, scenarioId: string): Promise<Response> {
-	const body = await readJson<{ status?: ScenarioStatus; durationMs?: number }>(request)
+	const body = await readJson<{ status?: ScenarioStatus; durationMs?: number; attempts?: number }>(request)
 	if (!body?.status || !ACCEPTED_SCENARIO_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
 		return badRequest('status (passed|failed) and durationMs are required')
 	}
-	await services.db.finishScenario({ id: scenarioId, status: body.status, durationMs: body.durationMs })
+	await services.db.finishScenario({
+		id: scenarioId,
+		status: body.status,
+		durationMs: body.durationMs,
+		attempts: typeof body.attempts === 'number' ? body.attempts : undefined,
+	})
 	return json({ ok: true })
 }
 
@@ -118,6 +123,7 @@ async function createStep(
 	scenarioId: string,
 ): Promise<Response> {
 	const body = await readJson<{
+		attempt?: number
 		sequence?: number
 		kind?: StepKind
 		name?: string
@@ -134,6 +140,7 @@ async function createStep(
 
 	const stepId = await services.db.createStep({
 		scenarioId,
+		attempt: typeof body.attempt === 'number' ? body.attempt : undefined,
 		sequence: typeof body.sequence === 'number' ? body.sequence : undefined,
 		kind: body.kind && ACCEPTED_STEP_KINDS.includes(body.kind) ? body.kind : 'step',
 		name: body.name,

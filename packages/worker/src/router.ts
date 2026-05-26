@@ -85,6 +85,7 @@ const ScenarioSchema = z.object({
 	roles: z.array(z.string()),
 	status: StatusSchema,
 	durationMs: z.number().nullable(),
+	attempts: z.number(),
 	startedAt: z.number(),
 	finishedAt: z.number().nullable(),
 })
@@ -92,6 +93,7 @@ const ScenarioSchema = z.object({
 const StepSchema = z.object({
 	id: z.number(),
 	scenarioId: z.string(),
+	attempt: z.number(),
 	sequence: z.number(),
 	kind: z.enum(['step', 'invariant']),
 	name: z.string(),

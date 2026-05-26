@@ -96,6 +96,11 @@ export interface Scenario {
 	roles: string[]
 	status: ScenarioDisplayStatus
 	durationMs: number | null
+	/**
+	 * How many attempts the scenario took (>= 1). A passed scenario with
+	 * `attempts > 1` is flaky — it failed at least once before passing.
+	 */
+	attempts: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -103,6 +108,8 @@ export interface Scenario {
 export interface Step {
 	id: number
 	scenarioId: string
+	/** Which retry attempt (0-based) produced this step. */
+	attempt: number
 	sequence: number
 	/** 'step' (procedural) or 'invariant' (scenario-level acceptance). */
 	kind: StepKind

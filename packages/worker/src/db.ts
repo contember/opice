@@ -8,9 +8,15 @@ const WARNING_STEP_SQL = `status IN ('fixme', 'fixmepass')`
 // one (and no hard failure) reads as 'incomplete' — it outranks 'warning'.
 const PENDING_STEP_SQL = `status = 'pending'`
 
+// Steps of a scenario's *final* attempt. Retries keep earlier attempts' steps
+// in the table (forensics), but status overlays and step reads must consider
+// only the attempt that decided the scenario — a 'fixme'/'pending' step from a
+// discarded earlier attempt mustn't colour the final result.
+const LATEST_ATTEMPT_SQL = `st.attempt = (SELECT MAX(attempt) FROM steps WHERE scenario_id = s.id)`
+
 // EXISTS predicates over a scenario `s`, reused across the run-count queries.
-const HAS_PENDING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${PENDING_STEP_SQL})`
-const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL})`
+const HAS_PENDING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND ${LATEST_ATTEMPT_SQL} AND st.${PENDING_STEP_SQL})`
+const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND ${LATEST_ATTEMPT_SQL} AND st.${WARNING_STEP_SQL})`
 
 // A run with no ingest activity for this long is considered abandoned: the
 // reaper finalizes it as 'incomplete', and reads display it that way even
@@ -97,6 +103,7 @@ interface ScenarioRow {
 	roles: string | null
 	status: ScenarioStatus
 	duration_ms: number | null
+	attempts: number
 	started_at: number
 	finished_at: number | null
 	// Computed per read: 1 when the scenario carries a tolerated fixme step /
@@ -108,6 +115,7 @@ interface ScenarioRow {
 interface StepRow {
 	id: number
 	scenario_id: string
+	attempt: number
 	sequence: number
 	kind: StepKind
 	name: string
@@ -197,6 +205,7 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 		? (r.has_pending ? 'incomplete' : r.has_warning ? 'warning' : 'passed')
 		: r.status,
 	durationMs: r.duration_ms,
+	attempts: r.attempts,
 	startedAt: r.started_at,
 	finishedAt: r.finished_at,
 })
@@ -204,6 +213,7 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 const toStep = (r: StepRow): Step => ({
 	id: r.id,
 	scenarioId: r.scenario_id,
+	attempt: r.attempt,
 	sequence: r.sequence,
 	kind: r.kind,
 	name: r.name,
@@ -524,10 +534,13 @@ export class Db {
 		return row ? toScenario(row) : null
 	}
 
-	async finishScenario(input: { id: string; status: ScenarioStatus; durationMs: number }): Promise<void> {
+	async finishScenario(input: { id: string; status: ScenarioStatus; durationMs: number; attempts?: number }): Promise<void> {
+		// `attempts` defaults to 1 (column default) for older clients that don't
+		// report it; clamp to >= 1 so a flaky badge keys cleanly off attempts > 1.
+		const attempts = typeof input.attempts === 'number' && input.attempts >= 1 ? input.attempts : 1
 		await this.d1
-			.prepare(`UPDATE scenarios SET status = ?, duration_ms = ?, finished_at = ? WHERE id = ?`)
-			.bind(input.status, input.durationMs, Date.now(), input.id)
+			.prepare(`UPDATE scenarios SET status = ?, duration_ms = ?, attempts = ?, finished_at = ? WHERE id = ?`)
+			.bind(input.status, input.durationMs, attempts, Date.now(), input.id)
 			.run()
 	}
 
@@ -545,6 +558,12 @@ export class Db {
 	async createStep(input: {
 		scenarioId: string
 		/**
+		 * Which retry attempt (0-based) produced this step. Steps from earlier
+		 * attempts are retained but not displayed (see LATEST_ATTEMPT_SQL).
+		 * Older clients omit it; defaults to 0 (the column default).
+		 */
+		attempt?: number
+		/**
 		 * Authoring order from the harness. Authoritative when provided —
 		 * step POSTs arrive fire-and-forget, so deriving order from arrival
 		 * (MAX+1) reshuffles them by screenshot-encoding latency. Older
@@ -560,19 +579,21 @@ export class Db {
 		reason?: string
 		screenshotKey?: string
 	}): Promise<number> {
+		const attempt = typeof input.attempt === 'number' && input.attempt >= 0 ? input.attempt : 0
 		let sequence = input.sequence
 		if (typeof sequence !== 'number') {
 			const next = await this.d1
-				.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS next FROM steps WHERE scenario_id = ?')
-				.bind(input.scenarioId)
+				.prepare('SELECT COALESCE(MAX(sequence), -1) + 1 AS next FROM steps WHERE scenario_id = ? AND attempt = ?')
+				.bind(input.scenarioId, attempt)
 				.first<{ next: number }>()
 			sequence = next?.next ?? 0
 		}
 		const result = await this.d1
-			.prepare(`INSERT INTO steps (scenario_id, sequence, kind, name, status, duration_ms, error, intent, reason, screenshot_r2_key, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.prepare(`INSERT INTO steps (scenario_id, attempt, sequence, kind, name, status, duration_ms, error, intent, reason, screenshot_r2_key, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.scenarioId,
+				attempt,
 				sequence,
 				input.kind ?? 'step',
 				input.name,
@@ -596,9 +617,14 @@ export class Db {
 	}
 
 	async listStepsForScenario(scenarioId: string): Promise<Step[]> {
+		// Only the final attempt's steps are displayed — earlier attempts of a
+		// retried scenario are kept for forensics but would otherwise show as
+		// duplicate, stale (often failed) rows in the timeline.
 		const { results } = await this.d1
-			.prepare('SELECT * FROM steps WHERE scenario_id = ? ORDER BY sequence')
-			.bind(scenarioId)
+			.prepare(`SELECT * FROM steps WHERE scenario_id = ?
+				AND attempt = (SELECT MAX(attempt) FROM steps WHERE scenario_id = ?)
+				ORDER BY sequence`)
+			.bind(scenarioId, scenarioId)
 			.all<StepRow>()
 		return results.map(toStep)
 	}
