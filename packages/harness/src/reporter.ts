@@ -37,6 +37,12 @@ export interface ReporterConfig {
 
 export interface StepEvent {
 	scenarioId: string
+	/**
+	 * 0-based retry attempt that produced this step. The platform shows only the
+	 * final attempt's steps; earlier attempts are kept for forensics. Defaults
+	 * to 0 on the platform side when omitted (older clients).
+	 */
+	attempt?: number
 	/** Authoring order within the scenario, assigned at step() call time. */
 	sequence: number
 	/**
@@ -80,6 +86,11 @@ export interface ScenarioFinish {
 	scenarioId: string
 	status: 'passed' | 'failed'
 	durationMs: number
+	/**
+	 * Total attempts the scenario took (>= 1). A passed scenario with
+	 * `attempts > 1` is flaky. Omitted ⇒ the platform defaults it to 1.
+	 */
+	attempts?: number
 }
 
 export interface Reporter {
@@ -171,6 +182,7 @@ class HttpReporter implements Reporter {
 			? await this.encodeScreenshot(event.screenshotPath)
 			: undefined
 		await this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+			attempt: event.attempt,
 			sequence: event.sequence,
 			kind: event.kind,
 			name: event.name,
@@ -190,6 +202,7 @@ class HttpReporter implements Reporter {
 		await this.fetch('PATCH', `/api/v1/runs/${runId}/scenarios/${input.scenarioId}`, {
 			status: input.status,
 			durationMs: input.durationMs,
+			attempts: input.attempts,
 		})
 	}
 

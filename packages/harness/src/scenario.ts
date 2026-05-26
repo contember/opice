@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { closePage, getContext, launchPage } from './context.js'
 import { screenshot } from './element.js'
-import { getReporter } from './reporter.js'
+import { getReporter, type Reporter } from './reporter.js'
 import { loadUserSetup } from './setup.js'
 
 /**
@@ -51,7 +51,38 @@ export interface BrowserTestMeta {
 	seeds?: string[]
 	/** Identities / roles the scenario acts as, e.g. `['crmOperator']`. */
 	roles?: string[]
+	/**
+	 * One-time scenario setup, run once before the walkthrough (in `beforeAll`) —
+	 * the place for "establish a precondition the steps assume", e.g. minting
+	 * auth tokens. Replaces a hand-written `beforeAll` in the body form. Runs
+	 * before any browser navigation, so it can register cookies/identity the
+	 * first paint needs.
+	 */
+	setup?: () => void | Promise<void>
+	/**
+	 * Per-scenario retry budget (body form only). A flaky scenario that fails
+	 * then passes within the budget is reported as **passed but flaky** (the
+	 * dashboard badges it). Each attempt gets a fresh browser + a clean
+	 * navigation, so a retry can't inherit the failed attempt's page state.
+	 *
+	 * Omit to inherit the global default (`opice test --retries=N` / `bun test
+	 * --retry=N`). Ignored by the legacy registrar form (it can't be retried
+	 * cleanly — it shares one browser across its `test()` blocks).
+	 */
+	retries?: number
+	/**
+	 * Per-scenario timeout (ms) for the walkthrough body. Defaults to
+	 * {@link DEFAULT_WALKTHROUGH_TIMEOUT_MS}. Body form only.
+	 */
+	timeout?: number
 }
+
+/**
+ * Default timeout for a walkthrough body. A real browser walk — first page
+ * load, async data, a dev server compiling a chunk on first hit — easily
+ * exceeds bun's 5s default; each retrying assertion still bounds itself.
+ */
+export const DEFAULT_WALKTHROUGH_TIMEOUT_MS = 60_000
 
 /**
  * Best-effort capture of the `*.test.ts` path that called `browserTest`, by
@@ -85,19 +116,38 @@ let currentScenarioPending = 0
 // fire-and-forget and would otherwise be sequenced by arrival order at the
 // worker, which screenshot-encoding latency can reshuffle.
 let currentScenarioStepSeq = 0
+// 0-based index of the current attempt. In the body form the walkthrough wrapper
+// bumps it on every (re-)invocation, so steps carry the attempt that produced
+// them and the dashboard shows only the final one. The legacy form never
+// retries, so it stays 0.
+let currentAttempt = 0
 
 /**
- * Register a top-level browser test scenario.
+ * Register a top-level browser test scenario. Two forms, picked automatically:
  *
- * Each `browserTest(meta, fn)` launches its own isolated Playwright browser +
- * context + page, navigates to the playground URL, runs the given `fn` (which
- * typically contains nested `describe`/`test` blocks), and tears the browser
- * down in `afterAll`.
+ * **Body form (preferred)** — pass an **async** function; it IS the walkthrough:
  *
- * Metadata is the **first** argument (`{ name, url, hash, feature, seeds,
- * roles }`); `name` is required.
+ *     browserTest({ name: '…', retries: 2, setup: () => mintTokens() }, async () => {
+ *       await step('…', async () => { … })
+ *     })
+ *
+ * `browserTest` owns the single `test('walkthrough', …)` call, so it honours
+ * `meta.retries` (bun `{ retry }`) and `meta.timeout`. Each attempt opens a
+ * **fresh** browser context + clean navigation, so a retry never inherits the
+ * failed attempt's page state. `meta.setup` runs once before the walkthrough.
+ *
+ * **Legacy registrar form** — pass a **sync** function that registers its own
+ * `beforeAll`/`test`/`describe` blocks (the old multi-test pattern). The browser
+ * is launched once in `beforeAll` and shared across those blocks. It can't be
+ * retried cleanly (shared state), so `meta.retries` is ignored.
+ *
+ * The two are told apart by whether `fn` is an `AsyncFunction`: a walkthrough
+ * body always awaits its steps; a registrar never needs to be async.
+ *
+ * Metadata is the **first** argument (`{ name, url, hash, feature, seeds, roles,
+ * setup, retries, timeout }`); `name` is required.
  */
-export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
+export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void>): void {
 	if (typeof meta === 'string') {
 		// Migration aid: the old signature was `browserTest(name, fn, options)`.
 		throw new Error(
@@ -110,14 +160,18 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
 	}
 	const reporter = getReporter()
 	const testFile = captureTestFile()
-	const { describe, beforeAll, afterAll } = bunTest()
+	const { describe, beforeAll, afterAll, test } = bunTest()
+	// An async fn is the walkthrough body (browserTest owns its test()); a sync
+	// fn is the legacy registrar (it registers its own test()/hooks).
+	const isBody = fn.constructor.name === 'AsyncFunction'
 
 	describe(meta.name, () => {
 		beforeAll(async () => {
 			currentScenarioStart = Date.now()
-			currentScenarioFailures = 0
 			currentScenarioPending = 0
+			currentScenarioFailures = 0
 			currentScenarioStepSeq = 0
+			currentAttempt = 0
 			try {
 				currentScenarioId = await reporter.startScenario({
 					name: meta.name,
@@ -131,47 +185,28 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
 				currentScenarioId = null
 			}
 			try {
-				const page = await launchPage()
-				// Repo-level context setup (browser-setup.ts) runs before the first
-				// navigation, so an addInitScript it registers fires before the app's
-				// own scripts on first paint.
-				const setup = await loadUserSetup()
-				if (setup) await setup(getContext())
-				const base = meta.url ?? PLAYGROUND_URL
-				const url = meta.hash ? `${base}#${meta.hash}` : base
-				// `domcontentloaded`, not the default `load`: an SPA paints after its JS
-				// runs and may hold `load` on a slow chunk or long-lived connection, so
-				// waiting for `load` flakily times out under CI contention. Readiness is
-				// handled by the test's retrying assertions.
-				await page.goto(url, { waitUntil: 'domcontentloaded' })
+				// One-time precondition (mint tokens, …), before any navigation.
+				if (meta.setup) await meta.setup()
+				// Body form opens the browser per attempt (in the test wrapper);
+				// the legacy registrar shares one browser, launched here once.
+				if (!isBody) await openScenario(meta)
 			} catch (e) {
-				// Setup failed before any step ran (e.g. a wrong playground URL whose
-				// goto is refused). bun:test does NOT run afterAll when beforeAll
-				// throws, so the scenario we already started above would otherwise
-				// sit on the dashboard as 'running' forever (see reporter.ts) —
-				// invisible as a failure even though CI is red. Record a synthetic
-				// failed step so the dashboard shows *why*, finish the scenario as
-				// failed, then re-throw so the run still fails.
-				currentScenarioFailures++
+				// Setup failed before any step ran. bun:test does NOT run afterAll
+				// when beforeAll throws, so the scenario started above would otherwise
+				// sit on the dashboard as 'running' forever — record a synthetic failed
+				// step, finish it as failed here, then re-throw so the run stays red.
+				await recordSetupFailure(reporter, e)
 				if (currentScenarioId) {
-					const error = e instanceof Error ? e.message : String(e)
-					const durationMs = Date.now() - currentScenarioStart
 					try {
-						await reporter.recordStep({
+						await reporter.finishScenario({
 							scenarioId: currentScenarioId,
-							sequence: currentScenarioStepSeq++,
-							kind: 'step',
-							name: 'scenario setup',
 							status: 'failed',
-							durationMs,
-							error,
+							durationMs: Date.now() - currentScenarioStart,
+							attempts: 1,
 						})
-						await reporter.finishScenario({ scenarioId: currentScenarioId, status: 'failed', durationMs })
 					} catch {
-						// best-effort: reporting the failure must never mask the
-						// original setup error we're about to re-throw.
+						// best-effort
 					}
-					// Null it so afterAll (should it run) doesn't double-finish.
 					currentScenarioId = null
 				}
 				throw e
@@ -207,7 +242,9 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
 				const durationMs = Date.now() - currentScenarioStart
 				const status = currentScenarioFailures > 0 ? 'failed' : 'passed'
 				try {
-					await reporter.finishScenario({ scenarioId: currentScenarioId, status, durationMs })
+					// attempts = final attempt index + 1. A passed scenario with
+					// attempts > 1 failed at least once first → flaky.
+					await reporter.finishScenario({ scenarioId: currentScenarioId, status, durationMs, attempts: currentAttempt + 1 })
 				} catch {
 					// best-effort
 				}
@@ -215,8 +252,82 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
 			currentScenarioId = null
 		}, 30_000)
 
-		fn()
+		if (isBody) {
+			const body = fn as () => Promise<void>
+			const timeout = meta.timeout ?? DEFAULT_WALKTHROUGH_TIMEOUT_MS
+			// Only set `retry` when a budget is configured — leaving it unset lets
+			// bun's global `--retry` default apply; passing `retry: 0` overrides it.
+			const testOptions = meta.retries === undefined ? { timeout } : { timeout, retry: meta.retries }
+			// bun re-runs the test body for every retry attempt; `attempt` counts
+			// those invocations (0-based). Each opens a fresh browser + navigation.
+			let attempt = -1
+			test('walkthrough', async () => {
+				attempt++
+				currentAttempt = attempt
+				currentScenarioFailures = 0
+				currentScenarioStepSeq = 0
+				currentScenarioPending = 0
+				try {
+					await openScenario(meta)
+				} catch (e) {
+					// Setup failed: record it (afterAll finishes the scenario) and fail
+					// the attempt so bun retries or, once spent, leaves the run red.
+					await recordSetupFailure(reporter, e)
+					throw e
+				}
+				await body()
+			}, testOptions)
+		} else {
+			// Legacy registrar: it registers its own test()/hooks; the shared
+			// browser was opened in beforeAll above.
+			fn()
+		}
 	})
+}
+
+/**
+ * Open a fresh isolated browser context + page for `meta` and navigate to its
+ * scenario URL. `launchPage()` closes any previous context first, so calling
+ * this again (a retry attempt) tears down the failed attempt's page cleanly.
+ */
+async function openScenario(meta: BrowserTestMeta): Promise<void> {
+	const page = await launchPage()
+	// Repo-level context setup (browser-setup.ts) runs before the first
+	// navigation, so an addInitScript it registers fires before the app's own
+	// scripts on first paint.
+	const setup = await loadUserSetup()
+	if (setup) await setup(getContext())
+	const base = meta.url ?? PLAYGROUND_URL
+	const url = meta.hash ? `${base}#${meta.hash}` : base
+	// `domcontentloaded`, not the default `load`: an SPA paints after its JS runs
+	// and may hold `load` on a slow chunk or long-lived connection, so waiting for
+	// `load` flakily times out under CI contention. Readiness is handled by the
+	// test's retrying assertions.
+	await page.goto(url, { waitUntil: 'domcontentloaded' })
+}
+
+/**
+ * Record a synthetic failed 'scenario setup' step for the current attempt and
+ * count it toward scenario failures. Does NOT finish the scenario (the caller
+ * decides whether afterAll will, or whether it must finish inline).
+ */
+async function recordSetupFailure(reporter: Reporter, e: unknown): Promise<void> {
+	currentScenarioFailures++
+	if (!currentScenarioId) return
+	try {
+		await reporter.recordStep({
+			scenarioId: currentScenarioId,
+			attempt: currentAttempt,
+			sequence: currentScenarioStepSeq++,
+			kind: 'step',
+			name: 'scenario setup',
+			status: 'failed',
+			durationMs: Date.now() - currentScenarioStart,
+			error: e instanceof Error ? e.message : String(e),
+		})
+	} catch {
+		// best-effort: reporting the failure must never mask the original error.
+	}
 }
 
 type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
@@ -273,6 +384,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		if (currentScenarioId) {
 			void reporter.recordStep({
 				scenarioId: currentScenarioId,
+				attempt: currentAttempt,
 				sequence,
 				kind: unit.kind,
 				name: unit.name,
@@ -318,6 +430,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		if (currentScenarioId) {
 			void reporter.recordStep({
 				scenarioId: currentScenarioId,
+				attempt: currentAttempt,
 				sequence,
 				kind: unit.kind,
 				name: unit.name,

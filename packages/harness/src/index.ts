@@ -6,7 +6,7 @@ export { back, currentPath, currentUrl, forward, open, reload } from './navigati
 
 export { getPage, getContext } from './context.js'
 
-export { browserTest, invariant, step } from './scenario.js'
+export { browserTest, DEFAULT_WALKTHROUGH_TIMEOUT_MS, invariant, step } from './scenario.js'
 export type { BrowserTestMeta, StepContract } from './scenario.js'
 
 export { getReporter, setReporter, configureFromEnv } from './reporter.js'
