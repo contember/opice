@@ -33,9 +33,10 @@ function assertScope(ok: boolean): void {
 	if (!ok) forbidden()
 }
 
-// Scenarios add the computed 'warning' display status (a passed scenario that
-// carries a tolerated fixme step).
-const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning'])
+// Scenarios add the computed display statuses: 'warning' (a passed scenario
+// carrying a tolerated fixme step) and 'incomplete' (one carrying a pending,
+// unauthored step).
+const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning', 'incomplete'])
 // Runs add 'incomplete' (reaped / went stale) and 'warning' — both computed.
 const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete', 'warning'])
 
@@ -57,6 +58,7 @@ const RunSchema = z.object({
 	passedScenarios: z.number(),
 	failedScenarios: z.number(),
 	warningScenarios: z.number(),
+	incompleteScenarios: z.number(),
 	startedAt: z.number(),
 	finishedAt: z.number().nullable(),
 })
@@ -78,6 +80,9 @@ const ScenarioSchema = z.object({
 	hash: z.string().nullable(),
 	testFile: z.string().nullable(),
 	scenarioFile: z.string().nullable(),
+	feature: z.string().nullable(),
+	seeds: z.array(z.string()),
+	roles: z.array(z.string()),
 	status: StatusSchema,
 	durationMs: z.number().nullable(),
 	startedAt: z.number(),
@@ -88,10 +93,12 @@ const StepSchema = z.object({
 	id: z.number(),
 	scenarioId: z.string(),
 	sequence: z.number(),
+	kind: z.enum(['step', 'invariant']),
 	name: z.string(),
-	status: z.enum(['passed', 'failed', 'fixme', 'fixmepass']),
+	status: z.enum(['passed', 'failed', 'fixme', 'fixmepass', 'pending']),
 	durationMs: z.number(),
 	error: z.string().nullable(),
+	intent: z.string().nullable(),
 	reason: z.string().nullable(),
 	screenshotUrl: z.string().nullable(),
 	createdAt: z.number(),

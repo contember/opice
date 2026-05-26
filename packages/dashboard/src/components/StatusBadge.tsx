@@ -13,6 +13,8 @@ const GLYPH: Record<string, string> = {
 	warning: '!',
 	fixme: '~',
 	fixmepass: '!',
+	pending: '○',
+	blocked: '⊘',
 }
 
 const LABEL: Record<string, string> = {
@@ -23,6 +25,8 @@ const LABEL: Record<string, string> = {
 	warning: 'Warning',
 	fixme: 'Known failure',
 	fixmepass: 'Unexpected pass',
+	pending: 'Pending',
+	blocked: 'Blocked',
 }
 
 /**

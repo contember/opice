@@ -91,6 +91,9 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 							name={s.name}
 							status={s.status}
 							hash={s.hash}
+							feature={s.feature}
+							seeds={s.seeds}
+							roles={s.roles}
 							durationMs={s.durationMs}
 						/>
 					))}
@@ -199,12 +202,15 @@ interface ScenarioProps {
 	index: number
 	scenarioId: string
 	name: string
-	status: 'running' | 'passed' | 'failed' | 'warning'
+	status: 'running' | 'passed' | 'failed' | 'warning' | 'incomplete'
 	hash: string | null
+	feature: string | null
+	seeds: string[]
+	roles: string[]
 	durationMs: number | null
 }
 
-function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: ScenarioProps) {
+function ScenarioBlock({ index, scenarioId, name, status, hash, feature, seeds, roles, durationMs }: ScenarioProps) {
 	const steps = useQuery({
 		queryKey: ['scenarios.steps', scenarioId],
 		queryFn: () => rpc.scenarios.steps({ scenarioId }),
@@ -212,9 +218,14 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 
 	const failedCount = steps.data?.filter(s => s.status === 'failed').length ?? 0
 	const fixmeCount = steps.data?.filter(s => s.status === 'fixme' || s.status === 'fixmepass').length ?? 0
+	// A pending step with a reason is 'blocked' (feature not built); without, it's
+	// a plain todo awaiting authoring.
+	const todoCount = steps.data?.filter(s => s.status === 'pending' && !s.reason).length ?? 0
+	const blockedCount = steps.data?.filter(s => s.status === 'pending' && !!s.reason).length ?? 0
+	const hasMeta = !!feature || seeds.length > 0 || roles.length > 0
 
 	return (
-		<details className="scenario" open={status === 'failed' || status === 'warning'}>
+		<details className="scenario" open={status === 'failed' || status === 'warning' || status === 'incomplete'}>
 			<summary>
 				<ChevronIcon className="chevron" />
 				<StatusMark status={status} />
@@ -230,6 +241,12 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 							{fixmeCount > 0 && (
 								<span style={{ color: 'var(--run)' }}> · {fixmeCount} known</span>
 							)}
+							{todoCount > 0 && (
+								<span style={{ color: 'var(--text-soft)' }}> · {todoCount} pending</span>
+							)}
+							{blockedCount > 0 && (
+								<span style={{ color: 'var(--run)' }}> · {blockedCount} blocked</span>
+							)}
 						</span>
 					)}
 					{hash && <span className="hash">#{hash}</span>}
@@ -239,6 +256,13 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 					</span>
 				</span>
 			</summary>
+			{hasMeta && (
+				<div className="s-meta">
+					{feature && <span className="meta-chip feature" title="Feature / requirement">{feature}</span>}
+					{seeds.map(s => <span key={`seed-${s}`} className="meta-chip seed" title="Required seed">{s}</span>)}
+					{roles.map(r => <span key={`role-${r}`} className="meta-chip role" title="Acting role">{r}</span>)}
+				</div>
+			)}
 			{steps.isLoading ? (
 				<div className="steps"><Loading message="Loading steps…" /></div>
 			) : !steps.data || steps.data.length === 0 ? (
@@ -249,24 +273,33 @@ function ScenarioBlock({ index, scenarioId, name, status, hash, durationMs }: Sc
 				</div>
 			) : (
 				<div className="steps">
-					{steps.data.map(st => (
-						<div className="step" key={st.id}>
-							<span className="step-mark"><StatusMark status={st.status} className="mini" /></span>
-							<span className="step-name">{st.name}</span>
-							<span className="duration">{fmtDuration(st.durationMs)}</span>
-							{(st.error || st.reason || st.screenshotUrl) && (
-								<div className="step-detail">
-									{st.reason && (
-										<div className="step-reason">
-											{st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}
-										</div>
-									)}
-									{st.error && <div className="step-error">{st.error}</div>}
-									{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
-								</div>
-							)}
-						</div>
-					))}
+					{steps.data.map(st => {
+						// A pending step with a reason is 'blocked' (feature not built).
+						const blocked = st.status === 'pending' && !!st.reason
+						const display = blocked ? 'blocked' : st.status
+						return (
+							<div className={`step${st.kind === 'invariant' ? ' invariant' : ''}${st.status === 'pending' ? ' pending' : ''}${blocked ? ' blocked' : ''}`} key={st.id}>
+								<span className="step-mark"><StatusMark status={display} className="mini" /></span>
+								<span className="step-name">
+									{st.kind === 'invariant' && <span className="step-kind" title="Scenario-level acceptance">invariant</span>}
+									{st.name}
+								</span>
+								<span className="duration">{st.status === 'pending' ? (blocked ? 'blocked' : 'not authored') : fmtDuration(st.durationMs)}</span>
+								{(st.intent || st.error || st.reason || st.screenshotUrl) && (
+									<div className="step-detail">
+										{st.intent && <div className="step-intent">{st.intent}</div>}
+										{st.reason && (
+											<div className="step-reason">
+												{blocked ? 'Blocked' : st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}
+											</div>
+										)}
+										{st.error && <div className="step-error">{st.error}</div>}
+										{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
+									</div>
+								)}
+							</div>
+						)
+					})}
 				</div>
 			)}
 		</details>

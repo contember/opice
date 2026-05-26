@@ -6,16 +6,21 @@
 
 // Stored lifecycle status for runs and scenarios.
 export type ScenarioStatus = 'running' | 'passed' | 'failed'
-// On read, a passed scenario/run that contains a tolerated fixme step is shown
-// as 'warning' (amber) — computed, never stored, like 'incomplete'.
-export type ScenarioDisplayStatus = ScenarioStatus | 'warning'
+// On read, a scenario is shown as 'incomplete' when it carries a pending
+// (unauthored) step, or 'warning' when it carries a tolerated fixme step — both
+// computed, never stored. 'incomplete' outranks 'warning'.
+export type ScenarioDisplayStatus = ScenarioStatus | 'warning' | 'incomplete'
 // Runs add 'incomplete' — a computed display status (a run that never finished
-// and was reaped, or whose last activity went stale) — and 'warning'. Neither
-// is stored; both are derived at read time.
+// and was reaped, whose last activity went stale, or that contains a scenario
+// with pending steps) — and 'warning'. Neither is stored; both are derived at
+// read time.
 export type RunStatus = ScenarioStatus | 'incomplete' | 'warning'
 // 'fixme'/'fixmepass' are tolerated known-failure markers (see step.fixme):
-// 'fixme' failed as expected, 'fixmepass' unexpectedly passed.
-export type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass'
+// 'fixme' failed as expected, 'fixmepass' unexpectedly passed. 'pending' is a
+// phase-1 skeleton stub that never ran (no body yet).
+export type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
+// A step is a procedural step or a scenario-level acceptance ('invariant').
+export type StepKind = 'step' | 'invariant'
 export type RunSource = 'ci' | 'local'
 
 /**
@@ -62,8 +67,10 @@ export interface Run {
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
-	/** Subset of passed scenarios that carry a tolerated fixme step. */
+	/** Subset of passed scenarios that carry a tolerated fixme step (and no pending step). */
 	warningScenarios: number
+	/** Subset of passed scenarios that carry a pending (unauthored) step. */
+	incompleteScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -81,6 +88,12 @@ export interface Scenario {
 	hash: string | null
 	testFile: string | null
 	scenarioFile: string | null
+	/** Requirement / feature id this scenario covers (browserTest meta). */
+	feature: string | null
+	/** Seeds the scenario declared as preconditions (browserTest meta). */
+	seeds: string[]
+	/** Identities / roles the scenario acts as (browserTest meta). */
+	roles: string[]
 	status: ScenarioDisplayStatus
 	durationMs: number | null
 	startedAt: number
@@ -91,10 +104,14 @@ export interface Step {
 	id: number
 	scenarioId: string
 	sequence: number
+	/** 'step' (procedural) or 'invariant' (scenario-level acceptance). */
+	kind: StepKind
 	name: string
 	status: StepStatus
 	durationMs: number
 	error: string | null
+	/** Durable rationale carried from the step's contract (phase-1 intent). */
+	intent: string | null
 	/** Mandatory note from step.fixme (why the failure is tolerated). */
 	reason: string | null
 	screenshotKey: string | null

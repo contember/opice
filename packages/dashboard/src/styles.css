@@ -1276,3 +1276,73 @@ main {
 	transition: color 0.12s ease, background 0.12s ease;
 }
 .copy-btn:hover { color: var(--text); background: var(--surface-hover); }
+
+/* ── Two-phase authoring: pending steps, invariants, intent, metadata ─────── */
+
+/* Pending: a phase-1 stub that never ran. Muted/dashed, like 'incomplete'. */
+.status-dot.pending { background: transparent; color: var(--text-faint); border-color: color-mix(in srgb, var(--text-faint) 55%, transparent); border-style: dashed; }
+.status-dot.mini.pending { background: transparent; color: var(--text-faint); border-color: color-mix(in srgb, var(--text-faint) 55%, transparent); border-style: dashed; }
+.status-inline.pending { color: var(--text-soft); background: color-mix(in srgb, var(--text-soft) 12%, transparent); border-color: color-mix(in srgb, var(--text-soft) 30%, transparent); }
+
+/* Incomplete summary cell + progress segment (a scenario carrying a pending step). */
+.summary .cell .v.incomplete { color: var(--text-mute); }
+.summary .bar .seg.incomplete { background: color-mix(in srgb, var(--text-faint) 60%, transparent); }
+
+/* Scenario metadata row (browserTest feature/seeds/roles). */
+.scenario .s-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 8px 16px 4px;
+}
+.scenario .s-meta .meta-chip {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.4;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	color: var(--text-mute);
+	background: var(--surface-2);
+}
+.scenario .s-meta .meta-chip.feature { color: var(--accent); background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.scenario .s-meta .meta-chip.seed::before { content: 'seed '; color: var(--text-faint); }
+.scenario .s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
+
+/* A step's durable intent (phase-1 contract) — quiet, above any error. */
+.step .step-intent {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-mute);
+	border-left: 2px solid var(--border);
+	padding: 2px 0 2px 10px;
+	margin-bottom: 6px;
+}
+
+/* Invariant: a scenario-level acceptance, marked apart from procedural steps. */
+.step.invariant { background: color-mix(in srgb, var(--accent-tint) 50%, transparent); }
+.step .step-kind {
+	display: inline-block;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--accent);
+	border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+	border-radius: 3px;
+	padding: 0 5px;
+	margin-right: 7px;
+	vertical-align: middle;
+}
+
+/* Pending step: dim the name, italic "not authored" duration. */
+.step.pending .step-name { color: var(--text-mute); }
+.step.pending .duration { font-style: italic; color: var(--text-faint); }
+
+/* Blocked: a pending stub that can't be authored yet (feature not built).
+ * Amber, distinct from a plain grey todo — it needs the app, not just a test. */
+.status-dot.blocked { background: transparent; color: var(--run); border-color: color-mix(in srgb, var(--run) 55%, transparent); border-style: dashed; }
+.status-dot.mini.blocked { background: transparent; color: var(--run); border-color: color-mix(in srgb, var(--run) 55%, transparent); border-style: dashed; }
+.status-inline.blocked { color: var(--run); background: var(--run-soft); border-color: color-mix(in srgb, var(--run) 30%, transparent); }
+.step.blocked .step-name { color: var(--run); }
+.step.blocked .duration { color: var(--run); }

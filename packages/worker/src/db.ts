@@ -1,8 +1,16 @@
-import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepStatus, Token } from './types'
+import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus, Token } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
-// carrying one of these (and no hard failure) reads as 'warning', not 'passed'.
+// carrying one of these (and no hard failure / no pending step) reads as
+// 'warning', not 'passed'.
 const WARNING_STEP_SQL = `status IN ('fixme', 'fixmepass')`
+// A pending step is a phase-1 skeleton stub that never ran. A scenario carrying
+// one (and no hard failure) reads as 'incomplete' — it outranks 'warning'.
+const PENDING_STEP_SQL = `status = 'pending'`
+
+// EXISTS predicates over a scenario `s`, reused across the run-count queries.
+const HAS_PENDING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${PENDING_STEP_SQL})`
+const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL})`
 
 // A run with no ingest activity for this long is considered abandoned: the
 // reaper finalizes it as 'incomplete', and reads display it that way even
@@ -56,8 +64,11 @@ interface RunCountsRow {
 	live_total: number | null
 	live_passed: number | null
 	live_failed: number | null
-	// Passed scenarios that carry a tolerated fixme step → shown as warnings.
+	// Passed scenarios that carry a tolerated fixme step (and no pending step)
+	// → shown as warnings.
 	live_warning: number | null
+	// Passed scenarios that carry a pending step → shown as incomplete.
+	live_incomplete: number | null
 }
 
 /**
@@ -81,23 +92,29 @@ interface ScenarioRow {
 	hash: string | null
 	test_file: string | null
 	scenario_file: string | null
+	feature: string | null
+	seeds: string | null
+	roles: string | null
 	status: ScenarioStatus
 	duration_ms: number | null
 	started_at: number
 	finished_at: number | null
-	// Computed per read: 1 when the scenario carries a tolerated fixme step.
-	// Absent on `SELECT *` reads where the warning state doesn't matter.
+	// Computed per read: 1 when the scenario carries a tolerated fixme step /
+	// a pending step. Absent on `SELECT *` reads where the state doesn't matter.
 	has_warning?: number
+	has_pending?: number
 }
 
 interface StepRow {
 	id: number
 	scenario_id: string
 	sequence: number
+	kind: StepKind
 	name: string
 	status: StepStatus
 	duration_ms: number
 	error: string | null
+	intent: string | null
 	reason: string | null
 	screenshot_r2_key: string | null
 	created_at: number
@@ -128,9 +145,13 @@ const toToken = (r: TokenRow): Token => ({
 const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 	const base = deriveStatus(r, now)
 	const warning = counts.live_warning ?? 0
-	// A passed run that contains a tolerated fixme step reads as 'warning'
-	// (amber) — never a hard fail. 'running'/'incomplete'/'failed' win.
-	const status: RunStatus = base === 'passed' && warning > 0 ? 'warning' : base
+	const incomplete = counts.live_incomplete ?? 0
+	// Overlay on a passed run, in priority order: a pending (unauthored) step →
+	// 'incomplete'; else a tolerated fixme step → 'warning' (amber). A hard
+	// fail / running / a reaped-or-stale 'incomplete' from deriveStatus all win.
+	const status: RunStatus = base === 'passed'
+		? (incomplete > 0 ? 'incomplete' : warning > 0 ? 'warning' : 'passed')
+		: base
 	return {
 		id: r.id,
 		projectId: r.project_id,
@@ -144,8 +165,19 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		passedScenarios: counts.live_passed ?? 0,
 		failedScenarios: counts.live_failed ?? 0,
 		warningScenarios: warning,
+		incompleteScenarios: incomplete,
 		startedAt: r.started_at,
 		finishedAt: r.finished_at,
+	}
+}
+
+const parseStringArray = (json: string | null): string[] => {
+	if (!json) return []
+	try {
+		const parsed = JSON.parse(json)
+		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+	} catch {
+		return []
 	}
 }
 
@@ -156,8 +188,14 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	hash: r.hash,
 	testFile: r.test_file,
 	scenarioFile: r.scenario_file,
-	// A passed scenario carrying a tolerated fixme step reads as 'warning'.
-	status: r.status === 'passed' && r.has_warning ? 'warning' : r.status,
+	feature: r.feature,
+	seeds: parseStringArray(r.seeds),
+	roles: parseStringArray(r.roles),
+	// Display overlay on a passed scenario, in priority order: a pending step →
+	// 'incomplete'; else a tolerated fixme step → 'warning'.
+	status: r.status === 'passed'
+		? (r.has_pending ? 'incomplete' : r.has_warning ? 'warning' : 'passed')
+		: r.status,
 	durationMs: r.duration_ms,
 	startedAt: r.started_at,
 	finishedAt: r.finished_at,
@@ -167,10 +205,12 @@ const toStep = (r: StepRow): Step => ({
 	id: r.id,
 	scenarioId: r.scenario_id,
 	sequence: r.sequence,
+	kind: r.kind,
 	name: r.name,
 	status: r.status,
 	durationMs: r.duration_ms,
 	error: r.error,
+	intent: r.intent,
 	reason: r.reason,
 	screenshotKey: r.screenshot_r2_key,
 	createdAt: r.created_at,
@@ -299,6 +339,7 @@ export class Db {
 			passedScenarios: 0,
 			failedScenarios: 0,
 			warningScenarios: 0,
+			incompleteScenarios: 0,
 			startedAt,
 			finishedAt: null,
 		}
@@ -311,7 +352,9 @@ export class Db {
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
-					AND EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL})) AS live_warning
+					AND ${HAS_WARNING} AND NOT ${HAS_PENDING}) AS live_warning,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
+					AND ${HAS_PENDING}) AS live_incomplete
 			FROM runs r WHERE r.id = ?`)
 			.bind(id)
 			.first<RunRow & RunCountsRow>()
@@ -327,7 +370,9 @@ export class Db {
 				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
 				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
-					AND EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL}) THEN 1 ELSE 0 END), 0) AS live_warning
+					AND ${HAS_WARNING} AND NOT ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_warning,
+				COALESCE(SUM(CASE WHEN s.status = 'passed'
+					AND ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_incomplete
 			FROM runs r LEFT JOIN scenarios s ON s.run_id = r.id
 			WHERE r.project_id = ?
 			GROUP BY r.id
@@ -347,7 +392,9 @@ export class Db {
 				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
 				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
-					AND EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL}) THEN 1 ELSE 0 END), 0) AS live_warning
+					AND ${HAS_WARNING} AND NOT ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_warning,
+				COALESCE(SUM(CASE WHEN s.status = 'passed'
+					AND ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_incomplete
 			FROM runs r JOIN projects p ON p.id = r.project_id
 			LEFT JOIN scenarios s ON s.run_id = r.id
 			GROUP BY r.id
@@ -383,7 +430,9 @@ export class Db {
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
-					AND EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL})) AS live_warning
+					AND ${HAS_WARNING} AND NOT ${HAS_PENDING}) AS live_warning,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
+					AND ${HAS_PENDING}) AS live_incomplete
 			FROM runs r JOIN ranked ON ranked.id = r.id AND ranked.rn = 1`)
 			.all<RunRow & RunCountsRow>()
 		const now = Date.now()
@@ -442,17 +491,33 @@ export class Db {
 		hash?: string
 		testFile?: string
 		scenarioFile?: string
+		feature?: string
+		seeds?: string[]
+		roles?: string[]
 	}): Promise<void> {
 		await this.d1
-			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, test_file, scenario_file, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`)
-			.bind(input.id, input.runId, input.name, input.hash ?? null, input.testFile ?? null, input.scenarioFile ?? null, Date.now())
+			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, test_file, scenario_file, feature, seeds, roles, status, started_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
+			.bind(
+				input.id,
+				input.runId,
+				input.name,
+				input.hash ?? null,
+				input.testFile ?? null,
+				input.scenarioFile ?? null,
+				input.feature ?? null,
+				input.seeds && input.seeds.length > 0 ? JSON.stringify(input.seeds) : null,
+				input.roles && input.roles.length > 0 ? JSON.stringify(input.roles) : null,
+				Date.now(),
+			)
 			.run()
 	}
 
 	async getScenario(id: string): Promise<Scenario | null> {
 		const row = await this.d1
 			.prepare(`SELECT s.*,
-				EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL}) AS has_warning
+				${HAS_WARNING} AS has_warning,
+				${HAS_PENDING} AS has_pending
 			FROM scenarios s WHERE s.id = ?`)
 			.bind(id)
 			.first<ScenarioRow>()
@@ -469,7 +534,8 @@ export class Db {
 	async listScenariosForRun(runId: string): Promise<Scenario[]> {
 		const { results } = await this.d1
 			.prepare(`SELECT s.*,
-				EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id AND st.${WARNING_STEP_SQL}) AS has_warning
+				${HAS_WARNING} AS has_warning,
+				${HAS_PENDING} AS has_pending
 			FROM scenarios s WHERE s.run_id = ? ORDER BY s.started_at`)
 			.bind(runId)
 			.all<ScenarioRow>()
@@ -485,10 +551,12 @@ export class Db {
 		 * clients omit it; fall back to MAX+1 for those.
 		 */
 		sequence?: number
+		kind?: StepKind
 		name: string
 		status: StepStatus
 		durationMs: number
 		error?: string
+		intent?: string
 		reason?: string
 		screenshotKey?: string
 	}): Promise<number> {
@@ -501,14 +569,17 @@ export class Db {
 			sequence = next?.next ?? 0
 		}
 		const result = await this.d1
-			.prepare(`INSERT INTO steps (scenario_id, sequence, name, status, duration_ms, error, reason, screenshot_r2_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.prepare(`INSERT INTO steps (scenario_id, sequence, kind, name, status, duration_ms, error, intent, reason, screenshot_r2_key, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.scenarioId,
 				sequence,
+				input.kind ?? 'step',
 				input.name,
 				input.status,
 				input.durationMs,
 				input.error ?? null,
+				input.intent ?? null,
 				input.reason ?? null,
 				input.screenshotKey ?? null,
 				Date.now(),

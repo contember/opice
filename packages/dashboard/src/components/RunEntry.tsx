@@ -13,6 +13,7 @@ interface RunLike {
 	passedScenarios: number
 	failedScenarios: number
 	warningScenarios: number
+	incompleteScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -50,6 +51,12 @@ export function RunEntry({ run: r, slug, projectName }: { run: RunLike; slug: st
 						<>
 							<span className="sep">·</span>
 							<span style={{ color: 'var(--run)' }}><strong className="tabular" style={{ color: 'var(--run)' }}>{r.warningScenarios}</strong> warning</span>
+						</>
+					)}
+					{r.incompleteScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--text-soft)' }}><strong className="tabular" style={{ color: 'var(--text-soft)' }}>{r.incompleteScenarios}</strong> incomplete</span>
 						</>
 					)}
 					<span className="sep">·</span>

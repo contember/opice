@@ -1,11 +1,13 @@
 import { badRequest, json, notFound, readJson, unauthorized } from '../http'
 import { authenticate, has } from '../principal'
 import type { Services } from '../services'
-import type { Project, ScenarioStatus, StepStatus } from '../types'
+import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
 
-// Steps accept the tolerated fixme markers; scenario finish does not (a scenario
-// is only ever passed/failed — a fixme step surfaces as a derived warning).
-const ACCEPTED_STEP_STATUSES: readonly StepStatus[] = ['passed', 'failed', 'fixme', 'fixmepass']
+// Steps accept the tolerated fixme markers + 'pending' (a phase-1 stub); scenario
+// finish does not (a scenario is only ever passed/failed — fixme/pending surface
+// as derived warning/incomplete).
+const ACCEPTED_STEP_STATUSES: readonly StepStatus[] = ['passed', 'failed', 'fixme', 'fixmepass', 'pending']
+const ACCEPTED_STEP_KINDS: readonly StepKind[] = ['step', 'invariant']
 const ACCEPTED_SCENARIO_STATUSES: readonly ScenarioStatus[] = ['passed', 'failed']
 
 export async function handleIngest(request: Request, services: Services, path: string[]): Promise<Response> {
@@ -65,13 +67,38 @@ async function createRun(request: Request, services: Services, project: Project)
 }
 
 async function createScenario(request: Request, services: Services, runId: string): Promise<Response> {
-	const body = await readJson<{ name?: string; hash?: string; testFile?: string; scenarioFile?: string }>(request)
+	const body = await readJson<{
+		name?: string
+		hash?: string
+		testFile?: string
+		scenarioFile?: string
+		feature?: string
+		seeds?: unknown
+		roles?: unknown
+	}>(request)
 	if (!body?.name) {
 		return badRequest('name is required')
 	}
 	const id = crypto.randomUUID()
-	await services.db.createScenario({ id, runId, name: body.name, hash: body.hash, testFile: body.testFile, scenarioFile: body.scenarioFile })
+	await services.db.createScenario({
+		id,
+		runId,
+		name: body.name,
+		hash: body.hash,
+		testFile: body.testFile,
+		scenarioFile: body.scenarioFile,
+		feature: body.feature,
+		seeds: toStringArray(body.seeds),
+		roles: toStringArray(body.roles),
+	})
 	return json({ scenarioId: id })
+}
+
+/** Accept a string[] from the reporter, ignoring anything that isn't one. */
+function toStringArray(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined
+	const out = value.filter((v): v is string => typeof v === 'string')
+	return out.length > 0 ? out : undefined
 }
 
 async function finishScenario(request: Request, services: Services, scenarioId: string): Promise<Response> {
@@ -92,24 +119,28 @@ async function createStep(
 ): Promise<Response> {
 	const body = await readJson<{
 		sequence?: number
+		kind?: StepKind
 		name?: string
 		status?: StepStatus
 		durationMs?: number
 		error?: string
+		intent?: string
 		reason?: string
 		screenshot?: string
 	}>(request)
 	if (!body?.name || !body.status || !ACCEPTED_STEP_STATUSES.includes(body.status) || typeof body.durationMs !== 'number') {
-		return badRequest('name, status (passed|failed|fixme|fixmepass), durationMs are required')
+		return badRequest('name, status (passed|failed|fixme|fixmepass|pending), durationMs are required')
 	}
 
 	const stepId = await services.db.createStep({
 		scenarioId,
 		sequence: typeof body.sequence === 'number' ? body.sequence : undefined,
+		kind: body.kind && ACCEPTED_STEP_KINDS.includes(body.kind) ? body.kind : 'step',
 		name: body.name,
 		status: body.status,
 		durationMs: body.durationMs,
 		error: body.error,
+		intent: body.intent,
 		reason: body.reason,
 	})
 
