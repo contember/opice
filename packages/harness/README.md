@@ -19,7 +19,7 @@ Runs under the Bun test runner.
 import { test, describe } from 'bun:test'
 import { browserTest, el, byRole, byLabel, step, expect } from '@opice/harness'
 
-browserTest('DataGrid', () => {
+browserTest({ name: 'DataGrid', hash: 'datagrid' }, () => {
   test('renders and is interactive', async () => {
     await step('table is visible', async () => {
       await expect(el('datagrid-table')).toBeVisible()
@@ -30,7 +30,7 @@ browserTest('DataGrid', () => {
       await expect(el('datagrid-row-0')).toHaveAttribute('data-highlighted', '')
     })
   }, 60_000)
-}, { hash: 'datagrid' })
+})
 ```
 
 The DSL is **async** and returns Playwright `Locator`s, so the full Locator API

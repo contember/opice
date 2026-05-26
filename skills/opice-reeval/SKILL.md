@@ -50,9 +50,12 @@ opice failures "<run-url-or-id>" --json # if you want to parse it
 ```
 
 This gives you, per failed scenario: the failing step, the error, an absolute
-(tokened) screenshot URL, and the **source files** (`test_file`,
-`scenario_file`) — so you don't have to grep. If `opice failures` can't reach
-the platform or the token is missing, fall back to CI logs:
+(tokened) screenshot URL, and the **source file** (`test_file`) — so you don't
+have to grep. The test IS the spec: each step carries its durable `intent` and
+the scenario carries its `invariant`s, so everything you need to judge "is this
+the right assertion?" is in that one file (no separate `.scenario.md`). If
+`opice failures` can't reach the platform or the token is missing, fall back to
+CI logs:
 
 ```bash
 gh run view <run-id> --log-failed     # the raw bun assertion + stack
@@ -71,7 +74,8 @@ curl -s "<screenshot-url-with-token>" -o /tmp/opice-fail-<n>.png
 ```
 
 Read `/tmp/opice-fail-<n>.png` and the step error together. Open the
-`test_file` and its `scenario_file`.
+`test_file` — the failing step's `intent` (and any scenario `invariant`) tells
+you what the assertion was *supposed* to prove.
 
 ### 3. Reproduce locally
 
@@ -103,17 +107,18 @@ Classify the divergence:
   selector/locator to a stable one (`el`/`byRole`/`byLabel`). Test fix. ✔
 - **Timing** (assertion ran before async UI settled): replace fixed waits with a
   retrying `await expect(el(x)).toHaveText(...)` on a stable marker. Test fix. ✔
-- **Scenario wrong** (the scenario described behaviour the app never had / no
-  longer should have): the scenario is the bug — update the `*.scenario.md` and
-  regenerate the step, and say so. ✔ (with the user's nod)
+- **Intent wrong** (the step's `intent` / an `invariant` describes behaviour the
+  app never had / no longer should have): the spec is the bug — update the
+  `intent` (or invariant) *and* its body together, in the test, and say so. ✔
+  (with the user's nod). Don't leave a body that contradicts its own `intent`.
 - **App regression** (the app should do X, it now does Y, the assertion is
   right): **stop fixing.** Report it — scenario, step, expected vs actual, the
   screenshot — as a regression. ✘ Do not edit the test.
 
 ### 5. Verify the fix
 
-After any test/scenario edit, re-run until green *for the right reason* — the
-assertion still asserts the original intent:
+After any edit, re-run until green *for the right reason* — the assertion still
+asserts the step's stated `intent`:
 
 ```bash
 bun test <test_file>
@@ -125,7 +130,7 @@ behaviour it checks is actually broken (don't over-relax).
 ### 6. Report
 
 Per failed scenario, one line: `fixed (selector)`, `fixed (timing)`,
-`scenario updated`, `flaky — green locally`, or **`REGRESSION — app bug, test
+`intent updated`, `flaky — green locally`, or **`REGRESSION — app bug, test
 left red`**. Then a short summary grouping them. List exactly which files you
 changed.
 

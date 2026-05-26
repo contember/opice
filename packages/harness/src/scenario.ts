@@ -19,17 +19,38 @@ function bunTest(): typeof import('bun:test') {
 
 const PLAYGROUND_URL = process.env['PLAYGROUND_URL'] ?? 'http://localhost:15180'
 
-export interface BrowserTestOptions {
-	/** Hash fragment appended to PLAYGROUND_URL (e.g. 'datagrid'). */
-	hash?: string
-	/** Override base URL (defaults to PLAYGROUND_URL env). */
+/**
+ * Scenario metadata — the **first** argument to `browserTest`.
+ *
+ * This is the durable, machine-relevant context an opice scenario carries
+ * independent of its concrete steps: where it runs, what it presupposes, what
+ * requirement it covers. It is written in **phase 1** (planning, `opice-plan`)
+ * and preserved through **phase 2** (authoring, `opice-author`) — the scenario
+ * file IS the spec, so this metadata never lives in a separate `.md` that can
+ * drift from the test.
+ *
+ * The rule of thumb for what belongs here vs. a code comment: *does anything
+ * other than a human read it?* Seeds (a precondition a runner could verify),
+ * the feature id (grouping on the dashboard), the acting roles — yes, so they
+ * are first-class fields. Background rationale that only a human reads stays a
+ * comment next to the relevant step.
+ */
+export interface BrowserTestMeta {
+	/** Scenario name — becomes the `describe()` title. Required. */
+	name: string
+	/** Override base URL (defaults to the `PLAYGROUND_URL` env var). */
 	url?: string
+	/** Hash fragment appended to the base URL (e.g. `'datagrid'`). */
+	hash?: string
+	/** Feature / requirement id this scenario covers (e.g. `'F-SML-03a'`). */
+	feature?: string
 	/**
-	 * Path to the human-readable `*.scenario.md` this test was authored from.
-	 * Reported to the platform so the re-eval workflow can find the source.
-	 * If omitted, defaults to the test file path with `.test.ts` → `.scenario.md`.
+	 * Seeds that must be loaded for this scenario to run — machine-checkable
+	 * preconditions, not prose. e.g. `['initial-data', 'crm-master-data']`.
 	 */
-	scenarioFile?: string
+	seeds?: string[]
+	/** Identities / roles the scenario acts as, e.g. `['crmOperator']`. */
+	roles?: string[]
 }
 
 /**
@@ -55,14 +76,10 @@ function captureTestFile(): string | undefined {
 	return undefined
 }
 
-function defaultScenarioFile(testFile: string | undefined): string | undefined {
-	if (!testFile) return undefined
-	return testFile.replace(/\.test\.[tj]sx?$/, '.scenario.md')
-}
-
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
+let currentScenarioPending = 0
 // Monotonic per-scenario step counter. Assigned synchronously at each step()
 // call so order reflects authoring order — step records are POSTed
 // fire-and-forget and would otherwise be sequenced by arrival order at the
@@ -72,25 +89,44 @@ let currentScenarioStepSeq = 0
 /**
  * Register a top-level browser test scenario.
  *
- * Each `browserTest(name, fn)` launches its own isolated Playwright browser +
+ * Each `browserTest(meta, fn)` launches its own isolated Playwright browser +
  * context + page, navigates to the playground URL, runs the given `fn` (which
  * typically contains nested `describe`/`test` blocks), and tears the browser
  * down in `afterAll`.
+ *
+ * Metadata is the **first** argument (`{ name, url, hash, feature, seeds,
+ * roles }`); `name` is required.
  */
-export function browserTest(name: string, fn: () => void, options: BrowserTestOptions | string = {}): void {
-	const opts: BrowserTestOptions = typeof options === 'string' ? { hash: options } : options
+export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
+	if (typeof meta === 'string') {
+		// Migration aid: the old signature was `browserTest(name, fn, options)`.
+		throw new Error(
+			'opice: browserTest now takes metadata first — browserTest({ name, url, hash, … }, fn). '
+			+ `Got a string name (${JSON.stringify(meta)}); wrap it: browserTest({ name: ${JSON.stringify(meta)} }, fn).`,
+		)
+	}
+	if (!meta?.name) {
+		throw new Error('opice: browserTest requires a `name` in its metadata — browserTest({ name: "…" }, fn).')
+	}
 	const reporter = getReporter()
 	const testFile = captureTestFile()
-	const scenarioFile = opts.scenarioFile ?? defaultScenarioFile(testFile)
 	const { describe, beforeAll, afterAll } = bunTest()
 
-	describe(name, () => {
+	describe(meta.name, () => {
 		beforeAll(async () => {
 			currentScenarioStart = Date.now()
 			currentScenarioFailures = 0
+			currentScenarioPending = 0
 			currentScenarioStepSeq = 0
 			try {
-				currentScenarioId = await reporter.startScenario({ name, hash: opts.hash, testFile, scenarioFile })
+				currentScenarioId = await reporter.startScenario({
+					name: meta.name,
+					hash: meta.hash,
+					testFile,
+					feature: meta.feature,
+					seeds: meta.seeds,
+					roles: meta.roles,
+				})
 			} catch {
 				currentScenarioId = null
 			}
@@ -100,8 +136,8 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 			// own scripts on first paint.
 			const setup = await loadUserSetup()
 			if (setup) await setup(getContext())
-			const base = opts.url ?? PLAYGROUND_URL
-			const url = opts.hash ? `${base}#${opts.hash}` : base
+			const base = meta.url ?? PLAYGROUND_URL
+			const url = meta.hash ? `${base}#${meta.hash}` : base
 			// `domcontentloaded`, not the default `load`: an SPA paints after its JS
 				// runs and may hold `load` on a slow chunk or long-lived connection, so
 				// waiting for `load` flakily times out under CI contention. Readiness is
@@ -114,6 +150,16 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 				await closePage()
 			} catch {
 				// ignore close errors
+			}
+			// A scenario still carrying unfilled (pending) steps is a phase-1
+			// skeleton that was run before authoring. It's not a failure, but it's
+			// not done either — make it loud so a half-authored test isn't mistaken
+			// for a passing one.
+			if (currentScenarioPending > 0) {
+				console.warn(
+					`[opice] scenario "${meta.name}" has ${currentScenarioPending} pending step(s) — `
+					+ 'authored skeleton, not yet filled in by opice-author. The body did NOT run.',
+				)
 			}
 			if (currentScenarioId) {
 				// Drain pending step records (incl. their screenshot uploads)
@@ -140,19 +186,78 @@ export function browserTest(name: string, fn: () => void, options: BrowserTestOp
 	})
 }
 
-type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass'
+type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
+type StepKind = 'step' | 'invariant'
 
-async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason?: string): Promise<void> {
+/**
+ * The durable contract of a step or invariant, separate from its mechanics.
+ *
+ * `intent` is written in **phase 1** and survives **verbatim** into the
+ * authored test — it's the "why this exists / what it proves", the independent
+ * statement of intent that the concrete body is checked against. `hint` is
+ * phase-1 scaffolding *for the authoring agent* ("what to actually do here");
+ * it is consumed when the step is authored and dropped once a body exists.
+ */
+export interface StepContract {
+	/** Durable rationale: why this step/invariant exists, what it proves. */
+	intent?: string
+	/**
+	 * Phase-1 instruction to the authoring agent — what to do on the page here.
+	 * Ephemeral: drop it once the body is written.
+	 */
+	hint?: string
+}
+
+interface RunUnit {
+	kind: StepKind
+	name: string
+	contract?: StepContract
+	/** Present once authored. Absent ⇒ a pending (phase-1) stub. */
+	fn?: () => void | Promise<void>
+	/**
+	 * A human note. With a body (`.fixme`): why a tolerated failure is allowed.
+	 * Without a body (`.blocked`): why the stub can't be authored yet (the app
+	 * feature isn't implemented). A plain pending stub has no reason.
+	 */
+	reason?: string
+}
+
+async function runUnit(unit: RunUnit): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
+	// A reason *with* a body is a .fixme (tolerated failure). A reason *without*
+	// a body is .blocked (a pending stub that can't be authored yet).
+	const fixme = unit.reason !== undefined && unit.fn !== undefined
+
+	// Phase-1 stub: no body to run. Report it as 'pending' (so the dashboard
+	// shows the skeleton — a scenario carrying one reads as 'incomplete') and
+	// count it so afterAll can warn. A `reason` here marks it 'blocked' (the
+	// feature isn't built); no reason is a plain todo awaiting authoring. No
+	// screenshot, zero duration.
+	if (!unit.fn) {
+		currentScenarioPending++
+		if (currentScenarioId) {
+			void reporter.recordStep({
+				scenarioId: currentScenarioId,
+				sequence,
+				kind: unit.kind,
+				name: unit.name,
+				status: 'pending',
+				durationMs: 0,
+				intent: unit.contract?.intent,
+				reason: unit.reason,
+			})
+		}
+		return
+	}
+
 	const start = Date.now()
-	const fixme = fixmeReason !== undefined
 	let status: StepStatus = 'passed'
 	let error: string | undefined
 	try {
-		await fn()
-		// A fixme step that *passes* is a stale marker: surface it as an
+		await unit.fn()
+		// A fixme unit that *passes* is a stale marker: surface it as a
 		// 'fixmepass' warning so the author knows they can drop the marker,
 		// rather than letting it pass silently.
 		if (fixme) status = 'fixmepass'
@@ -161,7 +266,7 @@ async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason
 		if (fixme) {
 			// Known / tolerated failure. Record it as 'fixme', but DON'T count it
 			// toward scenario failures and DON'T re-throw — that's the whole point
-			// of step.fixme: the scenario (and the CI run) stay green, the failure
+			// of .fixme: the scenario (and the CI run) stay green, the failure
 			// surfaces as an amber warning on the dashboard.
 			status = 'fixme'
 		} else {
@@ -181,15 +286,39 @@ async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason
 			void reporter.recordStep({
 				scenarioId: currentScenarioId,
 				sequence,
-				name,
+				kind: unit.kind,
+				name: unit.name,
 				status,
 				durationMs,
 				error,
-				reason: fixmeReason,
+				intent: unit.contract?.intent,
+				reason: unit.reason,
 				screenshotPath,
 			})
 		}
 	}
+}
+
+type StepBody = () => void | Promise<void>
+
+interface StepFn {
+	/** Executable step. */
+	(name: string, fn: StepBody): Promise<void>
+	/** Phase-1 stub: a step with a contract but no body yet (status: pending). */
+	(name: string, contract: StepContract): Promise<void>
+	/** Authored step that keeps its durable contract. */
+	(name: string, contract: StepContract, fn: StepBody): Promise<void>
+}
+
+interface StepExtras {
+	fixme: (name: string, reason: string, fn: StepBody) => Promise<void>
+	/**
+	 * A **blocked** pending stub: the step can't be authored yet because the app
+	 * feature it covers isn't implemented. Reports as 'pending' with the reason
+	 * attached (the dashboard shows it as blocked, distinct from a plain stub
+	 * that's merely awaiting a test). `reason` is mandatory — say what's missing.
+	 */
+	blocked: (name: string, reason: string, contract?: StepContract) => Promise<void>
 }
 
 /**
@@ -199,6 +328,14 @@ async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason
  * The body may be sync or async; `step` always returns a promise, so call it
  * with `await step('…', async () => { … })`.
  *
+ * Three forms:
+ * - `step(name, fn)` — executable step (the common case).
+ * - `step(name, { intent, hint })` — a **pending** phase-1 stub: declares the
+ *   step's intent and what to do, but has no body yet. It does not run and
+ *   reports as `pending`; `opice-author` fills in the body.
+ * - `step(name, { intent }, fn)` — an authored step that keeps its durable
+ *   `intent` (preserved verbatim from phase 1) alongside the body.
+ *
  * `step.fixme(name, reason, fn)` marks a **known, tolerated failure**: the body
  * still runs, but a failure inside it does NOT fail the scenario or the CI run —
  * it's reported as an amber warning instead. The `reason` is mandatory (use it
@@ -206,11 +343,63 @@ async function runStep(name: string, fn: () => void | Promise<void>, fixmeReason
  * step unexpectedly *passes*, it's flagged too ('fixmepass') so a stale marker
  * doesn't linger. Unlike Playwright's `test.fixme()`, which **skips** the test,
  * `step.fixme` **runs** it — the mandatory reason is there to keep them apart.
+ *
+ * `step.blocked(name, reason, contract?)` is a pending stub that **can't be
+ * authored yet** because the app feature doesn't exist — distinct from a plain
+ * `step(name, contract)` stub that's simply awaiting a test. Both report as
+ * 'pending' (scenario reads 'incomplete'); the blocked one carries its reason.
  */
-export const step = Object.assign(
-	(name: string, fn: () => void | Promise<void>): Promise<void> => runStep(name, fn),
+export const step: StepFn & StepExtras = Object.assign(
+	(name: string, arg2: StepBody | StepContract, arg3?: StepBody): Promise<void> => {
+		if (typeof arg2 === 'function') {
+			return runUnit({ kind: 'step', name, fn: arg2 })
+		}
+		return runUnit({ kind: 'step', name, contract: arg2, fn: arg3 })
+	},
 	{
-		fixme: (name: string, reason: string, fn: () => void | Promise<void>): Promise<void> =>
-			runStep(name, fn, reason),
+		fixme: (name: string, reason: string, fn: StepBody): Promise<void> =>
+			runUnit({ kind: 'step', name, reason, fn }),
+		blocked: (name: string, reason: string, contract?: StepContract): Promise<void> =>
+			runUnit({ kind: 'step', name, contract, reason }),
+	},
+)
+
+/**
+ * A scenario-level **invariant** — an acceptance property the scenario
+ * enforces, independent of the procedural steps. This is the durable "what
+ * must be true" that used to live in a scenario's prose Notes; expressing it as
+ * a call keeps it in the one source of truth (the test) instead of a separate
+ * `.md` that drifts.
+ *
+ * A failing `invariant` fails the scenario like any hard assertion — it's an
+ * acceptance, not a nicety.
+ *
+ * - `invariant(name, fn)` — enforced now.
+ * - `invariant.todo(name, hint?)` — phase-1 stub: states the acceptance but
+ *   isn't wired yet (status: pending). `opice-author` promotes it to an
+ *   enforced `invariant(...)` (or an `invariant.fixme(...)` if it can't hold
+ *   yet) once it knows how to check it.
+ * - `invariant.blocked(name, reason)` — a pending acceptance that can't be
+ *   wired yet because the feature it guards isn't implemented (vs `.todo`,
+ *   which is merely awaiting authoring). Reports 'pending' with the reason.
+ * - `invariant.fixme(name, reason, fn)` — a known-unenforceable acceptance,
+ *   tolerated like `step.fixme` (e.g. a security property deferred to a
+ *   ticket). The body runs and is expected to fail; the failure is reported as
+ *   an amber warning and neither fails the scenario nor the run.
+ */
+export const invariant: {
+	(name: string, fn: StepBody): Promise<void>
+	todo: (name: string, hint?: string) => Promise<void>
+	blocked: (name: string, reason: string) => Promise<void>
+	fixme: (name: string, reason: string, fn: StepBody) => Promise<void>
+} = Object.assign(
+	(name: string, fn: StepBody): Promise<void> => runUnit({ kind: 'invariant', name, fn }),
+	{
+		todo: (name: string, hint?: string): Promise<void> =>
+			runUnit({ kind: 'invariant', name, contract: hint ? { hint } : undefined }),
+		blocked: (name: string, reason: string): Promise<void> =>
+			runUnit({ kind: 'invariant', name, reason }),
+		fixme: (name: string, reason: string, fn: StepBody): Promise<void> =>
+			runUnit({ kind: 'invariant', name, reason, fn }),
 	},
 )

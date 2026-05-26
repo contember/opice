@@ -39,16 +39,27 @@ export interface StepEvent {
 	scenarioId: string
 	/** Authoring order within the scenario, assigned at step() call time. */
 	sequence: number
+	/**
+	 * 'step' (a procedural step) or 'invariant' (a scenario-level acceptance).
+	 * The platform may render invariants distinctly; older workers ignore it.
+	 */
+	kind?: 'step' | 'invariant'
 	name: string
 	/**
 	 * 'fixme' (a step.fixme that failed, as expected) and 'fixmepass' (a
 	 * step.fixme that unexpectedly passed) are tolerated warnings — neither
-	 * fails the scenario.
+	 * fails the scenario. 'pending' is a phase-1 stub that never ran (no body
+	 * yet); a scenario carrying one reads as 'incomplete'.
 	 */
-	status: 'passed' | 'failed' | 'fixme' | 'fixmepass'
+	status: 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
 	durationMs: number
 	error?: string
-	/** Mandatory note from step.fixme — why the failure is tolerated. */
+	/**
+	 * Durable rationale carried from the unit's contract (phase-1 `intent`) —
+	 * why it exists / what it proves. Surfaced on the dashboard.
+	 */
+	intent?: string
+	/** Mandatory note from .fixme — why the failure is tolerated. */
 	reason?: string
 	screenshotPath?: string
 }
@@ -57,7 +68,12 @@ export interface ScenarioStart {
 	name: string
 	hash?: string
 	testFile?: string
-	scenarioFile?: string
+	/** Requirement / feature id this scenario covers (grouping). */
+	feature?: string
+	/** Seeds required for the scenario (machine-checkable preconditions). */
+	seeds?: string[]
+	/** Identities / roles the scenario acts as. */
+	roles?: string[]
 }
 
 export interface ScenarioFinish {
@@ -133,7 +149,9 @@ class HttpReporter implements Reporter {
 			name: input.name,
 			hash: input.hash,
 			testFile: input.testFile,
-			scenarioFile: input.scenarioFile,
+			feature: input.feature,
+			seeds: input.seeds,
+			roles: input.roles,
 		})
 		return response['scenarioId'] as string
 	}
@@ -154,10 +172,12 @@ class HttpReporter implements Reporter {
 			: undefined
 		await this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
 			sequence: event.sequence,
+			kind: event.kind,
 			name: event.name,
 			status: event.status,
 			durationMs: event.durationMs,
 			error: event.error,
+			intent: event.intent,
 			reason: event.reason,
 			screenshot,
 		})

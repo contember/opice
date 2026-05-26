@@ -6,8 +6,8 @@ export { back, currentPath, currentUrl, forward, open, reload } from './navigati
 
 export { getPage, getContext } from './context.js'
 
-export { browserTest, step } from './scenario.js'
-export type { BrowserTestOptions } from './scenario.js'
+export { browserTest, invariant, step } from './scenario.js'
+export type { BrowserTestMeta, StepContract } from './scenario.js'
 
 export { getReporter, setReporter, configureFromEnv } from './reporter.js'
 export type { Reporter, ReporterConfig, StepEvent, ScenarioStart, ScenarioFinish } from './reporter.js'

@@ -108,13 +108,13 @@ that snapshots a stable public page:
 \`\`\`ts
 // tests/browser/_opice-smoke.test.ts  (throwaway — delete after this step)
 import { test } from 'bun:test'
-import { browserTest, el, waitFor } from '@opice/harness'
+import { browserTest, el, expect } from '@opice/harness'
 
-browserTest('opice pipeline smoke', () => {
-	test('example.com renders', () => {
-		waitFor(() => el('main h1').text.includes('Example Domain'), { timeout: 20_000 })
+browserTest({ name: 'opice pipeline smoke', url: 'https://example.com' }, () => {
+	test('example.com renders', async () => {
+		await expect(el('main h1')).toContainText('Example Domain', { timeout: 20_000 })
 	})
-}, { url: 'https://example.com' })
+})
 \`\`\`
 
 You'll need \`agent-browser\` on PATH (\`bun add -g agent-browser && agent-browser install\`),
@@ -153,12 +153,13 @@ Only start this once Phase A's run is on the dashboard.
    gh secret set OPICE_DSN --body "<the OPICE_DSN value from .env>"
    \`\`\`
    Never echo the secret into logs or commits.
-3. **Author real scenarios.** Use **opice-plan** to draft one \`*.scenario.md\` for
-   a core flow (login, main happy path); review it with the user. Then
-   **opice-author** to generate the \`*.test.ts\`, which walks the live app and
-   verifies it passes. Confirm each new run shows on the dashboard too.
-4. **Commit** the scenarios, tests, \`opice.config.json\`, the workflow, and the
-   installed \`.claude/\` extensions — atomically, with the user's review.
+3. **Author real scenarios.** Use **opice-plan** (phase 1) to draft a skeleton
+   \`*.test.ts\` for a core flow (login, main happy path) — pending \`step\` stubs
+   with \`intent\`; review it with the user. Then **opice-author** (phase 2) to
+   fill the step bodies in place by walking the live app, and verify it passes.
+   Confirm each new run shows on the dashboard too.
+4. **Commit** the tests, \`opice.config.json\`, the workflow, and the installed
+   \`.claude/\` extensions — atomically, with the user's review.
 
 ---
 

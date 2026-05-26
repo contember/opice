@@ -1,6 +1,8 @@
 # opice-author Claude Code skill
 
-Authors an `@opice/harness` E2E test from a human-readable scenario file.
+Phase 2 of opice authoring: fills in a phase-1 skeleton `*.test.ts` (written by
+`opice-plan`) — turning pending `step` stubs into executable `@opice/harness`
+steps with real selectors — by driving the app in a real browser.
 
 ## Install
 
@@ -19,9 +21,9 @@ Then restart Claude Code so it picks up the skill.
 In Claude Code:
 
 ```
-/opice-author tests/login.scenario.md
+/opice-author tests/browser/login.test.ts
 ```
 
-Or just hand Claude a `.scenario.md` and ask for a test.
+Or just hand Claude a skeleton `.test.ts` (pending steps) and ask for a test.
 
 See [`SKILL.md`](./SKILL.md) for the full workflow.

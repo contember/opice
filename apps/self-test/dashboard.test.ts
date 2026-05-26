@@ -13,7 +13,7 @@ if (!READ_TOKEN) {
 // opice_read=<token>.
 const ENTRY_URL = `${ENDPOINT}/?token=${READ_TOKEN}`
 
-browserTest('Stage dashboard end-to-end', () => {
+browserTest({ name: 'Stage dashboard end-to-end', url: ENTRY_URL }, () => {
 	describe('home', () => {
 		test('renders Projects header', async () => {
 			await step('home loads and shows the Projects heading', async () => {
@@ -50,4 +50,4 @@ browserTest('Stage dashboard end-to-end', () => {
 			})
 		})
 	})
-}, { url: ENTRY_URL })
+})

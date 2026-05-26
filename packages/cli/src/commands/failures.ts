@@ -2,7 +2,8 @@
  * `opice failures <run-url|run-id>` — pull a failed run's details from the
  * platform and print a digest the re-eval workflow can act on: which
  * scenarios failed, at which step, the error, the screenshot URL, and the
- * source files (test + scenario.md) that produced them.
+ * source test file that produced them (the test is the spec — each step
+ * carries its `intent`, so there's no separate scenario file).
  *
  * Reads are token-gated. The token is taken from the URL's `?token=` (when you
  * paste a dashboard link) or from OPICE_READ_TOKEN.
