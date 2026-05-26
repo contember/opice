@@ -39,6 +39,17 @@ const FILTER_LABEL: Record<ScenarioStatus, string> = {
 	passed: 'Passed',
 }
 
+// Triage order: broken first, passing last. Used to sort both feature groups
+// (by their worst scenario) and the rows within them, so the eye and the
+// auto-selection land on the same place.
+const SEVERITY: Record<ScenarioStatus, number> = {
+	failed: 0,
+	warning: 1,
+	incomplete: 2,
+	running: 3,
+	passed: 4,
+}
+
 function RunPage({ slug, runId }: { slug: string; runId: string }) {
 	const project = useQuery({
 		queryKey: ['projects.get', slug],
@@ -140,16 +151,40 @@ function Workbench({ scenarios }: { scenarios: Scenario[] }) {
 		})
 	}, [scenarios, filter, query])
 
-	// Group by feature, preserving first-seen order for both groups and rows.
-	const groups = useMemo(() => {
-		const map = new Map<string, Scenario[]>()
+	// A feature only earns a header band when it covers more than one row.
+	// Single-scenario features and no-feature scenarios collapse into a flat
+	// "loose" tail (each carrying an inline feature chip). Everything sorts by
+	// severity (failures first), features tie-breaking alphabetically; loose
+	// no-feature rows sink last within their severity.
+	const { groups, loose } = useMemo(() => {
+		const sev = (s: Scenario) => SEVERITY[s.status]
+		const byFeature = new Map<string, Scenario[]>()
+		const loose: Scenario[] = []
 		for (const s of filtered) {
-			const key = s.feature ?? ''
-			const list = map.get(key)
+			if (!s.feature) {
+				loose.push(s)
+				continue
+			}
+			const list = byFeature.get(s.feature)
 			if (list) list.push(s)
-			else map.set(key, [s])
+			else byFeature.set(s.feature, [s])
 		}
-		return [...map.entries()]
+
+		const groups: { feature: string; items: Scenario[]; sev: number }[] = []
+		for (const [feature, items] of byFeature) {
+			if (items.length < 2) {
+				loose.push(items[0]!)
+				continue
+			}
+			items.sort((a, b) => sev(a) - sev(b))
+			groups.push({ feature, items, sev: sev(items[0]!) })
+		}
+
+		groups.sort((a, b) => a.sev - b.sev || a.feature.localeCompare(b.feature))
+		loose.sort(
+			(a, b) => sev(a) - sev(b) || (a.feature ?? '￿').localeCompare(b.feature ?? '￿'),
+		)
+		return { groups, loose }
 	}, [filtered])
 
 	// Keep a valid selection: when the current pick falls out of the filter,
@@ -206,23 +241,23 @@ function Workbench({ scenarios }: { scenarios: Scenario[] }) {
 					{filtered.length === 0 ? (
 						<div className="wb-list-empty">No scenarios match.</div>
 					) : (
-						groups.map(([feature, items]) => (
-							<div className="wb-group" key={feature || '∅'}>
-								<div className="wb-group-head">{feature || 'No feature'}</div>
-								{items.map(s => (
-									<button
-										key={s.id}
-										type="button"
-										className={`wb-item${s.id === selectedId ? ' active' : ''}`}
-										onClick={() => setSelectedId(s.id)}
-									>
-										<StatusMark status={s.status} className="mini" />
-										<span className="wb-item-name">{s.name}</span>
-										<span className="wb-item-dur tabular">{fmtDuration(s.durationMs)}</span>
-									</button>
-								))}
-							</div>
-						))
+						<>
+							{groups.map(({ feature, items }) => (
+								<div className="wb-group" key={feature}>
+									<div className="wb-group-head">{feature}</div>
+									{items.map(s => (
+										<ScenarioRow key={s.id} s={s} selectedId={selectedId} onSelect={setSelectedId} />
+									))}
+								</div>
+							))}
+							{loose.length > 0 && (
+								<div className="wb-loose">
+									{loose.map(s => (
+										<ScenarioRow key={s.id} s={s} selectedId={selectedId} onSelect={setSelectedId} showFeature />
+									))}
+								</div>
+							)}
+						</>
 					)}
 				</div>
 
@@ -235,6 +270,36 @@ function Workbench({ scenarios }: { scenarios: Scenario[] }) {
 				</div>
 			</div>
 		</div>
+	)
+}
+
+/**
+ * A single scenario row in the master list. `showFeature` draws the feature ID
+ * as an inline chip — used for the loose tail, where there's no header to carry
+ * it (headed groups already name their feature).
+ */
+function ScenarioRow({
+	s,
+	selectedId,
+	onSelect,
+	showFeature,
+}: {
+	s: Scenario
+	selectedId: string | null
+	onSelect: (id: string) => void
+	showFeature?: boolean
+}) {
+	return (
+		<button
+			type="button"
+			className={`wb-item${s.id === selectedId ? ' active' : ''}`}
+			onClick={() => onSelect(s.id)}
+		>
+			<StatusMark status={s.status} className="mini" />
+			<span className="wb-item-name">{s.name}</span>
+			{showFeature && s.feature && <span className="wb-item-feature">{s.feature}</span>}
+			<span className="wb-item-dur tabular">{fmtDuration(s.durationMs)}</span>
+		</button>
 	)
 }
 

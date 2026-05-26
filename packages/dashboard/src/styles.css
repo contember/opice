@@ -743,6 +743,21 @@ main.wide { max-width: 1360px; }
 
 .wb-group { padding-bottom: 6px; }
 .wb-group + .wb-group { border-top: 1px solid var(--border-soft); }
+
+/* Flat tail: single-scenario features + no-feature rows, no header. A rule
+ * only separates it from the headed groups above; on its own it's just a list. */
+.wb-loose { padding: 6px 0; }
+.wb-group + .wb-loose { border-top: 1px solid var(--border-soft); }
+.wb-item-feature {
+	flex-shrink: 0;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--text-faint);
+	padding: 1px 6px;
+	border-radius: 999px;
+	border: 1px solid var(--border-soft);
+	background: var(--surface-2);
+}
 .wb-group-head {
 	font-family: var(--font-sans);
 	font-size: 10.5px;
