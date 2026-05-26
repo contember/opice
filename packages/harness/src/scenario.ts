@@ -130,19 +130,52 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void): void {
 			} catch {
 				currentScenarioId = null
 			}
-			const page = await launchPage()
-			// Repo-level context setup (browser-setup.ts) runs before the first
-			// navigation, so an addInitScript it registers fires before the app's
-			// own scripts on first paint.
-			const setup = await loadUserSetup()
-			if (setup) await setup(getContext())
-			const base = meta.url ?? PLAYGROUND_URL
-			const url = meta.hash ? `${base}#${meta.hash}` : base
-			// `domcontentloaded`, not the default `load`: an SPA paints after its JS
+			try {
+				const page = await launchPage()
+				// Repo-level context setup (browser-setup.ts) runs before the first
+				// navigation, so an addInitScript it registers fires before the app's
+				// own scripts on first paint.
+				const setup = await loadUserSetup()
+				if (setup) await setup(getContext())
+				const base = meta.url ?? PLAYGROUND_URL
+				const url = meta.hash ? `${base}#${meta.hash}` : base
+				// `domcontentloaded`, not the default `load`: an SPA paints after its JS
 				// runs and may hold `load` on a slow chunk or long-lived connection, so
 				// waiting for `load` flakily times out under CI contention. Readiness is
 				// handled by the test's retrying assertions.
 				await page.goto(url, { waitUntil: 'domcontentloaded' })
+			} catch (e) {
+				// Setup failed before any step ran (e.g. a wrong playground URL whose
+				// goto is refused). bun:test does NOT run afterAll when beforeAll
+				// throws, so the scenario we already started above would otherwise
+				// sit on the dashboard as 'running' forever (see reporter.ts) —
+				// invisible as a failure even though CI is red. Record a synthetic
+				// failed step so the dashboard shows *why*, finish the scenario as
+				// failed, then re-throw so the run still fails.
+				currentScenarioFailures++
+				if (currentScenarioId) {
+					const error = e instanceof Error ? e.message : String(e)
+					const durationMs = Date.now() - currentScenarioStart
+					try {
+						await reporter.recordStep({
+							scenarioId: currentScenarioId,
+							sequence: currentScenarioStepSeq++,
+							kind: 'step',
+							name: 'scenario setup',
+							status: 'failed',
+							durationMs,
+							error,
+						})
+						await reporter.finishScenario({ scenarioId: currentScenarioId, status: 'failed', durationMs })
+					} catch {
+						// best-effort: reporting the failure must never mask the
+						// original setup error we're about to re-throw.
+					}
+					// Null it so afterAll (should it run) doesn't double-finish.
+					currentScenarioId = null
+				}
+				throw e
+			}
 		}, 30_000)
 
 		afterAll(async () => {
