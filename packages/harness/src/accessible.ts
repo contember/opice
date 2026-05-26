@@ -3,6 +3,8 @@ import { getPage } from './context.js'
 
 /** The ARIA role union accepted by Playwright's `getByRole`. */
 type Role = Parameters<Page['getByRole']>[0]
+/** Playwright's `getByRole` options minus `name` (which is passed positionally). */
+type RoleOptions = Omit<NonNullable<Parameters<Page['getByRole']>[1]>, 'name'>
 
 /**
  * Accessible-name selectors — `byRole` / `byLabel` / `byText`.
@@ -21,10 +23,16 @@ type Role = Parameters<Page['getByRole']>[0]
 
 /**
  * Find an element by ARIA role and (optionally) its accessible name.
- * `name` does a substring, case-insensitive match by default.
+ * `name` does a substring, case-insensitive match when a string; pass a
+ * `RegExp` to match the accessible name by pattern (e.g. a generated id).
+ *
+ * `options` forwards the rest of Playwright's `getByRole` filters — most useful
+ * is `level` to pin a heading (`byRole('heading', 'Title', { level: 2 })`), plus
+ * `exact`, `checked`, `pressed`, `expanded`, `disabled`, etc.
  */
-export function byRole(role: Role, name?: string): Locator {
-	return getPage().getByRole(role, name == null ? undefined : { name })
+export function byRole(role: Role, name?: string | RegExp, options?: RoleOptions): Locator {
+	const opts = { ...options, ...(name == null ? {} : { name }) }
+	return getPage().getByRole(role, Object.keys(opts).length > 0 ? opts : undefined)
 }
 
 /** Find a form control by its associated `<label>` (or `aria-label`) text. */
