@@ -4,6 +4,13 @@ import path from 'node:path'
 export interface OpiceConfig {
 	project: string
 	endpoint: string
+	/**
+	 * Default retry budget applied to every scenario (passed to `bun test
+	 * --retry`). A flaky scenario that fails then passes within the budget is
+	 * reported as passed-but-flaky. Overridden by `opice test --retries=N` on
+	 * the command line, and by a per-scenario `walkthrough`/meta `retries`.
+	 */
+	retries?: number
 }
 
 const CONFIG_NAME = 'opice.config.json'

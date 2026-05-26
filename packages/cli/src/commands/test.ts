@@ -43,8 +43,18 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 	}
 
-	// Always invoke `bun test`; any user-passed args go after.
-	const child = spawn('bun', ['test', ...args], { stdio: 'inherit', env })
+	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
+	// retry budget for every scenario. CLI flag wins over opice.config.json's
+	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
+	const { retries, rest } = extractRetries(args)
+	const resolvedRetries = retries ?? config?.retries
+	const bunArgs = ['test', ...rest]
+	// Don't clobber an explicit `--retry` the caller passed through to bun.
+	if (resolvedRetries !== undefined && !rest.some((a) => a === '--retry' || a.startsWith('--retry='))) {
+		bunArgs.push(`--retry=${resolvedRetries}`)
+	}
+
+	const child = spawn('bun', bunArgs, { stdio: 'inherit', env })
 
 	const exitCode = await new Promise<number>((resolve) => {
 		child.on('exit', (code) => resolve(code ?? 1))
@@ -55,6 +65,33 @@ export async function testCommand(args: string[]): Promise<number> {
 	await finalizeHandoffs(child.pid, project)
 
 	return exitCode
+}
+
+/**
+ * Pull opice's `--retries=N` / `--retries N` out of the arg list (so it isn't
+ * forwarded to bun, which only knows `--retry`). Returns the parsed budget and
+ * the remaining args. An invalid value is ignored (falls through to config).
+ */
+function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {
+	const rest: string[] = []
+	let retries: number | undefined
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === undefined) continue
+		if (arg.startsWith('--retries=')) {
+			const n = Number(arg.slice('--retries='.length))
+			if (Number.isInteger(n) && n >= 0) retries = n
+		} else if (arg === '--retries') {
+			const n = Number(args[i + 1])
+			if (Number.isInteger(n) && n >= 0) {
+				retries = n
+				i++ // consume the value
+			}
+		} else {
+			rest.push(arg)
+		}
+	}
+	return { retries, rest }
 }
 
 async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined): Promise<void> {

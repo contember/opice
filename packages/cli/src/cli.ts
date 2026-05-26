@@ -14,10 +14,14 @@ Commands:
       Scaffold opice.config.json in the current project. Pass
       --with-workflow to also drop a .github/workflows/opice.yml.
 
-  test [bun test args...]
+  test [--retries=N] [bun test args...]
       Wrapper around 'bun test' that exports OPICE_* env vars from
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
+      --retries=N sets a default retry budget for every scenario (a
+      flaky scenario that fails then passes is reported as flaky, not
+      failed). Falls back to "retries" in opice.config.json; a
+      per-scenario walkthrough/meta retries overrides both.
 
   failures <run-url|run-id> [--json]
       Pull a failed run's details (failed scenarios, the failing step,
