@@ -1,4 +1,3 @@
-import { test } from 'bun:test'
 import { browserTest, byLabel, byRole, el, expect, invariant, step, waitFor } from '@opice/harness'
 
 /**
@@ -22,10 +21,11 @@ import { browserTest, byLabel, byRole, el, expect, invariant, step, waitFor } fr
  * manual `waitFor` polling.
  */
 
-// Per-test timeout (3rd arg of test(), ms). bun defaults to 5s, but a real
-// browser walk — first page load, async data, a dev server compiling on the
-// first request — easily exceeds that. Give the whole walkthrough headroom;
-// each retrying assertion still bounds itself.
+// Per-scenario timeout (ms). bun defaults to 5s, but a real browser walk —
+// first page load, async data, a dev server compiling on the first request —
+// easily exceeds that. `walkthrough` defaults to 60s; override via meta
+// `timeout` (or the 2nd arg) when a flow needs more. Each retrying assertion
+// still bounds itself.
 const TEST_TIMEOUT_MS = 60_000
 
 browserTest(
@@ -36,32 +36,35 @@ browserTest(
 		feature: '<requirement-id>',
 		seeds: ['<seed>'],
 		roles: ['<role>'],
+		timeout: TEST_TIMEOUT_MS,
+		// setup: () => mintTokens(...),  // optional: one-time precondition (auth, …)
+		// retries: <N>,                  // optional: re-run flaky scenarios (fresh browser per attempt)
 	},
-	() => {
-		test('walkthrough', async () => {
-			await step('<Step 1 — outcome>', { intent: '<kept verbatim from the skeleton>' }, async () => {
-				await expect(el('<test-id>')).toContainText('<expected text>')
-			})
+	// The async body IS the walkthrough — browserTest owns the test() call, so
+	// meta.retries/timeout apply and every retry attempt gets a fresh browser.
+	async () => {
+		await step('<Step 1 — outcome>', { intent: '<kept verbatim from the skeleton>' }, async () => {
+			await expect(el('<test-id>')).toContainText('<expected text>')
+		})
 
-			await step('<Step 2>', { intent: '<kept verbatim>' }, async () => {
-				await byRole('button', '<Button label>').click()
-				await expect(byRole('dialog')).toBeVisible()
-			})
+		await step('<Step 2>', { intent: '<kept verbatim>' }, async () => {
+			await byRole('button', '<Button label>').click()
+			await expect(byRole('dialog')).toBeVisible()
+		})
 
-			await step('<Step 3>', { intent: '<kept verbatim>' }, async () => {
-				await byLabel('<Field label>').fill('<value>')
-				await expect(el('<submit-button>')).toBeEnabled()
-			})
+		await step('<Step 3>', { intent: '<kept verbatim>' }, async () => {
+			await byLabel('<Field label>').fill('<value>')
+			await expect(el('<submit-button>')).toBeEnabled()
+		})
 
-			await step('<Step 4 — a predicate with no locator assertion>', { intent: '<kept verbatim>' }, async () => {
-				await waitFor(async () => (await el('<status>').textContent()) === 'Ready')
-			})
+		await step('<Step 4 — a predicate with no locator assertion>', { intent: '<kept verbatim>' }, async () => {
+			await waitFor(async () => (await el('<status>').textContent()) === 'Ready')
+		})
 
-			// Promoted from invariant.todo: now enforced. A failing invariant fails
-			// the scenario, just like a hard assertion — it IS the acceptance.
-			await invariant('<the property that must always hold>', async () => {
-				await expect(el('<evidence>')).not.toContainText('<thing that must never appear>')
-			})
-		}, TEST_TIMEOUT_MS)
+		// Promoted from invariant.todo: now enforced. A failing invariant fails
+		// the scenario, just like a hard assertion — it IS the acceptance.
+		await invariant('<the property that must always hold>', async () => {
+			await expect(el('<evidence>')).not.toContainText('<thing that must never appear>')
+		})
 	},
 )

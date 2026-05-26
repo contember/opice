@@ -114,7 +114,6 @@ For each coherent user flow, write a skeleton using `skeleton-template.ts` (in
 the opice-author skill). The shape:
 
 ```ts
-import { test } from 'bun:test'
 import { browserTest, invariant, step } from '@opice/harness'
 
 browserTest(
@@ -124,24 +123,23 @@ browserTest(
 		feature: 'F-CHK-02',
 		seeds: ['catalog', 'saved-card'],
 		roles: ['shopper'],
+		// retries: 2,  // optional: re-run flaky scenarios, fresh browser per attempt
 	},
-	() => {
-		test('walkthrough', async () => {
-			await step('cart shows the seeded item and a Pay button', {
-				intent: 'a non-empty cart can proceed to payment',
-				hint: 'assert the item name is visible and the Pay button is enabled',
-			})
+	async () => {
+		await step('cart shows the seeded item and a Pay button', {
+			intent: 'a non-empty cart can proceed to payment',
+			hint: 'assert the item name is visible and the Pay button is enabled',
+		})
 
-			await step('pay with the saved card', {
-				intent: 'paying with a saved card completes the order without re-entering details',
-				hint: 'click Pay; expect an order-confirmation heading + an order number',
-			})
+		await step('pay with the saved card', {
+			intent: 'paying with a saved card completes the order without re-entering details',
+			hint: 'click Pay; expect an order-confirmation heading + an order number',
+		})
 
-			await invariant.todo(
-				'the card PAN is never rendered in full — only the last 4 digits',
-				'after payment, assert the page text never contains the full seeded PAN',
-			)
-		}, 60_000)
+		await invariant.todo(
+			'the card PAN is never rendered in full — only the last 4 digits',
+			'after payment, assert the page text never contains the full seeded PAN',
+		)
 	},
 )
 ```

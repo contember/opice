@@ -211,11 +211,20 @@ Notes on the DSL:
   to a locator assertion.
 - `expect` comes from `@opice/harness` (Playwright's web-first `expect`), not
   `bun:test`. It also has the generic matchers (`toBe`, `toEqual`).
-- One top-level `test('walkthrough', ...)` keeps all steps in order in a single
-  Bun test. If a step fails, the rest are skipped — what we want.
-- **Keep the per-test timeout** (the `60_000` third arg of `test`). bun defaults
-  to 5s; a real browser walk blows past that. Each retrying assertion still
-  bounds itself; this just lifts the outer cap.
+- The scenario body is the **async second arg of `browserTest`** —
+  `browserTest(meta, async () => { … })`. browserTest owns the single
+  `test('walkthrough', …)` call, so all steps run in order in one Bun test; if a
+  step fails, the rest are skipped — what we want. Each retry attempt gets a
+  fresh browser + navigation. (A one-time precondition like minting auth tokens
+  goes in `meta.setup`, not a hand-written `beforeAll`.)
+- **Timeout defaults to 60s**; bun's own default is 5s, which a real browser walk
+  blows past. Override via `meta.timeout` when a flow needs more. Each retrying
+  assertion still bounds itself; this just lifts the outer cap.
+- **Flaky scenario?** Set `retries: N` in `browserTest` meta (or globally via
+  `opice test --retries=N` / `opice.config.json`). A scenario that fails then
+  passes within the budget is reported as passed-but-flaky (amber badge), not a
+  red run. Don't use it to paper over a real assertion bug — only genuine
+  environmental flake (cold boot, CI contention).
 - `el('foo')` = `data-testid`; `el('main h1')` (CSS chars) = raw selector.
   `byRole`/`byLabel` for accessible roles/labels.
 - A repo's user-land verb is callable: `import { fullEnum } from

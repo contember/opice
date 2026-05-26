@@ -1,4 +1,3 @@
-import { test } from 'bun:test'
 import { browserTest, invariant, step } from '@opice/harness'
 
 /**
@@ -37,35 +36,37 @@ browserTest(
 		// Machine-checkable preconditions — name the idempotent, composable seeds.
 		seeds: ['<seed-if-needed>'],
 		roles: ['<acting-role-if-relevant>'],
+		// setup: () => mintTokens(...),  // optional: one-time precondition (auth, …)
+		// retries: <N>,                  // optional: re-run on failure (fresh browser per attempt)
 	},
-	() => {
-		test('walkthrough', async () => {
-			// Each pending step: `intent` is the durable why (survives into the
-			// authored test); `hint` tells opice-author what to actually do here.
-			await step('<step 1 — observable outcome>', {
-				intent: '<why this step exists / what it proves>',
-				hint: '<what to do on the page: click X, expect Y visible>',
-			})
+	// The async body IS the walkthrough — browserTest owns the single test() call,
+	// so meta.retries/timeout apply and each retry attempt gets a fresh browser.
+	async () => {
+		// Each pending step: `intent` is the durable why (survives into the
+		// authored test); `hint` tells opice-author what to actually do here.
+		await step('<step 1 — observable outcome>', {
+			intent: '<why this step exists / what it proves>',
+			hint: '<what to do on the page: click X, expect Y visible>',
+		})
 
-			await step('<step 2>', {
-				intent: '<durable rationale>',
-				hint: '<concrete action + assertion to author>',
-			})
+		await step('<step 2>', {
+			intent: '<durable rationale>',
+			hint: '<concrete action + assertion to author>',
+		})
 
-			// A step the feature doesn't support yet — can't be authored until it's
-			// built. Shows as 'blocked' (amber) on the dashboard, not a plain todo.
-			await step.blocked('<step 3 — not buildable yet>', '<what is missing in the app>', {
-				intent: '<what it will prove once the feature lands>',
-			})
+		// A step the feature doesn't support yet — can't be authored until it's
+		// built. Shows as 'blocked' (amber) on the dashboard, not a plain todo.
+		await step.blocked('<step 3 — not buildable yet>', '<what is missing in the app>', {
+			intent: '<what it will prove once the feature lands>',
+		})
 
-			// Scenario-level acceptance, independent of the procedural steps.
-			// opice-author promotes this to `invariant(name, fn)` once it knows how
-			// to enforce it — or `invariant.fixme(name, reason, fn)` if it can't
-			// hold yet (e.g. a security property deferred to a ticket).
-			await invariant.todo(
-				'<the property that must always hold>',
-				'<how to check it — the hint opice-author wires up>',
-			)
-		}, 60_000)
+		// Scenario-level acceptance, independent of the procedural steps.
+		// opice-author promotes this to `invariant(name, fn)` once it knows how
+		// to enforce it — or `invariant.fixme(name, reason, fn)` if it can't
+		// hold yet (e.g. a security property deferred to a ticket).
+		await invariant.todo(
+			'<the property that must always hold>',
+			'<how to check it — the hint opice-author wires up>',
+		)
 	},
 )
