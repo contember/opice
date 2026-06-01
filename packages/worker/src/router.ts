@@ -169,14 +169,18 @@ const projects = rpc.router({
 			return project
 		}),
 
-	// Create a project + mint its ingest (write) key. Returns the api key *once*
-	// — only its hash is stored, it's never readable again.
+	// Create a project + mint two project-scoped keys: an ingest (write) key for
+	// CI/local reporting, and a read key for an authoring agent to pull results
+	// back (`OPICE_READ_DSN`). Both are returned *once* — only their hashes are
+	// stored, neither is readable again. Minting the read key here (rather than a
+	// follow-up admin.createToken) keeps the whole flow behind the `write` gate,
+	// so a non-admin member who can create projects gets the read key too.
 	create: rpc.procedure
 		.input(z.object({
 			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
 			name: z.string().trim().min(1).max(120),
 		}))
-		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string() }))
+		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string(), readApiKey: z.string() }))
 		.handler(async ({ ctx, input }) => {
 			requireCap(ctx, 'write')
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
@@ -190,7 +194,16 @@ const projects = rpc.router({
 				label: 'ingest',
 				createdBy: ctx.principal.subject,
 			})
-			return { slug: project.slug, name: project.name, apiKey }
+			const readApiKey = generateSecret()
+			await ctx.services.db.createToken({
+				id: generateTokenId(),
+				tokenHash: await hashToken(readApiKey),
+				capability: 'read',
+				projectId: project.id,
+				label: 'agent-read',
+				createdBy: ctx.principal.subject,
+			})
+			return { slug: project.slug, name: project.name, apiKey, readApiKey }
 		}),
 })
 

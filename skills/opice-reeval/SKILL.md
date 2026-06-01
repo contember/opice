@@ -37,7 +37,8 @@ deleting an assertion is the worst outcome this skill can produce.
 ## Inputs
 
 - A **failed-run URL** (paste from the dashboard, includes `?token=`), or a bare
-  **run id** plus a configured endpoint/`OPICE_READ_TOKEN`.
+  **run id** plus a configured endpoint and a read credential — `OPICE_READ_DSN`
+  (the project's read key, dropped into `.env` at project setup) or `OPICE_READ_TOKEN`.
 - The repo checked out locally, with the playground runnable.
 
 ## Workflow

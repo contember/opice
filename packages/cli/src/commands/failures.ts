@@ -5,8 +5,10 @@
  * source test file that produced them (the test is the spec — each step
  * carries its `intent`, so there's no separate scenario file).
  *
- * Reads are token-gated. The token is taken from the URL's `?token=` (when you
- * paste a dashboard link) or from OPICE_READ_TOKEN.
+ * Reads are token-gated. The read token (and endpoint/project) come from, in
+ * order: the URL's `?token=` when you paste a dashboard link, OPICE_READ_TOKEN,
+ * or OPICE_READ_DSN (the self-contained `https://<readKey>@host/slug` the
+ * dashboard hands out at project creation).
  */
 
 import { loadConfig } from '../config'
@@ -144,9 +146,12 @@ function absoluteScreenshot(relativeOrAbsolute: string, target: Target): string 
 }
 
 async function resolveTarget(ref: string): Promise<Target | null> {
+	const readDsn = parseOpiceDsn(process.env['OPICE_READ_DSN'])
+	const envToken = process.env['OPICE_READ_TOKEN'] ?? readDsn?.apiKey ?? undefined
+
 	if (/^https?:\/\//.test(ref)) {
 		const url = new URL(ref)
-		const token = url.searchParams.get('token') ?? process.env['OPICE_READ_TOKEN'] ?? undefined
+		const token = url.searchParams.get('token') ?? envToken
 		const match = url.pathname.match(/\/p\/([^/]+)\/r\/([^/]+)/)
 		if (match) {
 			return { endpoint: url.origin, runId: decodeURIComponent(match[2]!), token, slug: decodeURIComponent(match[1]!) }
@@ -158,11 +163,11 @@ async function resolveTarget(ref: string): Promise<Target | null> {
 		return null
 	}
 
-	// Bare run id — endpoint from config/env/DSN, token from env.
+	// Bare run id — endpoint from config/env/DSN, token from env/read DSN.
 	const config = await loadConfig()
-	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
+	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? readDsn?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
 	if (!endpoint) return null
-	return { endpoint, runId: ref, token: process.env['OPICE_READ_TOKEN'] ?? undefined }
+	return { endpoint, runId: ref, token: envToken }
 }
 
 async function rpc<T>(target: Target, method: string, input: unknown): Promise<T> {

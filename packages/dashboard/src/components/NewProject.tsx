@@ -7,6 +7,7 @@ interface Created {
 	slug: string
 	name: string
 	apiKey: string
+	readApiKey: string
 }
 
 /**
@@ -48,6 +49,7 @@ export function NewProject() {
 	if (created) {
 		const host = window.location.host
 		const dsn = `OPICE_DSN=https://${created.apiKey}@${host}/${created.slug}`
+		const readDsn = `OPICE_READ_DSN=https://${created.readApiKey}@${host}/${created.slug}`
 		const prompt = `Fetch instructions from ${window.location.origin}/install.md`
 		return (
 			<div className="new-project-panel">
@@ -55,10 +57,13 @@ export function NewProject() {
 					<h2>✓ Created “{created.name}”</h2>
 					<button type="button" className="btn-ghost" onClick={reset}>Done</button>
 				</div>
-				<p className="np-warn">Shown once — store the DSN now (it embeds a secret API key that can't be recovered).</p>
+				<p className="np-warn">Shown once — store these now (they embed secret keys that can't be recovered).</p>
 
-				<label className="np-label">1. Save this to your project's <code>.env</code></label>
+				<label className="np-label">1. Save both to your project's <code>.env</code></label>
 				<CopyBlock value={dsn} />
+				<p className="np-hint">Write key — CI and local <code>opice test</code> stream results with it.</p>
+				<CopyBlock value={readDsn} />
+				<p className="np-hint">Read key — lets the authoring agent pull this project's results back (e.g. <code>opice failures</code>, re-eval). Scoped to this project, read-only.</p>
 
 				<label className="np-label">2. Run Claude Code in your project with this prompt</label>
 				<CopyBlock value={prompt} />
