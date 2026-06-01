@@ -35,7 +35,7 @@ Commands:
   tokens revoke <token-id>
       Manage API tokens. Needs the admin token (--admin-token or
       OPICE_ADMIN_TOKEN) and the platform endpoint (--endpoint,
-      OPICE_ENDPOINT, or opice.config.json). `create` defaults to a
+      OPICE_ENDPOINT, or opice.config.json). 'create' defaults to a
       project-scoped read token and prints a ready OPICE_READ_DSN an
       authoring agent can drop into .env to read results.
 
