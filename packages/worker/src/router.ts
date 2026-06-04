@@ -101,6 +101,7 @@ const StepSchema = z.object({
 	durationMs: z.number(),
 	error: z.string().nullable(),
 	intent: z.string().nullable(),
+	manual: z.string().nullable(),
 	reason: z.string().nullable(),
 	screenshotUrl: z.string().nullable(),
 	createdAt: z.number(),

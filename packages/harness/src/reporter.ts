@@ -65,6 +65,12 @@ export interface StepEvent {
 	 * why it exists / what it proves. Surfaced on the dashboard.
 	 */
 	intent?: string
+	/**
+	 * Human-readable manual line carried from the unit's contract — the
+	 * plain-language, stupid-simple instruction (target language, formal
+	 * register) for a non-technical reader. Stored now; not yet displayed.
+	 */
+	manual?: string
 	/** Mandatory note from .fixme — why the failure is tolerated. */
 	reason?: string
 	screenshotPath?: string
@@ -190,6 +196,7 @@ class HttpReporter implements Reporter {
 			durationMs: event.durationMs,
 			error: event.error,
 			intent: event.intent,
+			manual: event.manual,
 			reason: event.reason,
 			screenshot,
 		})

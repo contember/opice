@@ -131,6 +131,7 @@ async function createStep(
 		durationMs?: number
 		error?: string
 		intent?: string
+		manual?: string
 		reason?: string
 		screenshot?: string
 	}>(request)
@@ -148,6 +149,7 @@ async function createStep(
 		durationMs: body.durationMs,
 		error: body.error,
 		intent: body.intent,
+		manual: body.manual,
 		reason: body.reason,
 	})
 

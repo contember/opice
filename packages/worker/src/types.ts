@@ -119,6 +119,12 @@ export interface Step {
 	error: string | null
 	/** Durable rationale carried from the step's contract (phase-1 intent). */
 	intent: string | null
+	/**
+	 * Human-readable manual line — the plain-language, stupid-simple instruction
+	 * for a non-technical reader (target language, formal register). Stored, not
+	 * yet displayed.
+	 */
+	manual: string | null
 	/** Mandatory note from step.fixme (why the failure is tolerated). */
 	reason: string | null
 	screenshotKey: string | null

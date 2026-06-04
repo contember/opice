@@ -129,11 +129,13 @@ browserTest(
 		await step('cart shows the seeded item and a Pay button', {
 			intent: 'a non-empty cart can proceed to payment',
 			hint: 'assert the item name is visible and the Pay button is enabled',
+			manual: 'V košíku uvidíte vloženou položku a tlačítko „Zaplatit". Zkontrolujte, že tam obojí opravdu je.',
 		})
 
 		await step('pay with the saved card', {
 			intent: 'paying with a saved card completes the order without re-entering details',
 			hint: 'click Pay; expect an order-confirmation heading + an order number',
+			manual: 'Klikněte na tlačítko „Zaplatit". Platba proběhne uloženou kartou — nic dalšího vyplňovat nemusíte. Poté se zobrazí potvrzení objednávky s jejím číslem.',
 		})
 
 		await invariant.todo(
@@ -164,6 +166,21 @@ What goes where — the rule is **does anything other than a human read it?**
     the authored test, so write it as the spec, not as a restatement of the UI.
   - `hint` — instructions to `opice-author`: what to actually do on the page. It
     is dropped once the step is authored, so be concrete and disposable here.
+  - `manual` — a plain-language line for the **end user**, the human-readable
+    "what you do / what you should see" for this step. Where `intent` is the
+    machine-facing spec, `manual` is the instruction-manual sentence a
+    **non-technical** reader could follow. Durable like `intent` (it survives
+    into phase 2). Write it:
+    - **In the manual's target language — typically Czech** (match the app's UI
+      language and any existing manuals in the suite; only use another language
+      if that's what the manuals are written in).
+    - **In the formal register** (Czech: *vykání* — "Klikněte…", "Vyplňte…",
+      "Ověřte, že vidíte…"), never the informal *tykání*.
+    - **Stupid simple (MISS — Make It Stupid Simple).** Assume the reader knows
+      nothing technical: no jargon, no role/seed/route names, no selectors.
+      Refer to what's on screen by its **visible label in quotes** („Zaplatit"),
+      use plain verbs, one action per sentence. If a label isn't pinned down
+      yet, write your best guess and let phase 2 correct it.
 - **`step.blocked(name, reason, { intent })`** — a step the app **can't support
   yet** because the feature isn't built. Use it (instead of a plain stub) when
   you found, while exploring, that a flow the brief asks for simply doesn't
@@ -236,6 +253,9 @@ run `opice-author` per file (or the `opice-batch` skill to author them all).
   line each) and let the user prune before you write all the files.
 - Prefer more, smaller scenarios over a few sprawling ones — they fail more
   legibly and re-eval is easier per scenario.
-- Write `intent` and `invariant.todo` carefully: they are the part of the
-  skeleton that *survives* into the final test and that re-eval trusts as the
-  independent statement of what should be true. The `hint`s are throwaway.
+- Write `intent`, `manual`, and `invariant.todo` carefully: they are the part
+  of the skeleton that *survives* into the final test — `intent`/`invariant.todo`
+  as the independent statement re-eval trusts, `manual` as the end-user-facing
+  description. The `hint`s are throwaway.
+- Give every executable-by-phase-2 `step` a `manual` line. A `step.blocked`
+  (feature not built) doesn't need one yet — there's nothing for a user to do.

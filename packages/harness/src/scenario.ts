@@ -350,6 +350,20 @@ export interface StepContract {
 	 * Ephemeral: drop it once the body is written.
 	 */
 	hint?: string
+	/**
+	 * Human-readable manual line for this step — what a *person* does (or sees)
+	 * here, written for the end user, not the machine. Where `intent` is the
+	 * machine-facing spec ("why this proves the requirement"), `manual` is the
+	 * plain-language instruction a non-technical reader could follow: stupid
+	 * simple, in the manual's target language (typically Czech), in the formal
+	 * register (vykání). It replaces the `// MANUÁL:` comment that used to sit
+	 * above a step — structured data instead of prose buried in the source.
+	 *
+	 * Durable like `intent`: written in phase 1, preserved (and refined with the
+	 * real UI labels) through phase 2. Reported with the step but not yet
+	 * surfaced anywhere — stored now, displayed later.
+	 */
+	manual?: string
 }
 
 interface RunUnit {
@@ -391,6 +405,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 				status: 'pending',
 				durationMs: 0,
 				intent: unit.contract?.intent,
+				manual: unit.contract?.manual,
 				reason: unit.reason,
 			})
 		}
@@ -438,6 +453,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 				durationMs,
 				error,
 				intent: unit.contract?.intent,
+				manual: unit.contract?.manual,
 				reason: unit.reason,
 				screenshotPath,
 			})

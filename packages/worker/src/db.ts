@@ -123,6 +123,7 @@ interface StepRow {
 	duration_ms: number
 	error: string | null
 	intent: string | null
+	manual: string | null
 	reason: string | null
 	screenshot_r2_key: string | null
 	created_at: number
@@ -221,6 +222,7 @@ const toStep = (r: StepRow): Step => ({
 	durationMs: r.duration_ms,
 	error: r.error,
 	intent: r.intent,
+	manual: r.manual,
 	reason: r.reason,
 	screenshotKey: r.screenshot_r2_key,
 	createdAt: r.created_at,
@@ -576,6 +578,7 @@ export class Db {
 		durationMs: number
 		error?: string
 		intent?: string
+		manual?: string
 		reason?: string
 		screenshotKey?: string
 	}): Promise<number> {
@@ -589,8 +592,8 @@ export class Db {
 			sequence = next?.next ?? 0
 		}
 		const result = await this.d1
-			.prepare(`INSERT INTO steps (scenario_id, attempt, sequence, kind, name, status, duration_ms, error, intent, reason, screenshot_r2_key, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.prepare(`INSERT INTO steps (scenario_id, attempt, sequence, kind, name, status, duration_ms, error, intent, manual, reason, screenshot_r2_key, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.scenarioId,
 				attempt,
@@ -601,6 +604,7 @@ export class Db {
 				input.durationMs,
 				input.error ?? null,
 				input.intent ?? null,
+				input.manual ?? null,
 				input.reason ?? null,
 				input.screenshotKey ?? null,
 				Date.now(),

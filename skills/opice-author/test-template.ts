@@ -8,6 +8,11 @@ import { browserTest, byLabel, byRole, el, expect, invariant, step, waitFor } fr
  * `step(name, { intent }, async () => { … })`:
  *   - KEEP `name` and `intent` verbatim — `intent` is the durable spec the body
  *     is checked against; never rewrite it to match what you happened to build.
+ *   - KEEP `manual` — the end-user-facing instruction line (target language,
+ *     vykání, stupid simple). Only refine its wording to match the **real UI
+ *     labels** you saw live (e.g. the exact button text); keep it plain and
+ *     non-technical. Don't drop it and don't turn it into a restatement of the
+ *     selectors.
  *   - DROP `hint` — it was scaffolding for you; the body now is the "how".
  *   - Fill the body with the concrete selectors/actions you proved while
  *     walking the app in opice-browser.
@@ -43,11 +48,17 @@ browserTest(
 	// The async body IS the walkthrough — browserTest owns the test() call, so
 	// meta.retries/timeout apply and every retry attempt gets a fresh browser.
 	async () => {
-		await step('<Step 1 — outcome>', { intent: '<kept verbatim from the skeleton>' }, async () => {
+		await step('<Step 1 — outcome>', {
+			intent: '<kept verbatim from the skeleton>',
+			manual: '<kept from the skeleton; labels refined to what you saw live, e.g. „<přesný popisek>">',
+		}, async () => {
 			await expect(el('<test-id>')).toContainText('<expected text>')
 		})
 
-		await step('<Step 2>', { intent: '<kept verbatim>' }, async () => {
+		await step('<Step 2>', {
+			intent: '<kept verbatim>',
+			manual: '<plain-language line, vykání — „Klikněte na „<Button label>"…">',
+		}, async () => {
 			await byRole('button', '<Button label>').click()
 			await expect(byRole('dialog')).toBeVisible()
 		})
