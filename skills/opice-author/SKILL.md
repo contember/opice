@@ -86,9 +86,11 @@ Parse the file:
 
 - **metadata** (first arg of `browserTest`): `name`, `url`, `hash`, `feature`,
   `seeds`, `roles` — these stay as-is.
-- **pending steps**: each `await step('<name>', { intent, hint })`. The `name`
-  and `intent` are the durable spec — **keep them verbatim**. The `hint` tells
-  you what to do; you'll consume and drop it.
+- **pending steps**: each `await step('<name>', { intent, hint, manual })`. The
+  `name` and `intent` are the durable spec — **keep them verbatim**. `manual` is
+  the end-user-facing instruction line (target language, vykání, stupid simple)
+  — **keep it**, only refining its labels to match the real UI you see live. The
+  `hint` tells you what to do; you'll consume and drop it.
 - **`invariant.todo('<name>', '<hint>')`**: acceptances to wire up.
 
 Confirm the playground is reachable at the metadata `url` before walking.
@@ -158,6 +160,7 @@ Edit the skeleton **in place**. For each pending step, turn
 ```ts
 await step('extend the contract past its current end date', {
 	intent: 'the new validUntil must be strictly later; persists + appends an immutable Prodloužení event',
+	manual: 'Otevřete dialog „Prodloužit smlouvu", nastavte pozdější datum konce a potvrďte. Nové datum se uloží a do historie přibude záznam „Prodloužení".',
 	hint: 'open the Prodloužit dialog, set a later end date, confirm; assert the new date + a Prodloužení history row',
 })
 ```
@@ -167,6 +170,7 @@ into
 ```ts
 await step('extend the contract past its current end date', {
 	intent: 'the new validUntil must be strictly later; persists + appends an immutable Prodloužení event',
+	manual: 'Klikněte na „Prodloužit smlouvu", v dialogu nastavte pozdější datum konce a potvrďte tlačítkem „Prodloužit". Nové datum se uloží a do historie přibude záznam „Prodloužení".',
 }, async () => {
 	await byRole('button', 'Prodloužit smlouvu').click()
 	const dialog = getPage().getByRole('dialog', { name: 'Prodloužit smlouvu' })
@@ -176,8 +180,10 @@ await step('extend the contract past its current end date', {
 })
 ```
 
-— **keep `name` and `intent`, drop `hint`**, fill the body. Promote each
-`invariant.todo`:
+— **keep `name` and `intent`, keep `manual` (refine its labels to the real ones
+you saw live), drop `hint`**, fill the body. The `manual` stays plain and
+non-technical (target language, vykání, MISS) — it's for the end user, not a
+restatement of the selectors. Promote each `invariant.todo`:
 
 ```ts
 // before
@@ -229,10 +235,10 @@ Notes on the DSL:
   `byRole`/`byLabel` for accessible roles/labels.
 - A repo's user-land verb is callable: `import { fullEnum } from
   '../browser-tools'` then `await call(fullEnum, { … })`.
-- **No separate source file.** The test is its own spec — the `intent`s and
-  invariants ARE the human-readable scenario, so there's no `.scenario.md` to
-  keep in sync. The harness auto-captures the test file path for the dashboard
-  backlink.
+- **No separate source file.** The test is its own spec — the `intent`s,
+  `manual`s, and invariants ARE the human-readable scenario, so there's no
+  `.scenario.md` to keep in sync. The harness auto-captures the test file path
+  for the dashboard backlink.
 
 ### Parallel runs
 

@@ -12,6 +12,9 @@ import { browserTest, invariant, step } from '@opice/harness'
  * in a scenario's prose now lives here as durable, machine-relevant data:
  *   - scenario metadata (the FIRST arg): name, url, feature, seeds, roles
  *   - per-step `intent`: the durable "why" — preserved verbatim into phase 2
+ *   - per-step `manual`: the end-user-facing, plain-language instruction line —
+ *     target language (typically Czech), formal register (vykání), stupid simple
+ *     (MISS); durable like `intent`, refined with real labels in phase 2
  *   - per-step `hint`: instructions to the authoring agent — DROPPED once filled
  *   - `invariant.todo(...)`: acceptance properties to enforce, promoted in phase 2
  *
@@ -43,14 +46,18 @@ browserTest(
 	// so meta.retries/timeout apply and each retry attempt gets a fresh browser.
 	async () => {
 		// Each pending step: `intent` is the durable why (survives into the
-		// authored test); `hint` tells opice-author what to actually do here.
+		// authored test); `manual` is the plain-language line for the end user
+		// (target language, vykání, stupid simple — survives too); `hint` tells
+		// opice-author what to actually do here (dropped once authored).
 		await step('<step 1 — observable outcome>', {
 			intent: '<why this step exists / what it proves>',
+			manual: '<co uživatel udělá nebo uvidí — vykání, jednoduše, např. „Klikněte na…">',
 			hint: '<what to do on the page: click X, expect Y visible>',
 		})
 
 		await step('<step 2>', {
 			intent: '<durable rationale>',
+			manual: '<plain-language instruction for a non-technical reader>',
 			hint: '<concrete action + assertion to author>',
 		})
 
