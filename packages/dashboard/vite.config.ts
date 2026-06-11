@@ -12,8 +12,9 @@ export default defineConfig({
 		proxy: {
 			'/rpc': 'http://localhost:18181',
 			'/api/v1': 'http://localhost:18181',
-			'/auth': 'http://localhost:18181',
 			'/screenshots': 'http://localhost:18181',
+			// DEV-only operator persona switch (sets the FakeIamClient cookie on the worker origin).
+			'/__dev': 'http://localhost:18181',
 		},
 	},
 })

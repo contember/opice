@@ -1,8 +1,7 @@
 import { Link, Outlet, useRoute } from '@buzola/router'
-import { useQueryClient } from '@tanstack/react-query'
 import { Logo } from '../components/Logo'
 import { ThemeSwitcher } from '../components/ThemeSwitcher'
-import { signOut, useSession } from '../lib/auth-client'
+import { logout, useMe } from '../lib/session'
 
 export default function RootLayout() {
 	const { pathname } = useRoute()
@@ -11,13 +10,7 @@ export default function RootLayout() {
 	// The run view is a wide master/detail workbench — let it break out of the
 	// reading-width content column the rest of the app uses.
 	const isRunView = pathname.includes('/r/')
-	const { data: session } = useSession()
-	const queryClient = useQueryClient()
-
-	async function logout() {
-		await signOut()
-		await queryClient.invalidateQueries()
-	}
+	const { data: me } = useMe()
 
 	return (
 		<>
@@ -40,9 +33,9 @@ export default function RootLayout() {
 							All runs
 						</Link>
 					</nav>
-					{session && (
+					{me?.authenticated && (
 						<div className="user-menu">
-							<Link to="settings" className="user-email">{session.user.email}</Link>
+							<Link to="settings" className="user-email">{me.email}</Link>
 							<button type="button" className="logout-btn" onClick={logout}>
 								Sign out
 							</button>

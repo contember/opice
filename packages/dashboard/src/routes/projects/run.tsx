@@ -5,7 +5,7 @@ import { ClockIcon } from '../../components/Icon'
 import { Loading } from '../../components/Loading'
 import { Polaroid } from '../../components/Polaroid'
 import { StatusMark, StatusMarkInline } from '../../components/StatusBadge'
-import { useSession } from '../../lib/auth-client'
+import { useMe } from '../../lib/session'
 import { rpc } from '../../lib/client'
 import { fmtDate, fmtDuration, fmtRelative } from '../../lib/format'
 
@@ -402,12 +402,12 @@ function StepRow({ step: st }: { step: Step }) {
 
 /**
  * Operator-only share management. Mints/lists/revokes read-only links scoped to
- * *this run* (a `read` token with `run_id` set). Hidden for share-link visitors
- * (no session) — they already arrived via such a link, and the `shares.*` RPCs
- * require the `write` capability they don't have.
+ * *this run*. Hidden for share-link visitors (anonymous, canCreateProjects=false)
+ * — they already arrived via such a link, and the `shares.*` RPCs require the
+ * `project.write` capability they don't have.
  */
 function ShareManager({ slug, runId }: { slug: string; runId: string }) {
-	const { data: session } = useSession()
+	const { data: me } = useMe()
 	const queryClient = useQueryClient()
 	const origin = typeof window !== 'undefined' ? window.location.origin : ''
 	const [minted, setMinted] = useState<string | null>(null)
@@ -415,7 +415,7 @@ function ShareManager({ slug, runId }: { slug: string; runId: string }) {
 	const shares = useQuery({
 		queryKey: ['shares.list', runId],
 		queryFn: () => rpc.shares.list({ runId }),
-		enabled: !!session,
+		enabled: !!me?.canCreateProjects,
 	})
 
 	const create = useMutation({
@@ -427,12 +427,12 @@ function ShareManager({ slug, runId }: { slug: string; runId: string }) {
 	})
 
 	const revoke = useMutation({
-		mutationFn: (tokenId: string) => rpc.shares.revoke({ tokenId }),
+		mutationFn: (shareId: string) => rpc.shares.revoke({ shareId }),
 		onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shares.list', runId] }),
 	})
 
-	// Share-link visitors (no session) don't manage shares.
-	if (!session) return null
+	// Share-link visitors (anonymous) and non-operator callers don't manage shares.
+	if (!me?.canCreateProjects) return null
 
 	return (
 		<div className="share-link">
@@ -457,7 +457,6 @@ function ShareManager({ slug, runId }: { slug: string; runId: string }) {
 							<code className="share-id">{s.id.slice(0, 8)}…</code>
 							<span className="share-meta">
 								{s.expiresAt ? `expires ${fmtRelative(s.expiresAt)}` : 'no expiry'}
-								{s.lastUsedAt ? ` · used ${fmtRelative(s.lastUsedAt)}` : ' · never used'}
 							</span>
 							<button
 								type="button"

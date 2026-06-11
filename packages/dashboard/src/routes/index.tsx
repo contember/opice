@@ -7,6 +7,7 @@ import { NewProject } from '../components/NewProject'
 import { StatusMark } from '../components/StatusBadge'
 import { rpc } from '../lib/client'
 import { fmtRelative } from '../lib/format'
+import { useMe } from '../lib/session'
 
 export default createPage()
 	.route('/')
@@ -19,6 +20,7 @@ function ProjectsPage() {
 		queryKey: ['projects.list'],
 		queryFn: () => rpc.projects.list(),
 	})
+	const { data: me } = useMe()
 
 	if (isLoading) return <Loading message="Loading projects…" />
 	if (error) return <div className="error">{(error as Error).message}</div>
@@ -29,7 +31,7 @@ function ProjectsPage() {
 			<div className="page-head">
 				<div className="page-head-row">
 					<h1>Projects</h1>
-					<NewProject />
+					{me?.canCreateProjects && <NewProject />}
 				</div>
 				<div className="subtitle">
 					{data.length === 0

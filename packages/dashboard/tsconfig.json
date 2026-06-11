@@ -5,7 +5,7 @@
 		"types": ["vite/client", "@cloudflare/workers-types"],
 		"noEmit": true,
 		// App bundle, not a library — no .d.ts emit, so deep inferred types
-		// (e.g. the BetterAuth client) don't trip the TS2742 portability check.
+		// (e.g. the typed RPC client proxy) don't trip the TS2742 portability check.
 		"declaration": false,
 		"declarationMap": false,
 		"allowImportingTsExtensions": false
