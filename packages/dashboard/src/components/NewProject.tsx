@@ -118,7 +118,7 @@ export function NewProject() {
 	)
 }
 
-function CopyBlock({ value }: { value: string }) {
+export function CopyBlock({ value }: { value: string }) {
 	const [copied, setCopied] = useState(false)
 	async function copy() {
 		try {

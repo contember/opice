@@ -1,6 +1,7 @@
 import { createPage, Link } from '@buzola/router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { CopyBlock } from '../components/NewProject'
 import { rpc } from '../lib/client'
 import { fmtRelative } from '../lib/format'
 import { useMe } from '../lib/session'
@@ -48,6 +49,7 @@ function SettingsPage() {
 function ProjectKeys() {
 	const queryClient = useQueryClient()
 	const [slug, setSlug] = useState('')
+	const [minted, setMinted] = useState<{ kind: 'ingest' | 'read'; token: string } | null>(null)
 
 	const projects = useQuery({
 		queryKey: ['projects.list'],
@@ -65,6 +67,20 @@ function ProjectKeys() {
 		onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects.listKeys', slug] }),
 	})
 
+	const rotate = useMutation({
+		mutationFn: (kind: 'ingest' | 'read') => rpc.projects.rotateKey({ slug, kind }),
+		onSuccess: (result, kind) => {
+			setMinted({ kind, token: result.token })
+			queryClient.invalidateQueries({ queryKey: ['projects.listKeys', slug] })
+		},
+	})
+
+	function pick(next: string) {
+		setSlug(next)
+		setMinted(null)
+		rotate.reset()
+	}
+
 	return (
 		<div className="new-project-panel">
 			<div className="np-head">
@@ -78,7 +94,7 @@ function ProjectKeys() {
 
 			<label className="np-field">
 				<span>Project</span>
-				<select className="np-select" value={slug} onChange={e => setSlug(e.target.value)}>
+				<select className="np-select" value={slug} onChange={e => pick(e.target.value)}>
 					<option value="">Select a project…</option>
 					{projects.data?.map(p => (
 						<option key={p.slug} value={p.slug}>{p.name} ({p.slug})</option>
@@ -112,6 +128,47 @@ function ProjectKeys() {
 				) : (
 					<span className="np-hint">No active keys for this project.</span>
 				)
+			)}
+
+			{slug && (
+				<>
+					<div className="np-actions">
+						<button
+							type="button"
+							className="btn-primary"
+							onClick={() => rotate.mutate('ingest')}
+							disabled={rotate.isPending}
+						>
+							Mint / rotate ingest DSN
+						</button>
+						<button
+							type="button"
+							className="btn-primary"
+							onClick={() => rotate.mutate('read')}
+							disabled={rotate.isPending}
+						>
+							Mint / rotate read DSN
+						</button>
+					</div>
+
+					{minted && (
+						<>
+							<p className="np-warn">Shown once — store it now (it embeds a secret key that can't be recovered).</p>
+							<CopyBlock
+								value={
+									minted.kind === 'ingest'
+										? `OPICE_DSN=https://${minted.token}@${window.location.host}/${slug}`
+										: `OPICE_READ_DSN=https://${minted.token}@${window.location.host}/${slug}`
+								}
+							/>
+							<p className="np-hint">
+								{minted.kind === 'ingest'
+									? <>Write key — CI and local <code>opice test</code> stream results with it.</>
+									: <>Read key — lets the authoring agent pull this project's results back (e.g. <code>opice failures</code>, re-eval). Scoped to this project, read-only.</>}
+							</p>
+						</>
+					)}
+				</>
 			)}
 		</div>
 	)
