@@ -10,6 +10,8 @@ const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
 interface Handoff {
 	endpoint: string
+	/** Project slug — used to build the /api/v1/<project>/runs/<id>/finish URL. */
+	project: string
 	apiKey: string
 	runId: string
 }
@@ -124,7 +126,7 @@ function printRunUrl(handoff: Handoff, slug: string | undefined): void {
 }
 
 async function finishRun(handoff: Handoff): Promise<void> {
-	const url = `${handoff.endpoint}/api/v1/runs/${handoff.runId}/finish`
+	const url = `${handoff.endpoint}/api/v1/${handoff.project}/runs/${handoff.runId}/finish`
 	const response = await fetch(url, {
 		method: 'POST',
 		headers: { authorization: `Bearer ${handoff.apiKey}` },

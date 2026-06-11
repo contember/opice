@@ -171,7 +171,7 @@ async function resolveTarget(ref: string): Promise<Target | null> {
 }
 
 async function rpc<T>(target: Target, method: string, input: unknown): Promise<T> {
-	const url = `${target.endpoint}/rpc${target.token ? `?token=${target.token}` : ''}`
+	const url = `${target.endpoint}/s/rpc${target.token ? `?token=${target.token}` : ''}`
 	const response = await fetch(url, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },

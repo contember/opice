@@ -8,7 +8,7 @@
  * The CLI handles end-of-run finalization: the reporter writes a
  * handoff file under $TMPDIR with the runId and credentials, the
  * `opice test` wrapper picks it up after `bun test` exits and POSTs
- * /api/v1/runs/<id>/finish so the dashboard sees the run as completed.
+ * /api/v1/<slug>/runs/<id>/finish so the dashboard sees the run as completed.
  *
  * When env vars aren't configured, the reporter falls back to a no-op so
  * harness behavior matches the bindx prototype.
@@ -123,6 +123,8 @@ function handoffPath(pid = process.pid): string {
 
 export interface RunHandoff {
 	endpoint: string
+	/** Project slug — the CLI builds /api/v1/<project>/runs/<id>/finish from it. */
+	project: string
 	apiKey: string
 	runId: string
 }
@@ -142,7 +144,7 @@ class HttpReporter implements Reporter {
 	}
 
 	private async startRun(): Promise<string> {
-		const response = await this.fetch('POST', '/api/v1/runs', {
+		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs`, {
 			branch: this.config.branch,
 			commit: this.config.commit,
 			source: this.config.source,
@@ -152,7 +154,12 @@ class HttpReporter implements Reporter {
 		// process exits abruptly (process.on('exit') runs sync).
 		try {
 			mkdirSync(HANDOFF_DIR, { recursive: true })
-			const handoff: RunHandoff = { endpoint: this.config.endpoint, apiKey: this.config.apiKey, runId }
+			const handoff: RunHandoff = {
+				endpoint: this.config.endpoint,
+				project: this.config.projectId,
+				apiKey: this.config.apiKey,
+				runId,
+			}
 			writeFileSync(handoffPath(), JSON.stringify(handoff), 'utf-8')
 		} catch {
 			// best-effort
@@ -162,7 +169,7 @@ class HttpReporter implements Reporter {
 
 	async startScenario(input: ScenarioStart): Promise<string> {
 		const runId = await this.ensureRun()
-		const response = await this.fetch('POST', `/api/v1/runs/${runId}/scenarios`, {
+		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios`, {
 			name: input.name,
 			hash: input.hash,
 			testFile: input.testFile,
@@ -187,7 +194,7 @@ class HttpReporter implements Reporter {
 		const screenshot = event.screenshotPath
 			? await this.encodeScreenshot(event.screenshotPath)
 			: undefined
-		await this.fetch('POST', `/api/v1/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+		await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
 			attempt: event.attempt,
 			sequence: event.sequence,
 			kind: event.kind,
@@ -206,7 +213,7 @@ class HttpReporter implements Reporter {
 		const runId = await this.ensureRun()
 		// Awaited inline so the scenario status is committed before the
 		// bun:test afterAll returns.
-		await this.fetch('PATCH', `/api/v1/runs/${runId}/scenarios/${input.scenarioId}`, {
+		await this.fetch('PATCH', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}`, {
 			status: input.status,
 			durationMs: input.durationMs,
 			attempts: input.attempts,
