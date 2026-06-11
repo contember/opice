@@ -31,8 +31,6 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      OPICE_ADMIN_TOKEN: ${{ secrets.OPICE_ADMIN_TOKEN }}
-      OPICE_BETTER_AUTH_SECRET: ${{ secrets.OPICE_BETTER_AUTH_SECRET }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -74,12 +72,10 @@ jobs:
 
       - name: Apply D1 migrations
         working-directory: packages/worker
-        # `DB` / `AUTH_DB` are the binding names from oblaka-generated
-        # wrangler.jsonc; the actual DB names in CF are `${env}-opice` /
-        # `${env}-opice-auth`. Either works, but the binding is env-stable.
+        # `DB` is the binding name from oblaka-generated wrangler.jsonc; the
+        # actual DB name in CF is `${env}-opice`. The binding is env-stable.
         run: |
           bunx wrangler d1 migrations apply DB --remote
-          bunx wrangler d1 migrations apply AUTH_DB --remote
 
       - name: Upload worker script
         working-directory: packages/worker

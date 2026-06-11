@@ -3,8 +3,6 @@ import { failuresCommand } from './commands/failures'
 import { initCommand } from './commands/init'
 import { installSkillsCommand } from './commands/install-skills'
 import { testCommand } from './commands/test'
-import { tokensCommand } from './commands/tokens'
-import { usersCommand } from './commands/users'
 
 const HELP = `opice — AI-driven E2E browser test harness
 
@@ -30,21 +28,6 @@ Commands:
       Read token comes from the URL's ?token=, OPICE_READ_TOKEN, or
       OPICE_READ_DSN (a read-only project credential).
 
-  tokens create [--project=SLUG] [--capability=read|write] [--label=...] [--expires-days=N]
-  tokens list [--project=SLUG]
-  tokens revoke <token-id>
-      Manage API tokens. Needs the admin token (--admin-token or
-      OPICE_ADMIN_TOKEN) and the platform endpoint (--endpoint,
-      OPICE_ENDPOINT, or opice.config.json). 'create' defaults to a
-      project-scoped read token and prints a ready OPICE_READ_DSN an
-      authoring agent can drop into .env to read results.
-
-  users create <email> [--password=...] [--name=...] [--endpoint=URL] [--admin-token=TOKEN]
-      Create a dashboard login (admin role by default). Needs the bootstrap
-      admin token (--admin-token or OPICE_ADMIN_TOKEN) and the platform endpoint
-      (--endpoint, OPICE_ENDPOINT, or opice.config.json). A password is
-      generated and printed if you don't pass one.
-
   install-skills [--global] [--ref=BRANCH]
       Install opice's Claude Code skills + author agent into this project's
       .claude/ (or ~/.claude with --global), fetched from GitHub. Restart
@@ -63,10 +46,6 @@ async function main(argv: string[]): Promise<number> {
 			return testCommand(rest)
 		case 'failures':
 			return failuresCommand(rest)
-		case 'users':
-			return usersCommand(rest)
-		case 'tokens':
-			return tokensCommand(rest)
 		case 'install-skills':
 			return installSkillsCommand(rest)
 		case 'help':
