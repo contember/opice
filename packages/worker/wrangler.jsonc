@@ -25,10 +25,7 @@
 	},
 	"vars": {
 		"ENVIRONMENT": "local",
-		"ADMIN_TOKEN": "local-admin",
-		"BETTER_AUTH_SECRET": "local-dev-better-auth-secret-not-for-production",
-		"BETTER_AUTH_URL": "",
-		"BETTER_AUTH_TRUSTED_ORIGINS": "http://localhost:18182"
+		"DEV": "true"
 	},
 	"d1_databases": [
 		{
@@ -36,12 +33,6 @@
 			"database_name": "opice",
 			"database_id": "opice",
 			"migrations_dir": "./migrations"
-		},
-		{
-			"binding": "AUTH_DB",
-			"database_name": "opice-auth",
-			"database_id": "opice-auth",
-			"migrations_dir": "./migrations/auth"
 		}
 	],
 	"r2_buckets": [

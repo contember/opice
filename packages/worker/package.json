@@ -21,14 +21,11 @@
 		"types": "wrangler types --strict-vars=false",
 		"typecheck": "tsc --noEmit",
 		"db:migrate:local": "wrangler d1 migrations apply opice --local",
-		"db:migrate:remote": "wrangler d1 migrations apply opice --remote",
-		"db:migrate:auth:local": "wrangler d1 migrations apply opice-auth --local",
-		"db:migrate:auth:remote": "wrangler d1 migrations apply opice-auth --remote",
-		"auth:migration": "bun run scripts/generate-betterauth-migration.ts"
+		"db:migrate:remote": "wrangler d1 migrations apply opice --remote"
 	},
 	"dependencies": {
-		"better-auth": "^1.6.9",
-		"kysely": "^0.28.16",
+		"@propustka/client": "link:@propustka/client",
+		"@propustka/core": "link:@propustka/core",
 		"zod": "^3.25.0"
 	},
 	"devDependencies": {

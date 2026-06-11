@@ -1,7 +1,6 @@
 import { Db } from './db'
 import type { Env } from './env'
-import { createAuth, type AuthInstance } from './identity/better-auth'
-import { D1Dialect } from './identity/d1-dialect'
+import { createIam, type Iam } from './iam'
 
 /**
  * Pre-wired services + config for every request. Handlers take `Services`
@@ -10,40 +9,33 @@ import { D1Dialect } from './identity/d1-dialect'
  */
 export interface Services {
 	readonly db: Db
-	readonly auth: AuthInstance
-	/** Raw BetterAuth D1, for the few operator ops not exposed by the auth API (role set). */
-	readonly authDb: D1Database
+	/**
+	 * The propustka IAM client (real binding off-local; persona-backed fake locally). Drives the
+	 * operator + share planes: `authenticate` / `issueCapability` / `redeemCapability` /
+	 * `revokeCapability`. The machine (data-plane token) plane never touches it — see principal.ts.
+	 */
+	readonly iam: Iam
 	readonly screenshots: R2Bucket
 	readonly assets: Fetcher
 	readonly config: Config
 }
 
 export interface Config {
-	/** Bootstrap root-admin credential (Bearer). Mints the first account/token. */
-	readonly adminToken: string
-	/** Deploy environment name; `local` disables the auth gate (see principal.ts). */
+	/** Deploy environment name; `local` opens the operator gate (see iam.ts / principal.ts). */
 	readonly environment: string
+	/** 'true' locally → persona-backed FakeIamClient; '' off-local → real IamClient over env.IAM. */
+	readonly dev: string
 }
 
 export function buildServices(env: Env): Services {
 	return {
 		db: new Db(env.DB),
-		auth: createAuth({
-			database: { dialect: new D1Dialect({ database: env.AUTH_DB }), type: 'sqlite' },
-			config: {
-				secret: env.BETTER_AUTH_SECRET,
-				...(env.BETTER_AUTH_URL ? { baseUrl: env.BETTER_AUTH_URL } : {}),
-				...(env.BETTER_AUTH_TRUSTED_ORIGINS
-					? { trustedOrigins: env.BETTER_AUTH_TRUSTED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean) }
-					: {}),
-			},
-		}),
-		authDb: env.AUTH_DB,
+		iam: createIam(env),
 		screenshots: env.SCREENSHOTS,
 		assets: env.ASSETS,
 		config: {
-			adminToken: env.ADMIN_TOKEN,
 			environment: env.ENVIRONMENT,
+			dev: env.DEV,
 		},
 	}
 }

@@ -1,4 +1,4 @@
-import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus, Token } from './types'
+import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Share, Step, StepKind, StepStatus, Token } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
 // carrying one of these (and no hard failure / no pending step) reads as
@@ -151,6 +151,28 @@ const toToken = (r: TokenRow): Token => ({
 	revokedAt: r.revoked_at,
 })
 
+interface ShareRow {
+	id: string
+	run_id: string
+	project_id: number
+	label: string | null
+	created_by: string | null
+	created_at: number
+	expires_at: number | null
+	revoked_at: number | null
+}
+
+const toShare = (r: ShareRow): Share => ({
+	id: r.id,
+	runId: r.run_id,
+	projectId: r.project_id,
+	label: r.label,
+	createdBy: r.created_by,
+	createdAt: r.created_at,
+	expiresAt: r.expires_at,
+	revokedAt: r.revoked_at,
+})
+
 const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 	const base = deriveStatus(r, now)
 	const warning = counts.live_warning ?? 0
@@ -250,6 +272,11 @@ export class Db {
 		return row ? toProject(row) : null
 	}
 
+	async getProjectById(id: number): Promise<Project | null> {
+		const row = await this.d1.prepare('SELECT * FROM projects WHERE id = ?').bind(id).first<ProjectRow>()
+		return row ? toProject(row) : null
+	}
+
 	// ---- Tokens (machine + share credentials; see migration 0003) -----------
 
 	/** Mint a token row. The caller hashes the secret; we never see plaintext. */
@@ -325,6 +352,47 @@ export class Db {
 	/** Best-effort activity stamp for audit; failures are non-fatal to the request. */
 	async touchToken(id: string): Promise<void> {
 		await this.d1.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(Date.now(), id).run()
+	}
+
+	// ---- Shares (run-share mirror of propustka capability tokens; migration 0007) ----
+
+	/** Record a freshly-issued run-share. `id` is the propustka capability token id. */
+	async createShare(input: {
+		id: string
+		runId: string
+		projectId: number
+		label?: string | null
+		createdBy?: string | null
+		expiresAt?: number | null
+	}): Promise<void> {
+		await this.d1
+			.prepare(`INSERT INTO shares (id, run_id, project_id, label, created_by, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`)
+			.bind(input.id, input.runId, input.projectId, input.label ?? null, input.createdBy ?? null, Date.now(), input.expiresAt ?? null)
+			.run()
+	}
+
+	/** Live (non-revoked) shares for a run, newest first. */
+	async listSharesForRun(runId: string): Promise<Share[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM shares WHERE run_id = ? AND revoked_at IS NULL ORDER BY created_at DESC')
+			.bind(runId)
+			.all<ShareRow>()
+		return results.map(toShare)
+	}
+
+	async getShare(id: string): Promise<Share | null> {
+		const row = await this.d1.prepare('SELECT * FROM shares WHERE id = ?').bind(id).first<ShareRow>()
+		return row ? toShare(row) : null
+	}
+
+	/** Mark a share revoked in the mirror (the hard revoke is `iam.revokeCapability`). */
+	async markShareRevoked(id: string): Promise<boolean> {
+		const result = await this.d1
+			.prepare('UPDATE shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+			.bind(Date.now(), id)
+			.run()
+		return (result.meta.changes ?? 0) > 0
 	}
 
 	async listProjects(): Promise<Project[]> {

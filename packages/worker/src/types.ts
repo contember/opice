@@ -57,6 +57,23 @@ export interface Token {
 	revokedAt: number | null
 }
 
+/**
+ * A run-share mirror row (migration 0007). The actual share credential is a propustka
+ * *capability token* — opice keeps this local record so the dashboard can list + revoke shares
+ * (the propustka contract has issue/redeem/revoke but no list). `id` is the capability token id
+ * returned by `issueCapability`; revocation flips `revokedAt` here AND calls `revokeCapability`.
+ */
+export interface Share {
+	id: string
+	runId: string
+	projectId: number
+	label: string | null
+	createdBy: string | null
+	createdAt: number
+	expiresAt: number | null
+	revokedAt: number | null
+}
+
 export interface Run {
 	id: string
 	projectId: number

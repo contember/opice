@@ -1,5 +1,5 @@
+import { DEV_PERSONA_COOKIE } from './iam'
 import type { Env } from './env'
-import { handleAuth } from './routes/auth'
 import { handleDashboard } from './routes/dashboard'
 import { handleIngest } from './routes/ingest'
 import { handleInstallMd } from './routes/install'
@@ -26,8 +26,15 @@ async function route(request: Request, services: Services): Promise<Response> {
 	const url = new URL(request.url)
 	const path = url.pathname
 
-	if (path.startsWith('/auth/')) {
-		return handleAuth(request, services, path.slice('/auth/'.length))
+	// DEV-only operator persona switch: set the FakeIamClient persona cookie, then bounce to the
+	// app. Lets local dev / browser tests "sign in as <email>" without Cloudflare Access. 404
+	// off-local (no DEV). The local dev-spa (vite) proxies `/__dev/*` to the Worker.
+	if (services.config.dev && request.method === 'GET' && path === '/__dev/login') {
+		const as = url.searchParams.get('as') ?? ''
+		const headers = new Headers({ location: '/' })
+		// Path=/ + SameSite=Lax so it rides every navigation + fetch; not HttpOnly (dev only).
+		headers.append('set-cookie', `${DEV_PERSONA_COOKIE}=${encodeURIComponent(as)}; Path=/; SameSite=Lax`)
+		return new Response(null, { status: 302, headers })
 	}
 	if (path.startsWith('/api/v1/')) {
 		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)

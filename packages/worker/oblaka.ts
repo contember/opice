@@ -1,45 +1,4 @@
-import { D1Database, define, R2Bucket, Worker } from 'oblaka-iac'
-
-interface AuthVars {
-	ADMIN_TOKEN: string
-	BETTER_AUTH_SECRET: string
-	BETTER_AUTH_URL: string
-	BETTER_AUTH_TRUSTED_ORIGINS: string
-}
-
-function envVarsFor(env: string): AuthVars {
-	if (env === 'local') {
-		// Local is open: the resolver bypasses the auth gate when ENVIRONMENT is
-		// 'local' so vite dev (a different origin from the worker) can hit /rpc
-		// without a cookie dance. ADMIN_TOKEN is still set for parity.
-		return {
-			ADMIN_TOKEN: 'local-admin',
-			// Fixed dev secret — fine locally, never used in stage/prod.
-			BETTER_AUTH_SECRET: 'local-dev-better-auth-secret-not-for-production',
-			BETTER_AUTH_URL: '',
-			// The Vite dev SPA proxies to the worker from this origin.
-			BETTER_AUTH_TRUSTED_ORIGINS: 'http://localhost:18182',
-		}
-	}
-	// Stage/prod read secrets from the deploy environment. CI sets these from
-	// GitHub secrets. Throws loudly if missing so we never ship a broken deploy.
-	// ADMIN_TOKEN is the bootstrap root credential used to mint the first user.
-	const adminToken = process.env['OPICE_ADMIN_TOKEN']
-	const authSecret = process.env['OPICE_BETTER_AUTH_SECRET']
-	if (!adminToken || !authSecret) {
-		throw new Error(
-			`Missing OPICE_ADMIN_TOKEN and/or OPICE_BETTER_AUTH_SECRET for env=${env}. ` +
-			`Set them as environment variables before running oblaka.`,
-		)
-	}
-	return {
-		ADMIN_TOKEN: adminToken,
-		BETTER_AUTH_SECRET: authSecret,
-		// Same-origin deploy (the worker serves the SPA) → URL inferred, no extra origins.
-		BETTER_AUTH_URL: process.env['OPICE_BETTER_AUTH_URL'] ?? '',
-		BETTER_AUTH_TRUSTED_ORIGINS: '',
-	}
-}
+import { D1Database, define, R2Bucket, ServiceReference, Worker } from 'oblaka-iac'
 
 const KNOWN_ENVS = new Set(['local', 'stage', 'prod'])
 
@@ -47,7 +6,7 @@ export default define(({ env }) => {
 	if (!KNOWN_ENVS.has(env)) {
 		throw new Error(`Unknown environment ${env}`)
 	}
-	const envVars = envVarsFor(env)
+	const isLocal = env === 'local'
 
 	return new Worker({
 		dir: '.',
@@ -73,19 +32,28 @@ export default define(({ env }) => {
 				migrationsDir: './migrations',
 				locationHint: 'weur',
 			}),
-			AUTH_DB: new D1Database({
-				name: 'opice-auth',
-				migrationsDir: './migrations/auth',
-				locationHint: 'weur',
-			}),
 			SCREENSHOTS: new R2Bucket({
 				name: 'opice-screenshots',
 				locationHint: 'weur',
 			}),
+			// IAM (propustka): operator authorization + audit + run-share capability tokens, over a
+			// service binding. Authentication is Cloudflare Access at the edge; the app calls
+			// env.IAM.authenticate()/issueCapability()/redeemCapability()/revokeCapability() via
+			// @propustka/client. Declared OFF-LOCAL only — locally there is no Access and no IAM
+			// Worker, so src/iam.ts swaps in the persona-backed FakeIamClient (DEV='true').
+			//
+			// NOTE: opice is NOT fully behind Access — anonymous run-share links and the machine
+			// data plane (ingest / agent read, presented as Bearer) must reach the Worker without
+			// an Access session. Configure Access to FORWARD the JWT for operators but allow
+			// unauthenticated requests through (the Worker resolves all three planes itself; see
+			// principal.ts). This mirrors poplach keeping its Sentry ingest DSN outside Access.
+			...(isLocal ? {} : { IAM: new ServiceReference('propustka-worker') }),
 		},
 		vars: {
 			ENVIRONMENT: env,
-			...envVars,
+			// Selects the IAM client in src/iam.ts: 'true' (local) → FakeIamClient (no Access, no
+			// IAM Worker); '' (off-local) → real IamClient over the env.IAM binding.
+			DEV: isLocal ? 'true' : '',
 		},
 	})
 })

@@ -2,19 +2,19 @@
  * The Worker's CF bindings + secrets. Single source of truth — every other
  * file imports from here, never re-declares the shape.
  */
+import type { IamRpc } from '@propustka/client'
+
 export interface Env {
 	DB: D1Database
-	/** Separate D1 owned by BetterAuth (user/session/account/verification). */
-	AUTH_DB: D1Database
 	SCREENSHOTS: R2Bucket
 	ASSETS: Fetcher
-	/** Bootstrap root-admin credential (Bearer). Lets an operator mint the first user/token. */
-	ADMIN_TOKEN: string
-	/** BetterAuth session signing secret (≥ 32 chars). */
-	BETTER_AUTH_SECRET: string
-	/** Public base URL of the worker; optional, inferred from the request when empty. */
-	BETTER_AUTH_URL: string
-	/** Comma-separated extra CSRF-trusted origins (e.g. the local Vite dev origin). */
-	BETTER_AUTH_TRUSTED_ORIGINS: string
+	/**
+	 * propustka IAM Worker — authorization + audit for the operator plane + capability tokens
+	 * for run-shares, over a service binding. Authentication is Cloudflare Access at the edge.
+	 * Declared OFF-LOCAL only; locally `iam.ts` swaps in the persona-backed FakeIamClient.
+	 */
+	IAM?: IamRpc
+	/** 'true' locally → FakeIamClient (no Access, no IAM Worker); '' off-local → real IamClient. */
+	DEV: string
 	ENVIRONMENT: string
 }

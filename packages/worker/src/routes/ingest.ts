@@ -1,5 +1,5 @@
 import { badRequest, json, notFound, readJson, unauthorized } from '../http'
-import { authenticate, has } from '../principal'
+import { resolveIngestProject } from '../principal'
 import type { Services } from '../services'
 import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
 
@@ -11,14 +11,10 @@ const ACCEPTED_STEP_KINDS: readonly StepKind[] = ['step', 'invariant']
 const ACCEPTED_SCENARIO_STATUSES: readonly ScenarioStatus[] = ['passed', 'failed']
 
 export async function handleIngest(request: Request, services: Services, path: string[]): Promise<Response> {
-	// Ingest needs a write capability scoped to exactly one project: a CI/local
-	// write token. (Sessions and admin tokens carry write too, but the scope must
-	// resolve to a single project — reporting always targets one project.)
-	const principal = await authenticate(request, services)
-	if (!principal || !has(principal, 'write') || principal.scope.kind !== 'project') {
-		return unauthorized()
-	}
-	const project = await services.db.getProjectBySlug(principal.scope.slug)
+	// Ingest is pure DATA PLANE: a single project-scoped `write` machine token (the CI/local
+	// reporter's OPICE_DSN), resolved WITHOUT Access or propustka — never an operator or a
+	// share. The resolver returns the one project the token reports to.
+	const project = await resolveIngestProject(request, services)
 	if (!project) {
 		return unauthorized()
 	}
