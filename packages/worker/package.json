@@ -24,8 +24,8 @@
 		"db:migrate:remote": "wrangler d1 migrations apply opice --remote"
 	},
 	"dependencies": {
-		"@propustka/client": "link:@propustka/client",
-		"@propustka/core": "link:@propustka/core",
+		"@propustka/client": "^0.0.1",
+		"@propustka/core": "^0.0.1",
 		"zod": "^3.25.0"
 	},
 	"devDependencies": {

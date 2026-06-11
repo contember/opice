@@ -77,8 +77,8 @@
       "name": "@opice/worker",
       "version": "0.0.1",
       "dependencies": {
-        "@propustka/client": "link:@propustka/client",
-        "@propustka/core": "link:@propustka/core",
+        "@propustka/client": "^0.0.1",
+        "@propustka/core": "^0.0.1",
         "zod": "^3.25.0",
       },
       "devDependencies": {
@@ -286,9 +286,9 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
-    "@propustka/client": ["@propustka/client@link:@propustka/client", {}],
+    "@propustka/client": ["@propustka/client@0.0.1", "", { "dependencies": { "@propustka/core": "0.0.1" } }, "sha512-KSh32LIi74Ms4V/P8jPlsHqnS8HJWXNeqFaLZxzfHAo4jeIpvYko9yOIoov5/QlKL85GOkp4PryQIg/Mly0P2Q=="],
 
-    "@propustka/core": ["@propustka/core@link:@propustka/core", {}],
+    "@propustka/core": ["@propustka/core@0.0.1", "", {}, "sha512-77XEcWxIDA4B8vp8hbP/VfIaysm/SX+anu3RGZRejlMEWQwoBCUx76ffHny4xvo/TYl51rYeI2HgTBUW/zIZ6Q=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-rc.3", "", {}, "sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q=="],
 
