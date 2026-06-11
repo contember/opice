@@ -203,6 +203,12 @@ await invariant.fixme(
 )
 ```
 
+An invariant carries a `manual` too: pass a contract before the body, exactly
+like a step — `invariant(name, { intent, manual }, fn)` (and
+`invariant.fixme(name, reason, { intent, manual }, fn)` / `step.fixme(name,
+reason, { intent, manual }, fn)`). Write the acceptance's `manual` as the plain
+"what you should see" the end user checks (target language, vykání, MISS).
+
 See `test-template.ts` for the full authored shape and `skeleton-template.ts`
 for the phase-1 input.
 

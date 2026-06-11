@@ -17,7 +17,10 @@ import { browserTest, byLabel, byRole, el, expect, invariant, step, waitFor } fr
  *   - Fill the body with the concrete selectors/actions you proved while
  *     walking the app in opice-browser.
  * Promote each `invariant.todo(...)` to an enforced `invariant(name, fn)` (or
- * `invariant.fixme(name, reason, fn)` if it genuinely can't hold yet).
+ * `invariant.fixme(name, reason, fn)` if it genuinely can't hold yet). Both take
+ * an optional contract before the body — `invariant(name, { intent, manual },
+ * fn)` / `invariant.fixme(name, reason, { intent, manual }, fn)` — so an
+ * acceptance can carry the same durable `intent` + end-user `manual` as a step.
  *
  * The DSL is async: `el`/`byRole`/`byLabel` return Playwright Locators; every
  * action and read is awaited, and `step` bodies are async. `expect` is
@@ -74,7 +77,12 @@ browserTest(
 
 		// Promoted from invariant.todo: now enforced. A failing invariant fails
 		// the scenario, just like a hard assertion — it IS the acceptance.
-		await invariant('<the property that must always hold>', async () => {
+		// Pass a contract before the body (same shape as a step) to keep an
+		// `intent` and an end-user `manual` line on the acceptance.
+		await invariant('<the property that must always hold>', {
+			intent: '<why this must always be true>',
+			manual: '<co uživatel ověří — vykání, jednoduše, „Zkontrolujte, že…">',
+		}, async () => {
 			await expect(el('<evidence>')).not.toContainText('<thing that must never appear>')
 		})
 	},

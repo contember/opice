@@ -473,7 +473,16 @@ interface StepFn {
 }
 
 interface StepExtras {
-	fixme: (name: string, reason: string, fn: StepBody) => Promise<void>
+	fixme: {
+		/** Tolerated failure with just a body. */
+		(name: string, reason: string, fn: StepBody): Promise<void>
+		/**
+		 * Tolerated failure that also keeps a durable contract — pass
+		 * `{ intent, manual }` before the body so the spec rationale and the
+		 * end-user manual line survive on a `.fixme` step too.
+		 */
+		(name: string, reason: string, contract: StepContract, fn: StepBody): Promise<void>
+	}
 	/**
 	 * A **blocked** pending stub: the step can't be authored yet because the app
 	 * feature it covers isn't implemented. Reports as 'pending' with the reason
@@ -505,6 +514,8 @@ interface StepExtras {
  * step unexpectedly *passes*, it's flagged too ('fixmepass') so a stale marker
  * doesn't linger. Unlike Playwright's `test.fixme()`, which **skips** the test,
  * `step.fixme` **runs** it — the mandatory reason is there to keep them apart.
+ * Pass a contract before the body — `step.fixme(name, reason, { intent, manual },
+ * fn)` — to keep the durable `intent` / end-user `manual` on a tolerated step.
  *
  * `step.blocked(name, reason, contract?)` is a pending stub that **can't be
  * authored yet** because the app feature doesn't exist — distinct from a plain
@@ -519,8 +530,10 @@ export const step: StepFn & StepExtras = Object.assign(
 		return runUnit({ kind: 'step', name, contract: arg2, fn: arg3 })
 	},
 	{
-		fixme: (name: string, reason: string, fn: StepBody): Promise<void> =>
-			runUnit({ kind: 'step', name, reason, fn }),
+		fixme: (name: string, reason: string, arg3: StepBody | StepContract, arg4?: StepBody): Promise<void> =>
+			typeof arg3 === 'function'
+				? runUnit({ kind: 'step', name, reason, fn: arg3 })
+				: runUnit({ kind: 'step', name, reason, contract: arg3, fn: arg4 }),
 		blocked: (name: string, reason: string, contract?: StepContract): Promise<void> =>
 			runUnit({ kind: 'step', name, contract, reason }),
 	},
@@ -536,7 +549,9 @@ export const step: StepFn & StepExtras = Object.assign(
  * A failing `invariant` fails the scenario like any hard assertion — it's an
  * acceptance, not a nicety.
  *
- * - `invariant(name, fn)` — enforced now.
+ * - `invariant(name, fn)` — enforced now. Pass a contract first —
+ *   `invariant(name, { intent, manual }, fn)` — to attach the durable `intent`
+ *   and the end-user `manual` line to the acceptance, exactly like a `step`.
  * - `invariant.todo(name, hint?)` — phase-1 stub: states the acceptance but
  *   isn't wired yet (status: pending). `opice-author` promotes it to an
  *   enforced `invariant(...)` (or an `invariant.fixme(...)` if it can't hold
@@ -547,21 +562,32 @@ export const step: StepFn & StepExtras = Object.assign(
  * - `invariant.fixme(name, reason, fn)` — a known-unenforceable acceptance,
  *   tolerated like `step.fixme` (e.g. a security property deferred to a
  *   ticket). The body runs and is expected to fail; the failure is reported as
- *   an amber warning and neither fails the scenario nor the run.
+ *   an amber warning and neither fails the scenario nor the run. Also accepts a
+ *   contract before the body: `invariant.fixme(name, reason, { intent, manual },
+ *   fn)`.
  */
 export const invariant: {
 	(name: string, fn: StepBody): Promise<void>
+	(name: string, contract: StepContract, fn: StepBody): Promise<void>
 	todo: (name: string, hint?: string) => Promise<void>
 	blocked: (name: string, reason: string) => Promise<void>
-	fixme: (name: string, reason: string, fn: StepBody) => Promise<void>
+	fixme: {
+		(name: string, reason: string, fn: StepBody): Promise<void>
+		(name: string, reason: string, contract: StepContract, fn: StepBody): Promise<void>
+	}
 } = Object.assign(
-	(name: string, fn: StepBody): Promise<void> => runUnit({ kind: 'invariant', name, fn }),
+	(name: string, arg2: StepBody | StepContract, arg3?: StepBody): Promise<void> =>
+		typeof arg2 === 'function'
+			? runUnit({ kind: 'invariant', name, fn: arg2 })
+			: runUnit({ kind: 'invariant', name, contract: arg2, fn: arg3 }),
 	{
 		todo: (name: string, hint?: string): Promise<void> =>
 			runUnit({ kind: 'invariant', name, contract: hint ? { hint } : undefined }),
 		blocked: (name: string, reason: string): Promise<void> =>
 			runUnit({ kind: 'invariant', name, reason }),
-		fixme: (name: string, reason: string, fn: StepBody): Promise<void> =>
-			runUnit({ kind: 'invariant', name, reason, fn }),
+		fixme: (name: string, reason: string, arg3: StepBody | StepContract, arg4?: StepBody): Promise<void> =>
+			typeof arg3 === 'function'
+				? runUnit({ kind: 'invariant', name, reason, fn: arg3 })
+				: runUnit({ kind: 'invariant', name, reason, contract: arg3, fn: arg4 }),
 	},
 )
