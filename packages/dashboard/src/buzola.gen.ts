@@ -11,6 +11,8 @@ const Route2 = () => import('./routes/projects/detail').then(m => ({ default: m.
 const Route3 = () => import('./routes/projects/run').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 const Route4 = () => import('./routes/runs').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 const Route5 = () => import('./routes/settings').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
+const Route6 = () => import('./routes/share-project').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
+const Route7 = () => import('./routes/share-run').then(m => ({ default: m.default.component })) as Promise<{ default: ComponentType }>;
 
 // Module augmentation for type-safe page-centric routing
 declare module '@buzola/router' {
@@ -20,6 +22,8 @@ declare module '@buzola/router' {
     'projects/run': { slug: string; runId: string };
     'runs': {};
     'settings': {};
+    'share-project': { slug: string };
+    'share-run': { slug: string; runId: string };
   }
 }
 
@@ -30,6 +34,8 @@ export const pageRegistry: Record<string, string> = {
   'projects/run': '/p/:slug/r/:runId',
   'runs': '/runs',
   'settings': '/settings',
+  'share-project': '/s/p/:slug',
+  'share-run': '/s/p/:slug/r/:runId',
 };
 
 const routeConfigs: RouteConfig[] = [
@@ -65,6 +71,18 @@ const routeConfigs: RouteConfig[] = [
         path: '/settings',
         component: lazy(Route5),
         preload: Route5,
+      },
+      {
+        path: '/share-project',
+        matchPath: '/s/p/:slug',
+        component: lazy(Route6),
+        preload: Route6,
+      },
+      {
+        path: '/share-run',
+        matchPath: '/s/p/:slug/r/:runId',
+        component: lazy(Route7),
+        preload: Route7,
       },
     ],
   },

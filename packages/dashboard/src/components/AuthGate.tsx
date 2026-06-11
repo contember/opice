@@ -4,11 +4,13 @@ import { useMe } from '../lib/session'
 import { Logo } from './Logo'
 
 /**
- * Decides whether to render the app or the "access required" screen:
+ * Gates the OPERATOR shell (the `(app)` layout) — it is not mounted by the
+ * public `(share)` routes. Decides whether to render the app or the "access
+ * required" screen:
  *   - a query came back 401 (auth-required flag set) → access required.
  *   - session.me is still loading → render nothing (child loaders do the real
  *     work; there is no lingering empty-state flash to worry about).
- *   - me resolved (operator OR anonymous share-link visitor) → app.
+ *   - me resolved (an authenticated operator) → app.
  *
  * The 401 signal comes from `useAuthRequired`, set by the react-query cache
  * callbacks in `main.tsx`. Signing in means going through Cloudflare Access —

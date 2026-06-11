@@ -3,7 +3,6 @@ import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-qu
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { pageRegistry, routes } from './buzola.gen'
-import { AuthGate } from './components/AuthGate'
 import { RpcError } from './lib/rpc-client'
 import { setAuthRequired } from './lib/auth-gate'
 import './styles.css'
@@ -32,9 +31,12 @@ const queryClient = new QueryClient({
 createRoot(root).render(
 	<StrictMode>
 		<QueryClientProvider client={queryClient}>
-			<AuthGate>
-				<BuzolaProvider routes={routes} pageRegistry={pageRegistry} />
-			</AuthGate>
+			{/*
+			 * No top-level AuthGate: it lives in the `(app)` layout so it wraps only
+			 * the operator routes. The public `(share)` routes under `/s/*` get their
+			 * own gate-free layout and must never call the operator `/rpc` surface.
+			 */}
+			<BuzolaProvider routes={routes} pageRegistry={pageRegistry} />
 		</QueryClientProvider>
 	</StrictMode>,
 )
