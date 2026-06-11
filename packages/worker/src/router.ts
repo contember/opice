@@ -170,21 +170,8 @@ const projects = rpc.router({
 			assertAccess(opCanWriteProject(ctx.auth))
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
 			const project = await ctx.services.db.createProject({ slug: input.slug, name: input.name })
-			const apiKey = await mintCapability(ctx, {
-				projectId: project.id,
-				kind: 'ingest',
-				label: `ingest:${project.slug}`,
-				grants: [{ action: 'report.write', resource: `project:${project.slug}`, projectId: project.slug }],
-			})
-			const readApiKey = await mintCapability(ctx, {
-				projectId: project.id,
-				kind: 'read',
-				label: `agent-read:${project.slug}`,
-				grants: [
-					{ action: 'report.read', resource: `project:${project.slug}`, projectId: project.slug },
-					{ action: 'project.read', resource: `project:${project.slug}`, projectId: project.slug },
-				],
-			})
+			const apiKey = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, 'ingest'))
+			const readApiKey = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, 'read'))
 			await ctx.auth.audit({ action: 'project.create', resourceType: 'project', resourceId: project.slug, metadata: { name: project.name } })
 			return { slug: project.slug, name: project.name, apiKey, readApiKey }
 		}),
@@ -205,6 +192,25 @@ const projects = rpc.router({
 		.input(z.object({ capabilityId: z.string() }))
 		.output(z.object({ revoked: z.boolean() }))
 		.handler(({ ctx, input }) => revokeMirroredCapability(ctx, input.capabilityId)),
+
+	// Mint a fresh ingest/read DSN for an EXISTING project, revoking the prior live one of that
+	// kind (rotation → at most one live ingest + one live read DSN per project). This is how you
+	// (re-)provision a project's DSNs after the fact — e.g. every project's keys after migration
+	// 0007 dropped the old `tokens` table. The token is returned ONCE.
+	rotateKey: rpc.procedure
+		.input(z.object({ slug: z.string(), kind: z.enum(['ingest', 'read']) }))
+		.output(z.object({ token: z.string() }))
+		.handler(async ({ ctx, input }) => {
+			const project = await ctx.services.db.getProjectBySlug(input.slug)
+			if (!project) notFound(`Project not found: ${input.slug}`)
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
+			for (const c of await ctx.services.db.listProjectCapabilities(project.id, input.kind)) {
+				await ctx.services.iam.revokeCapability(ctx.request, c.id)
+				await ctx.services.db.markCapabilityRevoked(c.id)
+			}
+			const token = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, input.kind))
+			return { token }
+		}),
 })
 
 const runs = rpc.router({
@@ -335,6 +341,27 @@ interface MintInput {
 	label: string
 	expiresAt?: number | null
 	grants: { action: string; resource: string; projectId?: string | null }[]
+}
+
+/** The mint spec for a project's DSN capability: ingest (report.write) or agent read (report.read + project.read). */
+function dsnMintSpec(projectId: number, slug: string, kind: 'ingest' | 'read'): MintInput {
+	if (kind === 'ingest') {
+		return {
+			projectId,
+			kind: 'ingest',
+			label: `ingest:${slug}`,
+			grants: [{ action: 'report.write', resource: `project:${slug}`, projectId: slug }],
+		}
+	}
+	return {
+		projectId,
+		kind: 'read',
+		label: `agent-read:${slug}`,
+		grants: [
+			{ action: 'report.read', resource: `project:${slug}`, projectId: slug },
+			{ action: 'project.read', resource: `project:${slug}`, projectId: slug },
+		],
+	}
 }
 
 /** Issue a propustka capability (operator delegates), mirror it locally, return the plaintext once. */
