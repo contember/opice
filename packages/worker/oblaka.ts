@@ -36,17 +36,19 @@ export default define(({ env }) => {
 				name: 'opice-screenshots',
 				locationHint: 'weur',
 			}),
-			// IAM (propustka): operator authorization + audit + run-share capability tokens, over a
-			// service binding. Authentication is Cloudflare Access at the edge; the app calls
-			// env.IAM.authenticate()/issueCapability()/redeemCapability()/revokeCapability() via
-			// @propustka/client. Declared OFF-LOCAL only — locally there is no Access and no IAM
-			// Worker, so src/iam.ts swaps in the persona-backed FakeIamClient (DEV='true').
+			// IAM (propustka): EVERYTHING is propustka. Operator authorization + audit (Access JWT
+			// → authenticate) AND every non-operator credential as a capability token
+			// (issue/redeem/revoke). The app calls env.IAM.* via @propustka/client. Declared
+			// OFF-LOCAL only — locally there is no Access and no IAM Worker, so src/iam.ts swaps in
+			// the persona-backed FakeIamClient (DEV='true').
 			//
-			// NOTE: opice is NOT fully behind Access — anonymous run-share links and the machine
-			// data plane (ingest / agent read, presented as Bearer) must reach the Worker without
-			// an Access session. Configure Access to FORWARD the JWT for operators but allow
-			// unauthenticated requests through (the Worker resolves all three planes itself; see
-			// principal.ts). This mirrors poplach keeping its Sentry ingest DSN outside Access.
+			// ACCESS TOPOLOGY (see packages/worker/CLAUDE.md): the OPERATOR surface is COVERED by
+			// Cloudflare Access — `/rpc`, `/screenshots/*`, and the dashboard SPA shell (so the
+			// `Cf-Access-Jwt-Assertion` header is injected and propustka resolves the operator).
+			// Only TWO things are PUBLIC (Access bypass): `/api/v1/*` ingest and `/s/*` (the
+			// read/share surface + `/install.md`). Those carry a propustka capability token
+			// (Bearer for ingest, ?token=/cookie for share) redeemed over the binding — the
+			// binding does not traverse Access, which is why these can be public.
 			...(isLocal ? {} : { IAM: new ServiceReference('propustka-worker') }),
 		},
 		vars: {

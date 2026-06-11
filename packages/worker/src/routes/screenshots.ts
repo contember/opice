@@ -1,10 +1,16 @@
 import { forbidden, notFound } from '../http'
-import { canSeeScreenshotKey, resolveCaller } from '../principal'
+import { opCanReadReports, resolveOperator } from '../principal'
 import type { Services } from '../services'
 
+/**
+ * Operator screenshot proxy (`/screenshots/<slug>/<runId>/...`) — behind Cloudflare Access.
+ * The anonymous share-visitor equivalent is `/s/screenshots/*` (capability-checked, see
+ * routes/share.ts).
+ */
 export async function handleScreenshot(request: Request, services: Services, key: string): Promise<Response> {
-	const resolved = await resolveCaller(request, services)
-	if (!resolved.ok || !canSeeScreenshotKey(resolved.caller, key)) {
+	const auth = await resolveOperator(request, services)
+	const slug = key.split('/')[0] ?? ''
+	if (!auth.ok || slug === '' || !opCanReadReports(auth, slug)) {
 		return forbidden()
 	}
 	const obj = await services.screenshots.get(key)

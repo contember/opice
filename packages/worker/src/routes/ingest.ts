@@ -1,5 +1,5 @@
 import { badRequest, json, notFound, readJson, unauthorized } from '../http'
-import { resolveIngestProject } from '../principal'
+import { capCanWriteProject, redeemBearerCapability } from '../principal'
 import type { Services } from '../services'
 import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
 
@@ -10,11 +10,24 @@ const ACCEPTED_STEP_STATUSES: readonly StepStatus[] = ['passed', 'failed', 'fixm
 const ACCEPTED_STEP_KINDS: readonly StepKind[] = ['step', 'invariant']
 const ACCEPTED_SCENARIO_STATUSES: readonly ScenarioStatus[] = ['passed', 'failed']
 
-export async function handleIngest(request: Request, services: Services, path: string[]): Promise<Response> {
-	// Ingest is pure DATA PLANE: a single project-scoped `write` machine token (the CI/local
-	// reporter's OPICE_DSN), resolved WITHOUT Access or propustka — never an operator or a
-	// share. The resolver returns the one project the token reports to.
-	const project = await resolveIngestProject(request, services)
+/**
+ * Ingest (`/api/v1/<slug>/...`) — PUBLIC (outside Access), authenticated by a propustka INGEST
+ * CAPABILITY token (the reporter's OPICE_DSN) presented as `Authorization: Bearer`. The Worker
+ * redeems it over the IAM binding and checks `report.write` on the project named in the URL —
+ * the slug comes from the path (no opice token, no grant enumeration). The binding does not
+ * traverse Access, which is why ingest can be public.
+ */
+export async function handleIngest(request: Request, services: Services, segments: string[]): Promise<Response> {
+	const slug = segments[0]
+	const path = segments.slice(1)
+	if (!slug) {
+		return notFound()
+	}
+	const cap = await redeemBearerCapability(request, services)
+	if (!cap || !capCanWriteProject(cap, slug)) {
+		return unauthorized()
+	}
+	const project = await services.db.getProjectBySlug(slug)
 	if (!project) {
 		return unauthorized()
 	}

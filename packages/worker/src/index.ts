@@ -5,6 +5,7 @@ import { handleIngest } from './routes/ingest'
 import { handleInstallMd } from './routes/install'
 import { handleRpc } from './routes/rpc'
 import { handleScreenshot } from './routes/screenshots'
+import { handleShare } from './routes/share'
 import { buildServices, type Services } from './services'
 
 export default {
@@ -36,6 +37,8 @@ async function route(request: Request, services: Services): Promise<Response> {
 		headers.append('set-cookie', `${DEV_PERSONA_COOKIE}=${encodeURIComponent(as)}; Path=/; SameSite=Lax`)
 		return new Response(null, { status: 302, headers })
 	}
+	// ── PUBLIC surfaces (outside Cloudflare Access) ──────────────────────────────
+	// Ingest: POST /api/v1/<slug>/runs… — a propustka ingest capability (Bearer).
 	if (path.startsWith('/api/v1/')) {
 		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)
 		return handleIngest(request, services, segments)
@@ -43,13 +46,22 @@ async function route(request: Request, services: Services): Promise<Response> {
 	if (path === '/install.md') {
 		return handleInstallMd(request, services)
 	}
+	// Share/read surface: /s/rpc, /s/screenshots/*, and the /s/* share SPA shell. A propustka
+	// capability token (?token= / opice_read cookie). Anonymous — never behind Access.
+	if (path === '/s' || path.startsWith('/s/')) {
+		return handleShare(request, services, path === '/s' ? '' : path.slice('/s/'.length))
+	}
+
+	// ── OPERATOR surfaces (behind Cloudflare Access) ─────────────────────────────
 	if (path === '/rpc') {
 		return handleRpc(request, services)
 	}
 	if (path.startsWith('/screenshots/')) {
 		return handleScreenshot(request, services, path.slice('/screenshots/'.length))
 	}
+	// The operator dashboard SPA shell.
 	return handleDashboard(request, services)
 }
 
 export type { AppRouter } from './router'
+export type { ShareRouter } from './shareRouter'

@@ -1,27 +1,19 @@
+import type { AuthContext } from '@propustka/client'
 import { z } from 'zod'
 import {
-	type Caller,
-	canListRuns,
-	canProjectWrite,
-	canSeeAllProjects,
-	canSeeProject,
-	canSeeRun,
-	canTokenManage,
-	generateSecret,
-	generateTokenId,
-	hashToken,
-	operatorOf,
-	subjectOf,
+	opCanReadAll,
+	opCanReadProject,
+	opCanReadReports,
+	opCanWriteProject,
 } from './principal'
 import { initRpc, RpcDispatchError } from './rpc'
 import type { Services } from './services'
-import type { Capability } from './types'
 
+/** Operator RPC context — a human resolved through Cloudflare Access + propustka. */
 export interface RpcContext {
 	services: Services
-	caller: Caller
-	/** The original request — needed to forward the operator's Access credentials to propustka
-	 * (issue / revoke capability tokens for run-shares). */
+	auth: AuthContext
+	/** The original request — to forward the operator's Access credentials when minting/revoking capabilities. */
 	request: Request
 }
 
@@ -39,26 +31,24 @@ function conflict(message: string): never {
 	throw new RpcDispatchError({ type: 'conflict', message, httpStatus: 409 })
 }
 
-/** Throw 403 unless `ok`. The single gate primitive — handlers pass a caller-aware check. */
+/** Throw 403 unless `ok`. The single gate primitive — handlers pass an `opCan*` check. */
 function assertAccess(ok: boolean): void {
 	if (!ok) forbidden()
 }
 
-// Scenarios add the computed display statuses: 'warning' (a passed scenario
-// carrying a tolerated fixme step) and 'incomplete' (one carrying a pending,
-// unauthored step).
+// ── Schemas (shared with the share router) ──────────────────────────────────────
+
 const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning', 'incomplete'])
-// Runs add 'incomplete' (reaped / went stale) and 'warning' — both computed.
 const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete', 'warning'])
 
-const ProjectSchema = z.object({
+export const ProjectSchema = z.object({
 	id: z.number(),
 	slug: z.string(),
 	name: z.string(),
 	createdAt: z.number(),
 })
 
-const RunSchema = z.object({
+export const RunSchema = z.object({
 	id: z.string(),
 	projectId: z.number(),
 	branch: z.string().nullable(),
@@ -74,17 +64,15 @@ const RunSchema = z.object({
 	finishedAt: z.number().nullable(),
 })
 
-// A run plus its project's slug + name, for the cross-project feed.
 const RunWithProjectSchema = RunSchema.extend({
 	projectSlug: z.string(),
 	projectName: z.string(),
 })
 
-// A page of runs + whether another page exists (offset pagination).
 const RunPageSchema = z.object({ runs: z.array(RunSchema), hasMore: z.boolean() })
 const RunWithProjectPageSchema = z.object({ runs: z.array(RunWithProjectSchema), hasMore: z.boolean() })
 
-const ScenarioSchema = z.object({
+export const ScenarioSchema = z.object({
 	id: z.string(),
 	runId: z.string(),
 	name: z.string(),
@@ -101,7 +89,7 @@ const ScenarioSchema = z.object({
 	finishedAt: z.number().nullable(),
 })
 
-const StepSchema = z.object({
+export const StepSchema = z.object({
 	id: z.number(),
 	scenarioId: z.string(),
 	attempt: z.number(),
@@ -118,42 +106,11 @@ const StepSchema = z.object({
 	createdAt: z.number(),
 })
 
-// A data-plane token, minus its hash — safe to return to the dashboard's token manager.
-const TokenSummarySchema = z.object({
+// A capability the dashboard can show + revoke (run-shares + project DSN keys).
+const CapabilitySummarySchema = z.object({
 	id: z.string(),
-	capability: z.enum(['read', 'write', 'admin']),
-	projectSlug: z.string().nullable(),
-	label: z.string().nullable(),
-	createdAt: z.number(),
-	expiresAt: z.number().nullable(),
-	lastUsedAt: z.number().nullable(),
-})
-
-type TokenSummary = z.infer<typeof TokenSummarySchema>
-
-function toTokenSummary(t: {
-	id: string
-	capability: Capability
-	projectSlug: string | null
-	label: string | null
-	createdAt: number
-	expiresAt: number | null
-	lastUsedAt: number | null
-}): TokenSummary {
-	return {
-		id: t.id,
-		capability: t.capability,
-		projectSlug: t.projectSlug,
-		label: t.label,
-		createdAt: t.createdAt,
-		expiresAt: t.expiresAt,
-		lastUsedAt: t.lastUsedAt,
-	}
-}
-
-// A run-share, for the run page's share manager.
-const ShareSummarySchema = z.object({
-	id: z.string(),
+	kind: z.enum(['ingest', 'read', 'share']),
+	runId: z.string().nullable(),
 	label: z.string().nullable(),
 	createdAt: z.number(),
 	expiresAt: z.number().nullable(),
@@ -161,30 +118,20 @@ const ShareSummarySchema = z.object({
 
 // ── session ─────────────────────────────────────────────────────────────────────
 
-// Who-am-I for the dashboard shell: identity + the operator capability flags it gates UI on.
-// A share-link visitor (anonymous) is `authenticated: false` with every flag false — the SPA
-// then renders the read-only run view without the operator chrome.
 const session = rpc.router({
 	me: rpc.procedure
 		.input(z.void())
 		.output(z.object({
-			authenticated: z.boolean(),
-			email: z.string().nullable(),
+			authenticated: z.literal(true),
+			email: z.string(),
 			canCreateProjects: z.boolean(),
-			canManageTokens: z.boolean(),
 		}))
-		.handler(({ ctx }) => {
-			const op = operatorOf(ctx.caller)
-			if (!op) {
-				return { authenticated: false, email: null, canCreateProjects: false, canManageTokens: false }
-			}
-			return {
-				authenticated: true,
-				email: op.principal.label,
-				canCreateProjects: op.can('project.write'),
-				canManageTokens: op.can('token.manage'),
-			}
-		}),
+		.handler(({ ctx }) => ({
+			authenticated: true,
+			email: ctx.auth.principal.label,
+			// project.write held globally → may create projects + manage shares/keys.
+			canCreateProjects: opCanWriteProject(ctx.auth),
+		})),
 })
 
 const projects = rpc.router({
@@ -193,11 +140,7 @@ const projects = rpc.router({
 		.output(z.array(ProjectSchema.extend({ lastRun: RunSchema.nullable() })))
 		.handler(async ({ ctx }) => {
 			const all = await ctx.services.db.listProjects()
-			// Each caller kind sees only the projects it may read (operator scope / machine scope /
-			// the share's own project).
-			const visible = all.filter(p => canSeeProject(ctx.caller, p.slug))
-			// Attach each project's headline run (latest on main/master, else latest)
-			// so the list can show a status summary without a per-row request.
+			const visible = all.filter(p => opCanReadProject(ctx.auth, p.slug))
 			const lastRuns = await ctx.services.db.listLastRunByProject()
 			const byProject = new Map(lastRuns.map(r => [r.projectId, r]))
 			return visible.map(p => ({ ...p, lastRun: byProject.get(p.id) ?? null }))
@@ -209,14 +152,14 @@ const projects = rpc.router({
 		.handler(async ({ ctx, input }) => {
 			const project = await ctx.services.db.getProjectBySlug(input.slug)
 			if (!project) notFound(`Project not found: ${input.slug}`)
-			assertAccess(canSeeProject(ctx.caller, project.slug))
+			assertAccess(opCanReadProject(ctx.auth, project.slug))
 			return project
 		}),
 
-	// Create a project + mint two project-scoped DATA-PLANE keys: an ingest (write) key for
-	// CI/local reporting, and a read key for an authoring agent to pull results back
-	// (`OPICE_READ_DSN`). Both are app-local machine credentials (the Sentry-DSN plane) — they
-	// do NOT live in IAM. Returned *once*; only their hashes are stored. Operator action.
+	// Create a project + mint two project-scoped propustka CAPABILITY tokens: an ingest (write)
+	// token for CI reporting (OPICE_DSN), and a read token for an authoring agent / the self-test
+	// to pull results back (OPICE_READ_DSN). Both are returned ONCE; opice keeps only a metadata
+	// mirror (id/kind/expiry) so they can be listed + revoked. There are no opice secrets.
 	create: rpc.procedure
 		.input(z.object({
 			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
@@ -224,36 +167,44 @@ const projects = rpc.router({
 		}))
 		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string(), readApiKey: z.string() }))
 		.handler(async ({ ctx, input }) => {
-			assertAccess(canProjectWrite(ctx.caller))
+			assertAccess(opCanWriteProject(ctx.auth))
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
 			const project = await ctx.services.db.createProject({ slug: input.slug, name: input.name })
-			const createdBy = subjectOf(ctx.caller)
-			const apiKey = generateSecret()
-			await ctx.services.db.createToken({
-				id: generateTokenId(),
-				tokenHash: await hashToken(apiKey),
-				capability: 'write',
+			const apiKey = await mintCapability(ctx, {
 				projectId: project.id,
-				label: 'ingest',
-				createdBy,
+				kind: 'ingest',
+				label: `ingest:${project.slug}`,
+				grants: [{ action: 'report.write', resource: `project:${project.slug}`, projectId: project.slug }],
 			})
-			const readApiKey = generateSecret()
-			await ctx.services.db.createToken({
-				id: generateTokenId(),
-				tokenHash: await hashToken(readApiKey),
-				capability: 'read',
+			const readApiKey = await mintCapability(ctx, {
 				projectId: project.id,
-				label: 'agent-read',
-				createdBy,
+				kind: 'read',
+				label: `agent-read:${project.slug}`,
+				grants: [
+					{ action: 'report.read', resource: `project:${project.slug}`, projectId: project.slug },
+					{ action: 'project.read', resource: `project:${project.slug}`, projectId: project.slug },
+				],
 			})
-			await operatorOf(ctx.caller)?.audit({
-				action: 'project.create',
-				resourceType: 'project',
-				resourceId: project.slug,
-				metadata: { name: project.name },
-			})
+			await ctx.auth.audit({ action: 'project.create', resourceType: 'project', resourceId: project.slug, metadata: { name: project.name } })
 			return { slug: project.slug, name: project.name, apiKey, readApiKey }
 		}),
+
+	// The project's live DSN capabilities (ingest + read), for a "keys" view — revocable.
+	listKeys: rpc.procedure
+		.input(z.object({ slug: z.string() }))
+		.output(z.array(CapabilitySummarySchema))
+		.handler(async ({ ctx, input }) => {
+			const project = await ctx.services.db.getProjectBySlug(input.slug)
+			if (!project) notFound(`Project not found: ${input.slug}`)
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
+			const list = await ctx.services.db.listProjectCapabilities(project.id)
+			return list.filter(c => c.kind !== 'share').map(toCapabilitySummary)
+		}),
+
+	revokeKey: rpc.procedure
+		.input(z.object({ capabilityId: z.string() }))
+		.output(z.object({ revoked: z.boolean() }))
+		.handler(({ ctx, input }) => revokeMirroredCapability(ctx, input.capabilityId)),
 })
 
 const runs = rpc.router({
@@ -267,14 +218,10 @@ const runs = rpc.router({
 		.handler(async ({ ctx, input }) => {
 			const project = await ctx.services.db.getProjectBySlug(input.projectSlug)
 			if (!project) notFound(`Project not found: ${input.projectSlug}`)
-			// A run-scoped share link can see its run but not the project's run list.
-			assertAccess(canListRuns(ctx.caller, project.slug))
+			assertAccess(opCanReadReports(ctx.auth, project.slug))
 			return ctx.services.db.listRunsForProject(project.id, { limit: input.limit, offset: input.offset })
 		}),
 
-	// Cross-project feed — every project's runs, newest first. Only a global reader (an
-	// app-wide operator, or a global read token) may browse it; a project- or run-scoped
-	// credential is confined to its own project.
 	listAll: rpc.procedure
 		.input(z.object({
 			limit: z.number().min(1).max(200).default(50),
@@ -282,7 +229,7 @@ const runs = rpc.router({
 		}))
 		.output(RunWithProjectPageSchema)
 		.handler(async ({ ctx, input }) => {
-			assertAccess(canSeeAllProjects(ctx.caller))
+			assertAccess(opCanReadAll(ctx.auth))
 			return ctx.services.db.listAllRuns({ limit: input.limit, offset: input.offset })
 		}),
 
@@ -292,8 +239,8 @@ const runs = rpc.router({
 		.handler(async ({ ctx, input }) => {
 			const run = await ctx.services.db.getRun(input.runId)
 			if (!run) notFound(`Run not found: ${input.runId}`)
-			const slug = await projectSlugForRun(ctx, run.projectId)
-			assertAccess(slug != null && canSeeRun(ctx.caller, slug, run.id))
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
 			return run
 		}),
 
@@ -303,17 +250,11 @@ const runs = rpc.router({
 		.handler(async ({ ctx, input }) => {
 			const run = await ctx.services.db.getRun(input.runId)
 			if (!run) notFound(`Run not found: ${input.runId}`)
-			const slug = await projectSlugForRun(ctx, run.projectId)
-			assertAccess(slug != null && canSeeRun(ctx.caller, slug, run.id))
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
 			return ctx.services.db.listScenariosForRun(input.runId)
 		}),
 })
-
-/** Resolve a run's project slug (the IAM project key) for scope checks. */
-async function projectSlugForRun(ctx: RpcContext, projectId: number): Promise<string | null> {
-	const project = await ctx.services.db.getProjectById(projectId)
-	return project?.slug ?? null
-}
 
 const scenarios = rpc.router({
 	steps: rpc.procedure
@@ -324,19 +265,14 @@ const scenarios = rpc.router({
 			if (!scenario) notFound(`Scenario not found: ${input.scenarioId}`)
 			const run = await ctx.services.db.getRun(scenario.runId)
 			if (!run) notFound(`Run not found: ${scenario.runId}`)
-			const slug = await projectSlugForRun(ctx, run.projectId)
-			assertAccess(slug != null && canSeeRun(ctx.caller, slug, run.id))
-			const rows = await ctx.services.db.listStepsForScenario(input.scenarioId)
-			return rows.map(s => ({
-				...s,
-				screenshotUrl: s.screenshotKey ? `/screenshots/${s.screenshotKey}` : null,
-			}))
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
+			return mapSteps(await ctx.services.db.listStepsForScenario(input.scenarioId))
 		}),
 })
 
-// Run-scoped, read-only share links — propustka CAPABILITY tokens. Any operator with
-// `project.write` over the run's project may mint/list/revoke them. opice keeps a local mirror
-// (the `shares` table) so list/revoke have something to enumerate; the secret is returned once.
+// Run-scoped, read-only share links — propustka capability tokens. Any operator with
+// `project.write` over the run's project may mint/list/revoke them. The secret is returned once.
 const shares = rpc.router({
 	create: rpc.procedure
 		.input(z.object({ runId: z.string(), expiresInDays: z.number().min(1).max(365).optional() }))
@@ -346,131 +282,97 @@ const shares = rpc.router({
 			if (!run) notFound(`Run not found: ${input.runId}`)
 			const project = await ctx.services.db.getProjectById(run.projectId)
 			if (!project) notFound(`Project not found for run: ${input.runId}`)
-			assertAccess(canProjectWrite(ctx.caller, project.slug))
-
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
 			const expiresAt = input.expiresInDays != null ? Date.now() + input.expiresInDays * 86_400_000 : null
-			// Grant read on the run AND its project metadata (the share view shows the run + the
-			// project name). projectId carries the slug for the delegation check (the issuer must
-			// hold project.read on that project) — it is NOT stored on the capability.
-			const issued = await ctx.services.iam.issueCapability(ctx.request, {
+			const token = await mintCapability(ctx, {
+				projectId: project.id,
+				runId: run.id,
+				kind: 'share',
+				label: `share:${project.slug}:${run.id}`,
+				expiresAt,
 				grants: [
-					{ action: 'project.read', resource: `run:${run.id}`, projectId: project.slug },
+					{ action: 'report.read', resource: `run:${run.id}`, projectId: project.slug },
 					{ action: 'project.read', resource: `project:${project.slug}`, projectId: project.slug },
 				],
-				label: `share:${project.slug}:${run.id}`,
-				...(expiresAt != null ? { expiresAt } : {}),
 			})
-			if (!issued.ok) {
-				// The issuer can't delegate read on this run — surface as forbidden.
-				forbidden('not allowed to share this run')
-			}
-			await ctx.services.db.createShare({
-				id: issued.id,
-				runId: run.id,
-				projectId: project.id,
-				label: `share:${project.slug}:${run.id}`,
-				createdBy: subjectOf(ctx.caller),
-				expiresAt,
-			})
-			return { token: issued.token, expiresAt }
+			return { token, expiresAt }
 		}),
 
 	list: rpc.procedure
 		.input(z.object({ runId: z.string() }))
-		.output(z.array(ShareSummarySchema))
+		.output(z.array(CapabilitySummarySchema))
 		.handler(async ({ ctx, input }) => {
 			const run = await ctx.services.db.getRun(input.runId)
 			if (!run) notFound(`Run not found: ${input.runId}`)
 			const project = await ctx.services.db.getProjectById(run.projectId)
 			if (!project) notFound(`Project not found for run: ${input.runId}`)
-			assertAccess(canProjectWrite(ctx.caller, project.slug))
-			const list = await ctx.services.db.listSharesForRun(run.id)
-			return list.map(s => ({ id: s.id, label: s.label, createdAt: s.createdAt, expiresAt: s.expiresAt }))
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
+			return (await ctx.services.db.listRunShares(run.id)).map(toCapabilitySummary)
 		}),
 
 	revoke: rpc.procedure
 		.input(z.object({ shareId: z.string() }))
 		.output(z.object({ revoked: z.boolean() }))
-		.handler(async ({ ctx, input }) => {
-			const share = await ctx.services.db.getShare(input.shareId)
-			if (!share) notFound('share not found')
-			const project = await ctx.services.db.getProjectById(share.projectId)
-			if (!project) notFound('share not found')
-			assertAccess(canProjectWrite(ctx.caller, project.slug))
-			// Hard revoke at the source (the token stops redeeming) THEN mirror the state locally.
-			const result = await ctx.services.iam.revokeCapability(ctx.request, share.id)
-			const mirrored = await ctx.services.db.markShareRevoked(share.id)
-			await operatorOf(ctx.caller)?.audit({
-				action: 'share.revoke',
-				resourceType: 'capability',
-				resourceId: share.id,
-			})
-			return { revoked: (result.ok && result.revoked) || mirrored }
-		}),
+		.handler(({ ctx, input }) => revokeMirroredCapability(ctx, input.shareId)),
 })
 
-// Operator-only: the DATA-PLANE token inventory (ingest / agent-read / global read keys).
-// Gated on `token.manage` (admin). User accounts are gone — identity lives in IAM (Access).
-const admin = rpc.router({
-	listTokens: rpc.procedure
-		.input(z.object({ projectSlug: z.string().optional() }))
-		.output(z.array(TokenSummarySchema))
-		.handler(async ({ ctx, input }) => {
-			assertAccess(canTokenManage(ctx.caller))
-			let projectId: number | null = null
-			if (input.projectSlug) {
-				const project = await ctx.services.db.getProjectBySlug(input.projectSlug)
-				if (!project) notFound(`Project not found: ${input.projectSlug}`)
-				projectId = project.id
-			}
-			const tokens = await ctx.services.db.listTokens(projectId)
-			return tokens.map(toTokenSummary)
-		}),
+// ── helpers ─────────────────────────────────────────────────────────────────────
 
-	// Mint a data-plane token. Project-scoped by default; omit `projectSlug` for a global,
-	// read-all token (a "see everything" read key — e.g. the stage self-test). Global tokens
-	// are read-only: a global write secret is never minted here.
-	createToken: rpc.procedure
-		.input(z.object({
-			projectSlug: z.string().optional(),
-			capability: z.enum(['read', 'write']),
-			label: z.string().trim().max(120).optional(),
-			expiresInDays: z.number().min(1).max(3650).optional(),
-		}))
-		.output(z.object({ id: z.string(), token: z.string(), expiresAt: z.number().nullable() }))
-		.handler(async ({ ctx, input }) => {
-			assertAccess(canTokenManage(ctx.caller))
-			let projectId: number | null = null
-			if (input.projectSlug) {
-				const project = await ctx.services.db.getProjectBySlug(input.projectSlug)
-				if (!project) notFound(`Project not found: ${input.projectSlug}`)
-				projectId = project.id
-			} else if (input.capability !== 'read') {
-				throw new RpcDispatchError({ type: 'validation', message: 'a global (project-less) token must be read-only', httpStatus: 400 })
-			}
-			const id = generateTokenId()
-			const token = generateSecret()
-			const expiresAt = input.expiresInDays != null ? Date.now() + input.expiresInDays * 86_400_000 : null
-			await ctx.services.db.createToken({
-				id,
-				tokenHash: await hashToken(token),
-				capability: input.capability,
-				projectId,
-				label: input.label ?? null,
-				createdBy: subjectOf(ctx.caller),
-				expiresAt,
-			})
-			return { id, token, expiresAt }
-		}),
+/** Resolve a run's project slug (the IAM project key) for scope checks. */
+async function projectSlugForRun(services: Services, projectId: number): Promise<string | null> {
+	const project = await services.db.getProjectById(projectId)
+	return project?.slug ?? null
+}
 
-	revokeToken: rpc.procedure
-		.input(z.object({ tokenId: z.string() }))
-		.output(z.object({ revoked: z.boolean() }))
-		.handler(async ({ ctx, input }) => {
-			assertAccess(canTokenManage(ctx.caller))
-			return { revoked: await ctx.services.db.revokeToken(input.tokenId) }
-		}),
-})
+function mapSteps(rows: Awaited<ReturnType<Services['db']['listStepsForScenario']>>) {
+	return rows.map(s => ({ ...s, screenshotUrl: s.screenshotKey ? `/screenshots/${s.screenshotKey}` : null }))
+}
+
+interface MintInput {
+	projectId: number
+	runId?: string
+	kind: 'ingest' | 'read' | 'share'
+	label: string
+	expiresAt?: number | null
+	grants: { action: string; resource: string; projectId?: string | null }[]
+}
+
+/** Issue a propustka capability (operator delegates), mirror it locally, return the plaintext once. */
+async function mintCapability(ctx: RpcContext, input: MintInput): Promise<string> {
+	const issued = await ctx.services.iam.issueCapability(ctx.request, {
+		grants: input.grants,
+		label: input.label,
+		...(input.expiresAt != null ? { expiresAt: input.expiresAt } : {}),
+	})
+	if (!issued.ok) forbidden('not allowed to mint this capability')
+	await ctx.services.db.createCapability({
+		id: issued.id,
+		projectId: input.projectId,
+		runId: input.runId ?? null,
+		kind: input.kind,
+		label: input.label,
+		createdBy: ctx.auth.principal.id,
+		expiresAt: input.expiresAt ?? null,
+	})
+	return issued.token
+}
+
+/** Hard-revoke a mirrored capability (propustka + the local mirror). Authorizes on project.write. */
+async function revokeMirroredCapability(ctx: RpcContext, id: string): Promise<{ revoked: boolean }> {
+	const record = await ctx.services.db.getCapability(id)
+	if (!record) notFound('capability not found')
+	const project = await ctx.services.db.getProjectById(record.projectId)
+	if (!project) notFound('capability not found')
+	assertAccess(opCanWriteProject(ctx.auth, project.slug))
+	const result = await ctx.services.iam.revokeCapability(ctx.request, id)
+	const mirrored = await ctx.services.db.markCapabilityRevoked(id)
+	await ctx.auth.audit({ action: 'capability.revoke', resourceType: 'capability', resourceId: id })
+	return { revoked: (result.ok && result.revoked) || mirrored }
+}
+
+function toCapabilitySummary(c: { id: string; kind: 'ingest' | 'read' | 'share'; runId: string | null; label: string | null; createdAt: number; expiresAt: number | null }) {
+	return { id: c.id, kind: c.kind, runId: c.runId, label: c.label, createdAt: c.createdAt, expiresAt: c.expiresAt }
+}
 
 export const appRouter = rpc.router({
 	session,
@@ -478,7 +380,6 @@ export const appRouter = rpc.router({
 	runs,
 	scenarios,
 	shares,
-	admin,
 })
 
 export type AppRouter = typeof appRouter

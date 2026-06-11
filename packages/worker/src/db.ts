@@ -1,4 +1,4 @@
-import type { Capability, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Share, Step, StepKind, StepStatus, Token } from './types'
+import type { CapabilityKind, CapabilityRecord, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
 // carrying one of these (and no hard failure / no pending step) reads as
@@ -32,20 +32,6 @@ interface ProjectRow {
 	created_at: number
 }
 
-interface TokenRow {
-	id: string
-	token_hash: string
-	capability: Capability
-	project_id: number | null
-	project_slug: string | null
-	run_id: string | null
-	label: string | null
-	created_by: string | null
-	created_at: number
-	expires_at: number | null
-	last_used_at: number | null
-	revoked_at: number | null
-}
 
 interface RunRow {
 	id: string
@@ -136,25 +122,11 @@ const toProject = (r: ProjectRow): Project => ({
 	createdAt: r.created_at,
 })
 
-const toToken = (r: TokenRow): Token => ({
-	id: r.id,
-	tokenHash: r.token_hash,
-	capability: r.capability,
-	projectId: r.project_id,
-	projectSlug: r.project_slug,
-	runId: r.run_id,
-	label: r.label,
-	createdBy: r.created_by,
-	createdAt: r.created_at,
-	expiresAt: r.expires_at,
-	lastUsedAt: r.last_used_at,
-	revokedAt: r.revoked_at,
-})
-
-interface ShareRow {
+interface CapabilityRow {
 	id: string
-	run_id: string
 	project_id: number
+	run_id: string | null
+	kind: CapabilityKind
 	label: string | null
 	created_by: string | null
 	created_at: number
@@ -162,10 +134,11 @@ interface ShareRow {
 	revoked_at: number | null
 }
 
-const toShare = (r: ShareRow): Share => ({
+const toCapability = (r: CapabilityRow): CapabilityRecord => ({
 	id: r.id,
-	runId: r.run_id,
 	projectId: r.project_id,
+	runId: r.run_id,
+	kind: r.kind,
 	label: r.label,
 	createdBy: r.created_by,
 	createdAt: r.created_at,
@@ -277,28 +250,26 @@ export class Db {
 		return row ? toProject(row) : null
 	}
 
-	// ---- Tokens (machine + share credentials; see migration 0003) -----------
+	// ---- Capabilities (local mirror of propustka capability tokens; migration 0007) ----
 
-	/** Mint a token row. The caller hashes the secret; we never see plaintext. */
-	async createToken(input: {
+	/** Record a freshly-issued capability. `id` is the propustka capability token id. */
+	async createCapability(input: {
 		id: string
-		tokenHash: string
-		capability: Capability
-		projectId?: number | null
+		projectId: number
 		runId?: string | null
+		kind: CapabilityKind
 		label?: string | null
 		createdBy?: string | null
 		expiresAt?: number | null
 	}): Promise<void> {
 		await this.d1
-			.prepare(`INSERT INTO tokens (id, token_hash, capability, project_id, run_id, label, created_by, created_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.prepare(`INSERT INTO capabilities (id, project_id, run_id, kind, label, created_by, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.id,
-				input.tokenHash,
-				input.capability,
-				input.projectId ?? null,
+				input.projectId,
 				input.runId ?? null,
+				input.kind,
 				input.label ?? null,
 				input.createdBy ?? null,
 				Date.now(),
@@ -307,89 +278,33 @@ export class Db {
 			.run()
 	}
 
-	/** Resolve a token by its secret's hash, joining the project slug for scope. */
-	async getTokenByHash(tokenHash: string): Promise<Token | null> {
-		const row = await this.d1
-			.prepare(`SELECT t.*, p.slug AS project_slug
-				FROM tokens t LEFT JOIN projects p ON p.id = t.project_id
-				WHERE t.token_hash = ?`)
-			.bind(tokenHash)
-			.first<TokenRow>()
-		return row ? toToken(row) : null
-	}
-
-	async getTokenById(id: string): Promise<Token | null> {
-		const row = await this.d1
-			.prepare(`SELECT t.*, p.slug AS project_slug
-				FROM tokens t LEFT JOIN projects p ON p.id = t.project_id
-				WHERE t.id = ?`)
-			.bind(id)
-			.first<TokenRow>()
-		return row ? toToken(row) : null
-	}
-
-	/** List active (non-revoked) tokens for a project, or all when projectId is null. */
-	async listTokens(projectId: number | null): Promise<Token[]> {
-		const query = projectId == null
-			? this.d1.prepare(`SELECT t.*, p.slug AS project_slug FROM tokens t
-				LEFT JOIN projects p ON p.id = t.project_id
-				WHERE t.revoked_at IS NULL ORDER BY t.created_at DESC`)
-			: this.d1.prepare(`SELECT t.*, p.slug AS project_slug FROM tokens t
-				LEFT JOIN projects p ON p.id = t.project_id
-				WHERE t.revoked_at IS NULL AND t.project_id = ? ORDER BY t.created_at DESC`).bind(projectId)
-		const { results } = await query.all<TokenRow>()
-		return results.map(toToken)
-	}
-
-	async revokeToken(id: string): Promise<boolean> {
-		const result = await this.d1
-			.prepare('UPDATE tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-			.bind(Date.now(), id)
-			.run()
-		return (result.meta.changes ?? 0) > 0
-	}
-
-	/** Best-effort activity stamp for audit; failures are non-fatal to the request. */
-	async touchToken(id: string): Promise<void> {
-		await this.d1.prepare('UPDATE tokens SET last_used_at = ? WHERE id = ?').bind(Date.now(), id).run()
-	}
-
-	// ---- Shares (run-share mirror of propustka capability tokens; migration 0007) ----
-
-	/** Record a freshly-issued run-share. `id` is the propustka capability token id. */
-	async createShare(input: {
-		id: string
-		runId: string
-		projectId: number
-		label?: string | null
-		createdBy?: string | null
-		expiresAt?: number | null
-	}): Promise<void> {
-		await this.d1
-			.prepare(`INSERT INTO shares (id, run_id, project_id, label, created_by, created_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`)
-			.bind(input.id, input.runId, input.projectId, input.label ?? null, input.createdBy ?? null, Date.now(), input.expiresAt ?? null)
-			.run()
-	}
-
-	/** Live (non-revoked) shares for a run, newest first. */
-	async listSharesForRun(runId: string): Promise<Share[]> {
+	/** Live (non-revoked) run-share capabilities for a run, newest first. */
+	async listRunShares(runId: string): Promise<CapabilityRecord[]> {
 		const { results } = await this.d1
-			.prepare('SELECT * FROM shares WHERE run_id = ? AND revoked_at IS NULL ORDER BY created_at DESC')
+			.prepare(`SELECT * FROM capabilities WHERE run_id = ? AND kind = 'share' AND revoked_at IS NULL ORDER BY created_at DESC`)
 			.bind(runId)
-			.all<ShareRow>()
-		return results.map(toShare)
+			.all<CapabilityRow>()
+		return results.map(toCapability)
 	}
 
-	async getShare(id: string): Promise<Share | null> {
-		const row = await this.d1.prepare('SELECT * FROM shares WHERE id = ?').bind(id).first<ShareRow>()
-		return row ? toShare(row) : null
+	/** Live (non-revoked) capabilities for a project (optionally of one kind), newest first. */
+	async listProjectCapabilities(projectId: number, kind?: CapabilityKind): Promise<CapabilityRecord[]> {
+		const query = kind
+			? this.d1.prepare('SELECT * FROM capabilities WHERE project_id = ? AND kind = ? AND revoked_at IS NULL ORDER BY created_at DESC').bind(projectId, kind)
+			: this.d1.prepare('SELECT * FROM capabilities WHERE project_id = ? AND revoked_at IS NULL ORDER BY created_at DESC').bind(projectId)
+		const { results } = await query.all<CapabilityRow>()
+		return results.map(toCapability)
 	}
 
-	/** Mark a share revoked in the mirror (the hard revoke is `iam.revokeCapability`). */
-	async markShareRevoked(id: string): Promise<boolean> {
+	async getCapability(id: string): Promise<CapabilityRecord | null> {
+		const row = await this.d1.prepare('SELECT * FROM capabilities WHERE id = ?').bind(id).first<CapabilityRow>()
+		return row ? toCapability(row) : null
+	}
+
+	/** Mark a capability revoked in the mirror (the hard revoke is `iam.revokeCapability`). */
+	async markCapabilityRevoked(id: string): Promise<boolean> {
 		const result = await this.d1
-			.prepare('UPDATE shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
+			.prepare('UPDATE capabilities SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
 			.bind(Date.now(), id)
 			.run()
 		return (result.meta.changes ?? 0) > 0

@@ -23,13 +23,6 @@ export type StepStatus = 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
 export type StepKind = 'step' | 'invariant'
 export type RunSource = 'ci' | 'local'
 
-/**
- * What a credential is allowed to do. `read` < `write` < `admin` in privilege,
- * but they are tracked as an explicit set per principal rather than a level, so
- * a CI key can be `write`-only without implying `read` of the dashboard.
- */
-export type Capability = 'read' | 'write' | 'admin'
-
 export interface Project {
 	id: number
 	slug: string
@@ -37,42 +30,29 @@ export interface Project {
 	createdAt: number
 }
 
+/** What a mirrored capability is for (see migration 0007). */
+export type CapabilityKind = 'ingest' | 'read' | 'share'
+
 /**
- * A machine / share credential (see migration 0003). The plaintext secret is
- * never stored — only `tokenHash`. `projectSlug` is denormalized in on read via
- * a join so the resolver can build a scope without a second query.
+ * A local MIRROR row of a propustka capability token opice issued (migration 0007). The
+ * secret + authoritative validity live in propustka; this only records metadata so the
+ * dashboard can list + revoke. `id` is the propustka capability token id.
+ *   - ingest → project write DSN (grant report.write on project:<slug>)
+ *   - read   → project read DSN / self-test (report.read + project.read on project:<slug>)
+ *   - share  → per-run read share link (report.read on run:<id> + project.read on project:<slug>)
  */
-export interface Token {
+export interface CapabilityRecord {
 	id: string
-	tokenHash: string
-	capability: Capability
-	projectId: number | null
-	projectSlug: string | null
+	projectId: number
 	runId: string | null
+	kind: CapabilityKind
 	label: string | null
 	createdBy: string | null
 	createdAt: number
 	expiresAt: number | null
-	lastUsedAt: number | null
 	revokedAt: number | null
 }
 
-/**
- * A run-share mirror row (migration 0007). The actual share credential is a propustka
- * *capability token* — opice keeps this local record so the dashboard can list + revoke shares
- * (the propustka contract has issue/redeem/revoke but no list). `id` is the capability token id
- * returned by `issueCapability`; revocation flips `revokedAt` here AND calls `revokeCapability`.
- */
-export interface Share {
-	id: string
-	runId: string
-	projectId: number
-	label: string | null
-	createdBy: string | null
-	createdAt: number
-	expiresAt: number | null
-	revokedAt: number | null
-}
 
 export interface Run {
 	id: string

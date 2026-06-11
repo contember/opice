@@ -1,248 +1,107 @@
 /**
- * Request authorization — THREE credential planes, one resolver.
+ * Authorization — TWO mechanisms, split by ROUTE (not by sniffing one endpoint).
  *
- * Opice serves three kinds of caller, and `resolveCaller(request)` normalizes any of them into a
- * single `Caller` the handlers gate on:
+ * Everything is propustka. There are no opice-owned credentials.
  *
- *   1. OPERATOR — a human at the dashboard. Cloudflare Access authenticates at the edge (the
- *      `Cf-Access-Jwt-Assertion` header); the propustka IAM Worker resolves the principal + its
- *      permissions; `can()`/`scopedTo()` are local pure checks. Replaces the old BetterAuth
- *      session + role model.
- *   2. MACHINE — CI reporting (ingest, `write`), the authoring agent's read DSN (`read`), the
- *      stage self-test (`read`). An app-local hashed token row presented as `Authorization:
- *      Bearer` (or, read-only, via the share cookie). Resolved WITHOUT Access or propustka — this
- *      is opice's data plane, the Sentry-DSN equivalent: machine traffic must not depend on the
- *      human-auth edge. Lives in the `tokens` table (migration 0003).
- *   3. SHARE — an anonymous run-share visitor. A propustka *capability token* presented via
- *      `?token=` / the `opice_read` cookie, redeemed to a `Capability` whose `can(action,
- *      resource)` is exact-match. Replaces the old run-scoped read token rows.
+ *   1. OPERATOR — a human behind Cloudflare Access. The operator surface (`/rpc`, `/screenshots`,
+ *      the dashboard SPA) is COVERED by Access, so the `Cf-Access-Jwt-Assertion` header is always
+ *      injected; `resolveOperator` hands it to propustka `authenticate()` → an `AuthContext` whose
+ *      `can()`/`scopedTo()` are local pure checks. Project key = the SLUG.
  *
- * PROJECT IDENTITY: opice's IAM-facing project key is the SLUG. Operator checks read
- * `can('project.read', { project: slug })`; the integer `projects.id` stays app-internal.
+ *   2. CAPABILITY — every non-operator caller (CI ingest, the agent read DSN, the stage self-test,
+ *      and anonymous run-share visitors). A propustka capability token presented as `Bearer`
+ *      (ingest/machine) or `?token=`/`opice_read` cookie (share links), redeemed by the Worker over
+ *      the IAM binding (which does NOT traverse Access — that's why these live on PUBLIC paths:
+ *      `/api/v1/*` ingest and `/s/*` read). The redeemed `Capability.can(action, resource)` is
+ *      exact-match; the Worker supplies the resource from the REQUEST (slug in the ingest URL, the
+ *      run/project id from the read params), so no grant enumeration is needed.
  *
- * Action taxonomy (mapped onto propustka's code-defined roles admin=`*`, editor=`project.*`,
- * viewer=`project.read`, WITHOUT editing roles.ts):
- *   - `project.read`   — read a project + its runs/scenarios/steps/screenshots (viewer+).
- *   - `project.write`  — create projects, mint/revoke run-share links (editor+).
- *   - `token.manage`   — the data-plane token inventory (admin only; editor's `project.*` misses it).
+ * Action taxonomy (mapped onto propustka roles admin=`*`, editor=`project.*`+`report.*`,
+ * viewer=`project.read`+`report.read`, no roles.ts edit):
+ *   - `project.read`  — see a project + its metadata/run-list (viewer+).
+ *   - `report.read`   — read a run's scenarios/steps/screenshots (viewer+).
+ *   - `project.write` — create projects, mint/revoke capabilities (editor+).
+ *   - `report.write`  — write run data; the INGEST capability grants this on `project:<slug>` (editor+ to delegate).
  */
 
-import type { AuthContext, Capability } from '@propustka/client'
+import type { AuthContext, AuthFailure, Capability } from '@propustka/client'
 import type { Services } from './services'
-import type { Project, Token } from './types'
 
 export const READ_COOKIE = 'opice_read'
 
-// ── Caller (the normalized result of resolveCaller) ────────────────────────────
+// ── Operator plane (Cloudflare Access + propustka) ──────────────────────────────
 
-/** A machine token's data scope: every project (global read), or exactly one project. */
-export type MachineScope =
-	| { kind: 'all' }
-	| { kind: 'project'; projectId: number; slug: string }
-
-export type Caller =
-	/** A human operator resolved through Cloudflare Access + propustka. */
-	| { kind: 'operator'; auth: AuthContext }
-	/** An app-local machine token (CI ingest / agent read / self-test). `read` or `write`. */
-	| { kind: 'machine'; capability: 'read' | 'write'; scope: MachineScope; subject: string }
-	/** An anonymous run-share visitor holding a redeemed propustka capability. */
-	| { kind: 'share'; cap: Capability; subject: string }
-
-export type CallerResult =
-	| { ok: true; caller: Caller }
-	| { ok: false; status: 401 | 403 | 404 }
-
-// ── Token hashing & generation (data-plane machine tokens) ─────────────────────
-
-export async function hashToken(secret: string): Promise<string> {
-	const data = new TextEncoder().encode(secret)
-	const digest = await crypto.subtle.digest('SHA-256', data)
-	return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
+/** Resolve the operator from the forwarded Access JWT. AuthContext on success, else a typed failure. */
+export function resolveOperator(request: Request, services: Services): Promise<AuthContext | AuthFailure> {
+	return services.iam.authenticate(request)
 }
 
-export function generateSecret(): string {
-	const bytes = new Uint8Array(32)
-	crypto.getRandomValues(bytes)
-	return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+/** May the operator see project `slug` (metadata + run list)? */
+export function opCanReadProject(auth: AuthContext, slug: string): boolean {
+	return auth.can('project.read', { project: slug })
 }
 
-export function generateTokenId(): string {
-	return crypto.randomUUID()
+/** May the operator read project `slug`'s run reports (runs/scenarios/steps/screenshots)? */
+export function opCanReadReports(auth: AuthContext, slug: string): boolean {
+	return auth.can('report.read', { project: slug })
 }
 
-// ── Data-plane (machine) token resolution ──────────────────────────────────────
-
-function machineScope(token: Token): MachineScope {
-	if (token.projectId == null || token.projectSlug == null) return { kind: 'all' }
-	return { kind: 'project', projectId: token.projectId, slug: token.projectSlug }
+/** May the operator create projects / mint+revoke capabilities (optionally scoped to `slug`)? */
+export function opCanWriteProject(auth: AuthContext, slug?: string): boolean {
+	return auth.can('project.write', slug ? { project: slug } : undefined)
 }
 
-function tokenLive(token: Token): boolean {
-	if (token.revokedAt != null) return false
-	if (token.expiresAt != null && token.expiresAt < Date.now()) return false
-	// A run-scoped row is a LEGACY share (pre-migration-0007). Shares are propustka capability
-	// tokens now; an old run-scoped read row must NOT resolve here (it would widen to the whole
-	// project). Treat it as dead — re-share from the run page.
-	if (token.runId != null) return false
-	return true
+/** May the operator browse EVERY project's runs (cross-project feed)? Global report.read only. */
+export function opCanReadAll(auth: AuthContext): boolean {
+	return auth.scopedTo('report.read') === null
 }
 
-/**
- * Resolve an `Authorization: Bearer` secret to a machine caller. Only `read`/`write` tokens
- * exist on the data plane now — a legacy `admin` token row resolves to nothing (operator admin
- * is Access + `token.manage`, never a bearer secret).
- */
-async function resolveMachineToken(secret: string, services: Services): Promise<Caller | null> {
-	const token = await services.db.getTokenByHash(await hashToken(secret))
-	if (!token || !tokenLive(token) || token.capability === 'admin') return null
-	void services.db.touchToken(token.id) // fire-and-forget audit stamp
-	return { kind: 'machine', capability: token.capability, scope: machineScope(token), subject: `token:${token.id}` }
-}
+// ── Capability plane (propustka capability tokens on public paths) ───────────────
 
-/**
- * Resolve a share-cookie / `?token=` secret. Read-only BY CONSTRUCTION: an app-local *read*
- * token (the self-test global read, an agent read DSN used in a browser) resolves to a machine
- * read caller; anything else is tried as a propustka capability (a run-share link). A `write`
- * token presented this way never matches the read path and never redeems as a capability, so the
- * "share links are read-only" invariant holds.
- */
-async function resolveShareSecret(secret: string, request: Request, services: Services): Promise<Caller | null> {
-	const token = await services.db.getTokenByHash(await hashToken(secret))
-	if (token && tokenLive(token) && token.capability === 'read') {
-		void services.db.touchToken(token.id)
-		return { kind: 'machine', capability: 'read', scope: machineScope(token), subject: `token:${token.id}` }
-	}
+/** Redeem the `Authorization: Bearer` capability (ingest / machine). Null when absent/invalid. */
+export async function redeemBearerCapability(request: Request, services: Services): Promise<Capability | null> {
+	const secret = extractBearer(request)
+	if (!secret) return null
 	const cap = await services.iam.redeemCapability(request, secret)
-	if (cap.ok) return { kind: 'share', cap, subject: 'capability' }
-	return null
-}
-
-// ── The unified resolver ────────────────────────────────────────────────────────
-
-/**
- * Resolve any caller for the RPC + screenshot surfaces. Order matters:
- *   1. an explicit `Authorization: Bearer` is a machine claim — resolve it or 401, never
- *      fall through (keeps ingest resolving to its real project);
- *   2. a forwarded Access JWT is a real operator (off-local) — resolve through propustka;
- *   3. an explicit `?token=` / share cookie is a share/read claim — resolve or 401;
- *   4. otherwise fall back to the operator plane: locally the persona-backed fake opens the gate
- *      (default-admin / dev-persona cookie); off-local with no JWT this is `missing_token` (401).
- *
- * Putting the explicit machine/share planes ahead of the operator FALLBACK is what lets a local
- * `?token=` share or a `Bearer` reporter resolve to the right plane even though the local fake
- * would otherwise resolve everyone to the default admin.
- */
-export async function resolveCaller(request: Request, services: Services): Promise<CallerResult> {
-	const bearer = extractBearer(request)
-	if (bearer) {
-		const machine = await resolveMachineToken(bearer, services)
-		return machine ? { ok: true, caller: machine } : { ok: false, status: 401 }
-	}
-
-	if (request.headers.has('cf-access-jwt-assertion')) {
-		const auth = await services.iam.authenticate(request)
-		if (auth.ok) return { ok: true, caller: { kind: 'operator', auth } }
-		// A forwarded-but-unresolved JWT (unknown/disabled principal): fall through to a share
-		// token if any, else surface this failure from the fallback below.
-	}
-
-	const shared = extractSharedToken(request)
-	if (shared) {
-		const caller = await resolveShareSecret(shared, request, services)
-		return caller ? { ok: true, caller } : { ok: false, status: 401 }
-	}
-
-	const auth = await services.iam.authenticate(request)
-	if (auth.ok) return { ok: true, caller: { kind: 'operator', auth } }
-	return { ok: false, status: auth.status }
+	return cap.ok ? cap : null
 }
 
 /**
- * Ingest's own resolver: a single project-scoped `write` machine token → its project. Ingest is
- * pure data plane — never an operator or a share — so it does NOT go through `resolveCaller`.
+ * Redeem the read capability for the public `/s/*` surface. A browser share visitor carries it as
+ * `?token=` / the `opice_read` cookie; a machine reader (the `opice failures` CLI, the self-test)
+ * carries it as `Authorization: Bearer`. Either is fine — it's a bearer secret, redeemed the same.
  */
-export async function resolveIngestProject(request: Request, services: Services): Promise<Project | null> {
-	const bearer = extractBearer(request)
-	if (!bearer) return null
-	const caller = await resolveMachineToken(bearer, services)
-	if (!caller || caller.kind !== 'machine' || caller.capability !== 'write' || caller.scope.kind !== 'project') {
-		return null
-	}
-	const project = await services.db.getProjectBySlug(caller.scope.slug)
-	return project && project.id === caller.scope.projectId ? project : null
+export async function redeemReadCapability(request: Request, services: Services): Promise<Capability | null> {
+	const secret = extractBearer(request) ?? extractShareSecret(request)
+	if (!secret) return null
+	const cap = await services.iam.redeemCapability(request, secret)
+	return cap.ok ? cap : null
 }
 
-// ── Capability + scope gates (caller-aware) ─────────────────────────────────────
-
-/** May this caller read project `slug` and its runs? (operator scope / machine scope / share.) */
-export function canSeeProject(caller: Caller, slug: string): boolean {
-	switch (caller.kind) {
-		case 'operator': return caller.auth.can('project.read', { project: slug })
-		case 'machine': return caller.capability === 'read' && (caller.scope.kind === 'all' || caller.scope.slug === slug)
-		case 'share': return caller.cap.can('project.read', `project:${slug}`)
-	}
+/** May this capability read run `runId` (in project `slug`)? A run-share OR a project-read cap. */
+export function capCanReadRun(cap: Capability, slug: string, runId: string): boolean {
+	return cap.can('report.read', `run:${runId}`) || cap.can('report.read', `project:${slug}`)
 }
 
-/** May this caller browse EVERY project's runs (the cross-project feed)? Global readers only. */
-export function canSeeAllProjects(caller: Caller): boolean {
-	switch (caller.kind) {
-		case 'operator': return caller.auth.scopedTo('project.read') === null
-		case 'machine': return caller.capability === 'read' && caller.scope.kind === 'all'
-		case 'share': return false
-	}
+/** May this capability read project `slug`'s metadata (name)? */
+export function capCanReadProject(cap: Capability, slug: string): boolean {
+	return cap.can('project.read', `project:${slug}`)
 }
 
-/** May this caller browse the FULL run list of project `slug`? A share link (one run) cannot. */
-export function canListRuns(caller: Caller, slug: string): boolean {
-	switch (caller.kind) {
-		case 'operator': return caller.auth.can('project.read', { project: slug })
-		case 'machine': return caller.capability === 'read' && (caller.scope.kind === 'all' || caller.scope.slug === slug)
-		case 'share': return false
-	}
+/** May this capability browse project `slug`'s full run list? Only a project-scoped read cap. */
+export function capCanListRuns(cap: Capability, slug: string): boolean {
+	return cap.can('report.read', `project:${slug}`)
 }
 
-/** May this caller see one specific run (in project `slug`)? */
-export function canSeeRun(caller: Caller, slug: string, runId: string): boolean {
-	switch (caller.kind) {
-		case 'operator': return caller.auth.can('project.read', { project: slug })
-		case 'machine': return caller.capability === 'read' && (caller.scope.kind === 'all' || caller.scope.slug === slug)
-		case 'share': return caller.cap.can('project.read', `run:${runId}`)
-	}
+/** May this capability write run data to project `slug` (ingest)? */
+export function capCanWriteProject(cap: Capability, slug: string): boolean {
+	return cap.can('report.write', `project:${slug}`)
 }
 
-/** May this caller read a screenshot R2 key (`<slug>/<runId>/...`)? */
-export function canSeeScreenshotKey(caller: Caller, key: string): boolean {
+/** May this capability read a screenshot R2 key (`<slug>/<runId>/...`)? */
+export function capCanReadScreenshotKey(cap: Capability, key: string): boolean {
 	const [slug = '', runId = ''] = key.split('/')
-	switch (caller.kind) {
-		case 'operator': return slug !== '' && caller.auth.can('project.read', { project: slug })
-		case 'machine': return caller.capability === 'read' && (caller.scope.kind === 'all' || (slug !== '' && caller.scope.slug === slug))
-		case 'share': return runId !== '' && caller.cap.can('project.read', `run:${runId}`)
-	}
-}
-
-/** May this caller create projects / mint+revoke share links for `slug`? Operators only. */
-export function canProjectWrite(caller: Caller, slug?: string): boolean {
-	if (caller.kind !== 'operator') return false
-	return caller.auth.can('project.write', slug ? { project: slug } : undefined)
-}
-
-/** May this caller manage the data-plane token inventory? The admin surface — operators only. */
-export function canTokenManage(caller: Caller): boolean {
-	return caller.kind === 'operator' && caller.auth.can('token.manage')
-}
-
-/** The operator `AuthContext`, or null — for `audit()` and capability issue/revoke (operator ops). */
-export function operatorOf(caller: Caller): AuthContext | null {
-	return caller.kind === 'operator' ? caller.auth : null
-}
-
-/** A stable subject string for `created_by` / logs. */
-export function subjectOf(caller: Caller): string {
-	switch (caller.kind) {
-		case 'operator': return caller.auth.principal.id
-		case 'machine': return caller.subject
-		case 'share': return caller.subject
-	}
+	return slug !== '' && runId !== '' && capCanReadRun(cap, slug, runId)
 }
 
 // ── Credential extraction ───────────────────────────────────────────────────────
@@ -254,7 +113,7 @@ function extractBearer(request: Request): string | null {
 	return value || null
 }
 
-function extractSharedToken(request: Request): string | null {
+function extractShareSecret(request: Request): string | null {
 	const url = new URL(request.url)
 	const queryToken = url.searchParams.get('token')
 	if (queryToken) return queryToken
@@ -267,17 +126,18 @@ function extractSharedToken(request: Request): string | null {
 }
 
 /**
- * Exchange a valid `?token=` for the `opice_read` cookie and redirect to the token-stripped URL
- * (so the secret leaves the address bar). Returns null when there's no token, or it doesn't
- * resolve to a read caller. Locally the gate is open, so any `?token=` is accepted as-is.
+ * Exchange a valid `?token=` (a share-link capability) for the `opice_read` cookie and redirect to
+ * the token-stripped URL (so the secret leaves the address bar, then rides every `/s/rpc` call).
+ * Returns null when there's no token, or it doesn't redeem. Locally the gate is open, so any
+ * `?token=` is accepted as-is. Runs only on the public `/s/*` share surface.
  */
 export async function readAccessRedirect(request: Request, services: Services): Promise<Response | null> {
 	const url = new URL(request.url)
 	const queryToken = url.searchParams.get('token')
 	if (!queryToken) return null
 	if (services.config.environment !== 'local') {
-		const caller = await resolveShareSecret(queryToken, request, services)
-		if (!caller) return null
+		const cap = await services.iam.redeemCapability(request, queryToken)
+		if (!cap.ok) return null
 	}
 	const next = new URL(url.toString())
 	next.searchParams.delete('token')
