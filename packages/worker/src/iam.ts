@@ -24,8 +24,8 @@
  * The caller `app` id ('opice') is baked in here so it can never be forgotten or mistyped.
  *
  * PROJECT IDENTITY: opice's IAM-facing project key is the project SLUG (stable, human-meaningful)
- * — `can('project.read', { project: slug })` and `scopedTo('project.read')` deal in slugs, which
- * is what IAM grants reference. The integer `projects.id` stays app-internal.
+ * — `can('project.read', { type: 'project', value: slug })` and `scopedTo('project.read', 'project')`
+ * deal in slugs, which is what IAM grants reference. The integer `projects.id` stays app-internal.
  */
 import { FakeIamClient, type FakePersona, IamClient, type IamRpc } from '@propustka/client'
 
@@ -62,22 +62,22 @@ const DEV_PERSONAS: Record<string, FakePersona> = {
 		id: 'dev-admin',
 		label: DEV_DEFAULT_EMAIL,
 		type: 'user',
-		permissions: [{ action: '*', projectId: null, source: 'grant' }],
+		permissions: [{ action: '*', scope: null, source: 'grant' }],
 	},
 	'member@opice.test': {
 		id: 'dev-member',
 		label: 'member@opice.test',
 		type: 'user',
 		permissions: [
-			{ action: 'project.read', projectId: null, source: 'grant' },
-			{ action: 'project.write', projectId: null, source: 'grant' },
+			{ action: 'project.read', scope: null, source: 'grant' },
+			{ action: 'project.write', scope: null, source: 'grant' },
 		],
 	},
 	'viewer@opice.test': {
 		id: 'dev-viewer',
 		label: 'viewer@opice.test',
 		type: 'user',
-		permissions: [{ action: 'project.read', projectId: null, source: 'grant' }],
+		permissions: [{ action: 'project.read', scope: null, source: 'grant' }],
 	},
 }
 

@@ -81,6 +81,18 @@ jobs:
         working-directory: packages/worker
         run: bunx wrangler deploy
 
+      # Reconcile opice's declared authz vocabulary (packages/worker/propustka.schema.ts) into
+      # Propustka via the idempotent admin endpoint. Skipped until the operator configures the
+      # PROPUSTKA_URL var (+ optional Access service token secrets) for this environment.
+      - name: Reconcile Propustka authz schema
+        if: ${{ vars.PROPUSTKA_URL != '' }}
+        working-directory: packages/worker
+        env:
+          PROPUSTKA_URL: ${{ vars.PROPUSTKA_URL }}
+          PROPUSTKA_ACCESS_CLIENT_ID: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_ID }}
+          PROPUSTKA_ACCESS_CLIENT_SECRET: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_SECRET }}
+        run: bun run schema:provision
+
       - name: Summary
         run: |
           echo "### Deployed opice to **${{ steps.target.outputs.env }}** :rocket:" >> "$GITHUB_STEP_SUMMARY"
