@@ -1,4 +1,4 @@
-import type { AuthContext } from '@propustka/client'
+import type { AuthContext, IssueCapabilityRequest } from '@propustka/client'
 import { z } from 'zod'
 import {
 	opCanReadAll,
@@ -301,8 +301,8 @@ const shares = rpc.router({
 				label: `share:${project.slug}:${run.id}`,
 				expiresAt,
 				grants: [
-					{ action: 'report.read', resource: `run:${run.id}`, projectId: project.slug },
-					{ action: 'project.read', resource: `project:${project.slug}`, projectId: project.slug },
+					{ action: 'report.read', resource: `run:${run.id}`, scope: { type: 'project', value: project.slug } },
+					{ action: 'project.read', resource: `project:${project.slug}`, scope: { type: 'project', value: project.slug } },
 				],
 			})
 			return { token, expiresAt }
@@ -344,7 +344,7 @@ interface MintInput {
 	kind: 'ingest' | 'read' | 'share'
 	label: string
 	expiresAt?: number | null
-	grants: { action: string; resource: string; projectId?: string | null }[]
+	grants: IssueCapabilityRequest['grants']
 }
 
 /** The mint spec for a project's DSN capability: ingest (report.write) or agent read (report.read + project.read). */
@@ -354,7 +354,7 @@ function dsnMintSpec(projectId: number, slug: string, kind: 'ingest' | 'read'): 
 			projectId,
 			kind: 'ingest',
 			label: `ingest:${slug}`,
-			grants: [{ action: 'report.write', resource: `project:${slug}`, projectId: slug }],
+			grants: [{ action: 'report.write', resource: `project:${slug}`, scope: { type: 'project', value: slug } }],
 		}
 	}
 	return {
@@ -362,8 +362,8 @@ function dsnMintSpec(projectId: number, slug: string, kind: 'ingest' | 'read'): 
 		kind: 'read',
 		label: `agent-read:${slug}`,
 		grants: [
-			{ action: 'report.read', resource: `project:${slug}`, projectId: slug },
-			{ action: 'project.read', resource: `project:${slug}`, projectId: slug },
+			{ action: 'report.read', resource: `project:${slug}`, scope: { type: 'project', value: slug } },
+			{ action: 'project.read', resource: `project:${slug}`, scope: { type: 'project', value: slug } },
 		],
 	}
 }

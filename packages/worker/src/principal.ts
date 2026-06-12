@@ -38,22 +38,22 @@ export function resolveOperator(request: Request, services: Services): Promise<A
 
 /** May the operator see project `slug` (metadata + run list)? */
 export function opCanReadProject(auth: AuthContext, slug: string): boolean {
-	return auth.can('project.read', { project: slug })
+	return auth.can('project.read', { type: 'project', value: slug })
 }
 
 /** May the operator read project `slug`'s run reports (runs/scenarios/steps/screenshots)? */
 export function opCanReadReports(auth: AuthContext, slug: string): boolean {
-	return auth.can('report.read', { project: slug })
+	return auth.can('report.read', { type: 'project', value: slug })
 }
 
 /** May the operator create projects / mint+revoke capabilities (optionally scoped to `slug`)? */
 export function opCanWriteProject(auth: AuthContext, slug?: string): boolean {
-	return auth.can('project.write', slug ? { project: slug } : undefined)
+	return auth.can('project.write', slug ? { type: 'project', value: slug } : undefined)
 }
 
 /** May the operator browse EVERY project's runs (cross-project feed)? Global report.read only. */
 export function opCanReadAll(auth: AuthContext): boolean {
-	return auth.scopedTo('report.read') === null
+	return auth.scopedTo('report.read', 'project') === null
 }
 
 // ── Capability plane (propustka capability tokens on public paths) ───────────────
