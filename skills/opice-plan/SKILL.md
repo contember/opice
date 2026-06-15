@@ -123,6 +123,7 @@ browserTest(
 		feature: 'F-CHK-02',
 		seeds: ['catalog', 'saved-card'],
 		roles: ['shopper'],
+		tier: 'critical', // gates a deploy → runs on every push (omit for the standard suite)
 		// retries: 2,  // optional: re-run flaky scenarios, fresh browser per attempt
 	},
 	async () => {
@@ -159,6 +160,13 @@ What goes where — the rule is **does anything other than a human read it?**
   - `seeds` — the idempotent, composable seeds this flow needs. Name them; don't
     set them up.
   - `roles` — the identities the flow acts as.
+  - `tier` — *when* this scenario runs: `critical` (must-pass core, every push) <
+    `standard` (the default — PRs / merges) < `extended` (slow / edge, nightly or
+    on demand). Selection is a threshold (running `standard` also runs
+    `critical`). **Omit for the common case** (it defaults to `standard`); reserve
+    `critical` for the handful of flows that gate a deploy and push slow or
+    flaky-prone ones to `extended`. A scenario above the selected tier is reported
+    `skipped` (visible on the dashboard), not dropped.
 - **`step(name, { intent, hint })`** — one pending stub per future step:
   - `name` — a concrete, **observable** outcome ("the cart shows 2 items" beats
     "the cart works").
