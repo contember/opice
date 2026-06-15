@@ -1,7 +1,7 @@
 import { DEV_PERSONA_COOKIE } from './iam'
 import type { Env } from './env'
 import { handleDashboard } from './routes/dashboard'
-import { handleIngest } from './routes/ingest'
+import { handleApi } from './routes/ingest'
 import { handleInstallMd } from './routes/install'
 import { handleRpc } from './routes/rpc'
 import { handleScreenshot } from './routes/screenshots'
@@ -37,22 +37,25 @@ async function route(request: Request, services: Services): Promise<Response> {
 		headers.append('set-cookie', `${DEV_PERSONA_COOKIE}=${encodeURIComponent(as)}; Path=/; SameSite=Lax`)
 		return new Response(null, { status: 302, headers })
 	}
-	// ── PUBLIC surfaces (outside Cloudflare Access) ──────────────────────────────
-	// Ingest: POST /api/v1/<slug>/runs… — a propustka ingest capability (Bearer).
-	if (path.startsWith('/api/v1/')) {
-		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)
-		return handleIngest(request, services, segments)
-	}
+	// ── PUBLIC surfaces (Access bypass) ──────────────────────────────────────────
 	if (path === '/install.md') {
 		return handleInstallMd(request, services)
 	}
-	// Share/read surface: /s/rpc, /s/screenshots/*, and the /s/* share SPA shell. A propustka
-	// capability token (?token= / opice_read cookie). Anonymous — never behind Access.
+	// Anonymous run-share / read SPA: /s/rpc, /s/screenshots/*, /s/* shell. A propustka capability
+	// token (?token= / opice_read cookie), redeemed over the binding. Never behind Access.
 	if (path === '/s' || path.startsWith('/s/')) {
 		return handleShare(request, services, path === '/s' ? '' : path.slice('/s/'.length))
 	}
 
-	// ── OPERATOR surfaces (behind Cloudflare Access) ─────────────────────────────
+	// ── BEHIND Cloudflare Access ─────────────────────────────────────────────────
+	// Machine API: /api/v1/<slug>/… — a propustka SERVICE-TOKEN principal (CF-Access-Client-*),
+	// accepted at the edge by an "Any Access Service Token" policy. Ingest writes (POST/PATCH) +
+	// machine reads (GET); the slug in the path scopes authorization (report.write / report.read).
+	if (path.startsWith('/api/v1/')) {
+		const segments = path.slice('/api/v1/'.length).split('/').filter(Boolean)
+		return handleApi(request, services, segments)
+	}
+	// Operator surfaces — a human resolved through Access + propustka.
 	if (path === '/rpc') {
 		return handleRpc(request, services)
 	}

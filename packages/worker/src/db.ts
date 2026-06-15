@@ -135,6 +135,7 @@ interface CapabilityRow {
 	run_id: string | null
 	kind: CapabilityKind
 	label: string | null
+	client_id: string | null
 	created_by: string | null
 	created_at: number
 	expires_at: number | null
@@ -147,6 +148,7 @@ const toCapability = (r: CapabilityRow): CapabilityRecord => ({
 	runId: r.run_id,
 	kind: r.kind,
 	label: r.label,
+	clientId: r.client_id,
 	createdBy: r.created_by,
 	createdAt: r.created_at,
 	expiresAt: r.expires_at,
@@ -266,25 +268,30 @@ export class Db {
 
 	// ---- Capabilities (local mirror of propustka capability tokens; migration 0007) ----
 
-	/** Record a freshly-issued capability. `id` is the propustka capability token id. */
+	/**
+	 * Record a freshly-issued credential. `id` is the propustka handle: the service PRINCIPAL id
+	 * for ingest/read service tokens (with `clientId` set), or the capability token id for shares.
+	 */
 	async createCapability(input: {
 		id: string
 		projectId: number
 		runId?: string | null
 		kind: CapabilityKind
 		label?: string | null
+		clientId?: string | null
 		createdBy?: string | null
 		expiresAt?: number | null
 	}): Promise<void> {
 		await this.d1
-			.prepare(`INSERT INTO capabilities (id, project_id, run_id, kind, label, created_by, created_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+			.prepare(`INSERT INTO capabilities (id, project_id, run_id, kind, label, client_id, created_by, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.bind(
 				input.id,
 				input.projectId,
 				input.runId ?? null,
 				input.kind,
 				input.label ?? null,
+				input.clientId ?? null,
 				input.createdBy ?? null,
 				Date.now(),
 				input.expiresAt ?? null,

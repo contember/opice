@@ -5,10 +5,11 @@
  * source test file that produced them (the test is the spec — each step
  * carries its `intent`, so there's no separate scenario file).
  *
- * Reads are token-gated. The read token (and endpoint/project) come from, in
- * order: the URL's `?token=` when you paste a dashboard link, OPICE_READ_TOKEN,
- * or OPICE_READ_DSN (the self-contained `https://<readKey>@host/slug` the
- * dashboard hands out at project creation).
+ * Two read modes:
+ *   - SERVICE TOKEN (OPICE_READ_DSN): a propustka service-token principal → REST
+ *     GET /api/v1/<slug>/… with the CF-Access-Client-* headers.
+ *   - CAPABILITY SHARE: a pasted dashboard link's `?token=` (or OPICE_READ_TOKEN)
+ *     → the anonymous read RPC at /s/rpc.
  */
 
 import { loadConfig } from '../config'
@@ -45,9 +46,17 @@ interface Step {
 interface Target {
 	endpoint: string
 	runId: string
-	token: string | undefined
 	slug?: string
+	// Exactly one auth mode: a pasted share link / OPICE_READ_TOKEN is a capability on /s/rpc;
+	// OPICE_READ_DSN is a service token (CF-Access-Client-*) on /api/v1.
+	shareToken?: string
+	service?: { clientId: string; clientSecret: string }
 }
+
+type ReadOp =
+	| { kind: 'run'; runId: string }
+	| { kind: 'scenarios'; runId: string }
+	| { kind: 'steps'; scenarioId: string }
 
 export async function failuresCommand(args: string[]): Promise<number> {
 	const asJson = args.includes('--json')
@@ -67,8 +76,8 @@ export async function failuresCommand(args: string[]): Promise<number> {
 	let run: Run
 	let scenarios: Scenario[]
 	try {
-		run = await rpc<Run>(target, 'runs.get', { runId: target.runId })
-		scenarios = await rpc<Scenario[]>(target, 'runs.scenarios', { runId: target.runId })
+		run = await read<Run>(target, { kind: 'run', runId: target.runId })
+		scenarios = await read<Scenario[]>(target, { kind: 'scenarios', runId: target.runId })
 	} catch (err) {
 		console.error(`[opice] ${(err as Error).message}`)
 		return 1
@@ -78,7 +87,7 @@ export async function failuresCommand(args: string[]): Promise<number> {
 	const detailed = await Promise.all(
 		failed.map(async (s) => ({
 			scenario: s,
-			steps: await rpc<Step[]>(target, 'scenarios.steps', { scenarioId: s.id }).catch(() => [] as Step[]),
+			steps: await read<Step[]>(target, { kind: 'steps', scenarioId: s.id }).catch(() => [] as Step[]),
 		})),
 	)
 
@@ -141,37 +150,68 @@ function printDigest(run: Run, detailed: { scenario: Scenario; steps: Step[] }[]
 
 function absoluteScreenshot(relativeOrAbsolute: string, target: Target): string {
 	const base = relativeOrAbsolute.startsWith('http') ? relativeOrAbsolute : `${target.endpoint}${relativeOrAbsolute}`
-	if (!target.token) return base
-	return `${base}${base.includes('?') ? '&' : '?'}token=${target.token}`
+	// A share link can carry its token in the URL; a service token needs headers, so leave it bare.
+	if (!target.shareToken) return base
+	return `${base}${base.includes('?') ? '&' : '?'}token=${target.shareToken}`
 }
 
 async function resolveTarget(ref: string): Promise<Target | null> {
 	const readDsn = parseOpiceDsn(process.env['OPICE_READ_DSN'])
-	const envToken = process.env['OPICE_READ_TOKEN'] ?? readDsn?.apiKey ?? undefined
+	const service = readDsn ? { clientId: readDsn.clientId, clientSecret: readDsn.clientSecret } : undefined
+	const envShareToken = process.env['OPICE_READ_TOKEN']
 
 	if (/^https?:\/\//.test(ref)) {
 		const url = new URL(ref)
-		const token = url.searchParams.get('token') ?? envToken
+		const urlToken = url.searchParams.get('token')
 		const match = url.pathname.match(/\/p\/([^/]+)\/r\/([^/]+)/)
-		if (match) {
-			return { endpoint: url.origin, runId: decodeURIComponent(match[2]!), token, slug: decodeURIComponent(match[1]!) }
-		}
-		// Fall back to the last path segment as the run id.
-		const segments = url.pathname.split('/').filter(Boolean)
-		const runId = segments[segments.length - 1]
-		if (runId) return { endpoint: url.origin, runId, token }
-		return null
+		const slug = match ? decodeURIComponent(match[1]!) : (process.env['OPICE_PROJECT'] ?? readDsn?.project)
+		const runId = match ? decodeURIComponent(match[2]!) : url.pathname.split('/').filter(Boolean).pop()
+		if (!runId) return null
+		// A pasted share link (?token=) or OPICE_READ_TOKEN → capability; otherwise the read DSN.
+		const shareToken = urlToken ?? envShareToken
+		if (shareToken) return { endpoint: url.origin, runId, slug, shareToken }
+		return { endpoint: url.origin, runId, slug, service }
 	}
 
-	// Bare run id — endpoint from config/env/DSN, token from env/read DSN.
+	// Bare run id — endpoint + slug from config/env/DSN, auth from the read DSN or OPICE_READ_TOKEN.
 	const config = await loadConfig()
 	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? readDsn?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
 	if (!endpoint) return null
-	return { endpoint, runId: ref, token: envToken }
+	const slug = process.env['OPICE_PROJECT'] ?? config?.project ?? readDsn?.project
+	if (envShareToken) return { endpoint, runId: ref, slug, shareToken: envShareToken }
+	return { endpoint, runId: ref, slug, service }
 }
 
-async function rpc<T>(target: Target, method: string, input: unknown): Promise<T> {
-	const url = `${target.endpoint}/s/rpc${target.token ? `?token=${target.token}` : ''}`
+/**
+ * Read one resource, routed by the target's auth mode: a service token → REST GET on /api/v1
+ * (which needs the project slug); a capability share token → the /s/rpc read RPC.
+ */
+async function read<T>(target: Target, op: ReadOp): Promise<T> {
+	if (target.service) {
+		if (!target.slug) {
+			throw new Error('reading via OPICE_READ_DSN needs the project slug — paste a full run URL or set OPICE_PROJECT')
+		}
+		const path = op.kind === 'run'
+			? `runs/${op.runId}`
+			: op.kind === 'scenarios'
+				? `runs/${op.runId}/scenarios`
+				: `scenarios/${op.scenarioId}/steps`
+		const response = await fetch(`${target.endpoint}/api/v1/${target.slug}/${path}`, {
+			headers: {
+				'cf-access-client-id': target.service.clientId,
+				'cf-access-client-secret': target.service.clientSecret,
+			},
+		})
+		if (!response.ok) {
+			throw new Error(`${op.kind}: ${response.status} ${response.statusText}`)
+		}
+		return (await response.json()) as T
+	}
+
+	// Capability share → the anonymous read RPC.
+	const method = op.kind === 'run' ? 'runs.get' : op.kind === 'scenarios' ? 'runs.scenarios' : 'scenarios.steps'
+	const input = op.kind === 'steps' ? { scenarioId: op.scenarioId } : { runId: op.runId }
+	const url = `${target.endpoint}/s/rpc${target.shareToken ? `?token=${target.shareToken}` : ''}`
 	const response = await fetch(url, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },

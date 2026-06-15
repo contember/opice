@@ -51,11 +51,13 @@ The user just created a project in the opice dashboard and was told to save an
 \`OPICE_DSN\` into their local \`.env\`. Confirm it's there:
 
 \`\`\`
-OPICE_DSN=https://<apiKey>@<host>/<slug>
+OPICE_DSN=https://<clientId>:<clientSecret>@<host>/<slug>
 \`\`\`
 
-If \`.env\` has no \`OPICE_DSN\`, ask the user to paste it. Parse it:
-- **apiKey** = the userinfo (before \`@\`) — secret, treat as a credential
+If \`.env\` has no \`OPICE_DSN\`, ask the user to paste it. The DSN is a Cloudflare
+Access **service token** — parse it:
+- **clientId : clientSecret** = the userinfo (before \`@\`, split on \`:\`) — sent as the
+  \`CF-Access-Client-Id\` / \`CF-Access-Client-Secret\` headers; secret, treat as a credential
 - **host** = the endpoint (\`https://<host>\`) — should be \`${origin}\`
 - **slug** = the first path segment — the project id
 
@@ -183,19 +185,20 @@ broken pipeline. The usual causes:
   }
   \`\`\`
 - **No \`View run:\` line / a \`reporter could not reach the platform\` warning.**
-  That means nothing was recorded. Check the api key in \`OPICE_DSN\` (a 401 is a
-  bad/expired key) and that the endpoint is reachable.
+  That means nothing was recorded. Check the service token in \`OPICE_DSN\` (a 401 is a
+  bad/expired/unprovisioned token) and that the endpoint is reachable.
 - **Old bun** — see the heads-up in A1.
 
 ## Notes
 
-- **DSN model:** \`OPICE_DSN\` is the one value to set (locally + CI). Individual
-  \`OPICE_*\` vars override it if present.
-- **Auth:** the dashboard is behind Cloudflare Access (operators sign in at the
-  edge; roles/permissions come from the IAM directory). Reporting authenticates
-  with the project's write API key (the \`OPICE_DSN\`) — a machine credential
-  outside Access. Shareable read-only links are minted per-run from the run page
-  and carry a \`?token=…\` scoped to that one run.
+- **DSN model:** \`OPICE_DSN\` is the one value to set (locally + CI) — a Cloudflare Access
+  service token (\`clientId:clientSecret\` userinfo). Individual \`OPICE_CLIENT_ID\` /
+  \`OPICE_CLIENT_SECRET\` (and \`OPICE_ENDPOINT\` / \`OPICE_PROJECT\`) override it if present.
+- **Auth:** ingest + the agent read DSN are propustka **service-token principals** — the
+  Access edge validates the \`CF-Access-Client-*\` pair (an "Any Access Service Token" policy
+  on \`/api/v1\`) and per-project authorization is the propustka grant (\`report.write\` /
+  \`report.read\`). The operator dashboard is also behind Access (humans sign in at the edge).
+  Shareable read-only links are different — anonymous \`?token=…\` capabilities scoped to one run.
 - Done well, the loop is: write a scenario → author a test → CI runs it
   deterministically → results land in the dashboard.
 `

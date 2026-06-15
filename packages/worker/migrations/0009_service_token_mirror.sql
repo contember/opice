@@ -1,0 +1,13 @@
+-- Machine credentials (the ingest + read DSN) become propustka SERVICE TOKENS, not
+-- capability tokens: a Cloudflare Access service token backed by a service principal that
+-- carries report.write / report.read grants (see propustka issueServiceToken). They
+-- authenticate at the Access edge (an "Any Access Service Token" policy on /api/v1) and
+-- resolve to a principal checked via can() — not redeemed as an anonymous capability. Only
+-- `share` stays a capability (anonymous per-run browser links on /s/*).
+--
+-- The `capabilities` table stays a metadata MIRROR for list/revoke, but the meaning of `id`
+-- now depends on `kind`:
+--   - ingest / read → the service PRINCIPAL id (the durable handle for iam.revokeServiceToken
+--                     / rotateServiceToken); client_id holds the non-secret Access client id
+--   - share         → the capability token id (iam.revokeCapability); client_id is NULL
+ALTER TABLE capabilities ADD COLUMN client_id TEXT;  -- service-token client id (ingest/read); NULL for share

@@ -12,7 +12,9 @@ interface Handoff {
 	endpoint: string
 	/** Project slug — used to build the /api/v1/<project>/runs/<id>/finish URL. */
 	project: string
-	apiKey: string
+	/** Service-token credentials for the CF-Access-Client-* headers on POST /finish. */
+	clientId: string
+	clientSecret: string
 	runId: string
 }
 
@@ -21,7 +23,8 @@ export async function testCommand(args: string[]): Promise<number> {
 	const dsn = parseOpiceDsn(process.env['OPICE_DSN'])
 	const project = process.env['OPICE_PROJECT'] ?? config?.project ?? dsn?.project
 	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? dsn?.endpoint
-	const apiKey = process.env['OPICE_API_KEY'] ?? dsn?.apiKey
+	const clientId = process.env['OPICE_CLIENT_ID'] ?? dsn?.clientId
+	const clientSecret = process.env['OPICE_CLIENT_SECRET'] ?? dsn?.clientSecret
 
 	if (!project) {
 		warn('OPICE_PROJECT not set and no opice.config.json found. Run `opice init` or set the env var.')
@@ -29,8 +32,8 @@ export async function testCommand(args: string[]): Promise<number> {
 	if (!endpoint) {
 		warn('OPICE_ENDPOINT not set and no opice.config.json found. Tests will run without reporting.')
 	}
-	if (!apiKey) {
-		warn('OPICE_API_KEY not set. Tests will run without reporting.')
+	if (!clientId || !clientSecret) {
+		warn('OPICE_CLIENT_ID / OPICE_CLIENT_SECRET not set (the OPICE_DSN userinfo). Tests will run without reporting.')
 	}
 
 	// `--tier=NAME` selects which test tier runs (critical < standard < extended).
@@ -45,9 +48,10 @@ export async function testCommand(args: string[]): Promise<number> {
 		...process.env,
 		...(project ? { OPICE_PROJECT: project } : {}),
 		...(endpoint ? { OPICE_ENDPOINT: endpoint } : {}),
-		// Resolve the api key (incl. from a DSN) into the explicit var the
+		// Resolve the service-token pair (incl. from a DSN) into the explicit vars the
 		// harness reporter reads, so a bare OPICE_DSN is enough to report.
-		...(apiKey ? { OPICE_API_KEY: apiKey } : {}),
+		...(clientId ? { OPICE_CLIENT_ID: clientId } : {}),
+		...(clientSecret ? { OPICE_CLIENT_SECRET: clientSecret } : {}),
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
@@ -164,7 +168,10 @@ async function finishRun(handoff: Handoff): Promise<void> {
 	const url = `${handoff.endpoint}/api/v1/${handoff.project}/runs/${handoff.runId}/finish`
 	const response = await fetch(url, {
 		method: 'POST',
-		headers: { authorization: `Bearer ${handoff.apiKey}` },
+		headers: {
+			'cf-access-client-id': handoff.clientId,
+			'cf-access-client-secret': handoff.clientSecret,
+		},
 	})
 	if (!response.ok) {
 		throw new Error(`${response.status} ${await response.text()}`)

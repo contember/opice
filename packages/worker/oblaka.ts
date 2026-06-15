@@ -36,19 +36,18 @@ export default define(({ env }) => {
 				name: 'opice-screenshots',
 				locationHint: 'weur',
 			}),
-			// IAM (propustka): EVERYTHING is propustka. Operator authorization + audit (Access JWT
-			// → authenticate) AND every non-operator credential as a capability token
-			// (issue/redeem/revoke). The app calls env.IAM.* via @propustka/client. Declared
-			// OFF-LOCAL only — locally there is no Access and no IAM Worker, so src/iam.ts swaps in
-			// the persona-backed FakeIamClient (DEV='true').
+			// IAM (propustka): EVERYTHING is propustka. Operators + machines authenticate via Access
+			// (authenticate -> AuthContext); only anonymous run-shares are capability tokens. The app
+			// calls env.IAM.* via @propustka/client. Declared OFF-LOCAL only — locally there is no
+			// Access and no IAM Worker, so src/iam.ts swaps in the persona-backed FakeIamClient
+			// (DEV='true'), which also resolves a locally minted service token by its CF-Access-Client-Id.
 			//
-			// ACCESS TOPOLOGY (see packages/worker/CLAUDE.md): the OPERATOR surface is COVERED by
-			// Cloudflare Access — `/rpc`, `/screenshots/*`, and the dashboard SPA shell (so the
-			// `Cf-Access-Jwt-Assertion` header is injected and propustka resolves the operator).
-			// Only TWO things are PUBLIC (Access bypass): `/api/v1/*` ingest and `/s/*` (the
-			// read/share surface + `/install.md`). Those carry a propustka capability token
-			// (Bearer for ingest, ?token=/cookie for share) redeemed over the binding — the
-			// binding does not traverse Access, which is why these can be public.
+			// ACCESS TOPOLOGY (see packages/worker/CLAUDE.md) — three planes by audience:
+			//   BEHIND Access: `/rpc` + `/screenshots/*` + dashboard SPA (operators, user JWT) AND
+			//     `/api/v1/*` (machines — a SERVICE-TOKEN principal; the reporter/agent send the
+			//     `CF-Access-Client-*` pair, accepted by an "Any Access Service Token" Service Auth
+			//     policy). NOTE: that Access policy is Cloudflare-dashboard config, NOT oblaka.ts.
+			//   PUBLIC (Access bypass): `/s/*` (anonymous share/read + `?token=`/cookie) + `/install.md`.
 			...(isLocal ? {} : { IAM: new ServiceReference('propustka-worker') }),
 		},
 		vars: {

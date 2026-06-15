@@ -25,8 +25,8 @@
 		"schema:provision": "bun run scripts/provision-schema.ts"
 	},
 	"dependencies": {
-		"@propustka/client": "^0.0.2",
-		"@propustka/core": "^0.0.2",
+		"@propustka/client": "^0.0.3",
+		"@propustka/core": "^0.0.3",
 		"zod": "^3.25.0"
 	},
 	"devDependencies": {

@@ -29,7 +29,9 @@ const FLUSH_BUDGET_MS = 15_000
 export interface ReporterConfig {
 	endpoint: string
 	projectId: string
-	apiKey: string
+	/** Service-token credentials (the OPICE_DSN userinfo / OPICE_CLIENT_ID+SECRET). */
+	clientId: string
+	clientSecret: string
 	branch?: string
 	commit?: string
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
@@ -146,7 +148,9 @@ export interface RunHandoff {
 	endpoint: string
 	/** Project slug — the CLI builds /api/v1/<project>/runs/<id>/finish from it. */
 	project: string
-	apiKey: string
+	/** Service-token credentials so the CLI can POST /finish with the CF-Access-Client-* headers. */
+	clientId: string
+	clientSecret: string
 	runId: string
 }
 
@@ -179,7 +183,8 @@ class HttpReporter implements Reporter {
 			const handoff: RunHandoff = {
 				endpoint: this.config.endpoint,
 				project: this.config.projectId,
-				apiKey: this.config.apiKey,
+				clientId: this.config.clientId,
+				clientSecret: this.config.clientSecret,
 				runId,
 			}
 			writeFileSync(handoffPath(), JSON.stringify(handoff), 'utf-8')
@@ -292,7 +297,9 @@ class HttpReporter implements Reporter {
 			response = await fetch(this.config.endpoint + path, {
 				method,
 				headers: {
-					'authorization': `Bearer ${this.config.apiKey}`,
+					// Cloudflare Access service-token pair — validated at the edge, never the origin.
+					'cf-access-client-id': this.config.clientId,
+					'cf-access-client-secret': this.config.clientSecret,
 					'content-type': 'application/json',
 				},
 				body: body == null ? undefined : JSON.stringify(body),
@@ -351,8 +358,9 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const dsn = parseOpiceDsn(env['OPICE_DSN'])
 	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint
 	const projectId = env['OPICE_PROJECT'] ?? dsn?.project
-	const apiKey = env['OPICE_API_KEY'] ?? dsn?.apiKey
-	if (!endpoint || !projectId || !apiKey) {
+	const clientId = env['OPICE_CLIENT_ID'] ?? dsn?.clientId
+	const clientSecret = env['OPICE_CLIENT_SECRET'] ?? dsn?.clientSecret
+	if (!endpoint || !projectId || !clientId || !clientSecret) {
 		return new NoopReporter()
 	}
 	// Reporting is opt-in outside CI. A local `bun test` while authoring would
@@ -369,7 +377,8 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const reporter = new HttpReporter({
 		endpoint,
 		projectId,
-		apiKey,
+		clientId,
+		clientSecret,
 		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
 		source: isCI ? 'ci' : 'local',

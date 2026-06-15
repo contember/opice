@@ -160,10 +160,10 @@ const projects = rpc.router({
 			return project
 		}),
 
-	// Create a project + mint two project-scoped propustka CAPABILITY tokens: an ingest (write)
-	// token for CI reporting (OPICE_DSN), and a read token for an authoring agent / the self-test
-	// to pull results back (OPICE_READ_DSN). Both are returned ONCE; opice keeps only a metadata
-	// mirror (id/kind/expiry) so they can be listed + revoked. There are no opice secrets.
+	// Create a project + mint two project-scoped propustka SERVICE TOKENS: an ingest (report.write)
+	// token for CI reporting (OPICE_DSN), and a read (report.read) token for an authoring agent /
+	// the self-test to pull results back (OPICE_READ_DSN). The packed clientId:clientSecret is
+	// returned ONCE; opice keeps only a metadata mirror (principal id/kind/clientId) for list+revoke.
 	create: rpc.procedure
 		.input(z.object({
 			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
@@ -174,8 +174,8 @@ const projects = rpc.router({
 			assertAccess(opCanWriteProject(ctx.auth))
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
 			const project = await ctx.services.db.createProject({ slug: input.slug, name: input.name })
-			const apiKey = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, 'ingest'))
-			const readApiKey = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, 'read'))
+			const apiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'ingest')
+			const readApiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'read')
 			await ctx.auth.audit({ action: 'project.create', resourceType: 'project', resourceId: project.slug, metadata: { name: project.name } })
 			return { slug: project.slug, name: project.name, apiKey, readApiKey }
 		}),
@@ -209,10 +209,10 @@ const projects = rpc.router({
 			if (!project) notFound(`Project not found: ${input.slug}`)
 			assertAccess(opCanWriteProject(ctx.auth, project.slug))
 			for (const c of await ctx.services.db.listProjectCapabilities(project.id, input.kind)) {
-				await ctx.services.iam.revokeCapability(ctx.request, c.id)
+				await ctx.services.iam.revokeServiceToken(ctx.request, c.id)
 				await ctx.services.db.markCapabilityRevoked(c.id)
 			}
-			const token = await mintCapability(ctx, dsnMintSpec(project.id, project.slug, input.kind))
+			const token = await mintServiceTokenDsn(ctx, project.id, project.slug, input.kind)
 			return { token }
 		}),
 })
@@ -347,25 +347,30 @@ interface MintInput {
 	grants: IssueCapabilityRequest['grants']
 }
 
-/** The mint spec for a project's DSN capability: ingest (report.write) or agent read (report.read + project.read). */
-function dsnMintSpec(projectId: number, slug: string, kind: 'ingest' | 'read'): MintInput {
-	if (kind === 'ingest') {
-		return {
-			projectId,
-			kind: 'ingest',
-			label: `ingest:${slug}`,
-			grants: [{ action: 'report.write', resource: `project:${slug}`, scope: { type: 'project', value: slug } }],
-		}
-	}
-	return {
+/**
+ * Mint a project's DSN as a propustka SERVICE TOKEN — ingest grants `report.write`, the agent read
+ * grants `report.read` + `project.read`, both scoped to `project:<slug>`. The Worker mirrors the
+ * service principal (id = principalId, clientId for display) so the dashboard can list + revoke,
+ * and returns the packed `clientId:clientSecret` userinfo (the DSN's `https://<userinfo>@host/slug`).
+ */
+async function mintServiceTokenDsn(ctx: RpcContext, projectId: number, slug: string, kind: 'ingest' | 'read'): Promise<string> {
+	const permissions = kind === 'ingest' ? ['report.write'] : ['report.read', 'project.read']
+	const label = kind === 'ingest' ? `ingest:${slug}` : `agent-read:${slug}`
+	const issued = await ctx.services.iam.issueServiceToken(ctx.request, {
+		label,
+		permissions,
+		scope: { type: 'project', value: slug },
+	})
+	if (!issued.ok) forbidden('not allowed to mint this service token')
+	await ctx.services.db.createCapability({
+		id: issued.principalId,
 		projectId,
-		kind: 'read',
-		label: `agent-read:${slug}`,
-		grants: [
-			{ action: 'report.read', resource: `project:${slug}`, scope: { type: 'project', value: slug } },
-			{ action: 'project.read', resource: `project:${slug}`, scope: { type: 'project', value: slug } },
-		],
-	}
+		kind,
+		label,
+		clientId: issued.clientId,
+		createdBy: ctx.auth.principal.id,
+	})
+	return `${issued.clientId}:${issued.clientSecret}`
 }
 
 /** Issue a propustka capability (operator delegates), mirror it locally, return the plaintext once. */
@@ -395,7 +400,10 @@ async function revokeMirroredCapability(ctx: RpcContext, id: string): Promise<{ 
 	const project = await ctx.services.db.getProjectById(record.projectId)
 	if (!project) notFound('capability not found')
 	assertAccess(opCanWriteProject(ctx.auth, project.slug))
-	const result = await ctx.services.iam.revokeCapability(ctx.request, id)
+	// share → a capability token (id = token id); ingest/read → a service token (id = principal id).
+	const result = record.kind === 'share'
+		? await ctx.services.iam.revokeCapability(ctx.request, id)
+		: await ctx.services.iam.revokeServiceToken(ctx.request, id)
 	const mirrored = await ctx.services.db.markCapabilityRevoked(id)
 	await ctx.auth.audit({ action: 'capability.revoke', resourceType: 'capability', resourceId: id })
 	return { revoked: (result.ok && result.revoked) || mirrored }

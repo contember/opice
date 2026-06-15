@@ -8,17 +8,22 @@
  * `audit`). Anonymous run-share links are propustka *capability tokens*
  * (`iam.issueCapability()` / `redeemCapability()` / `revokeCapability()`).
  *
- * This covers only the OPERATOR + SHARE planes. Machine reporting (CI ingest, the authoring
- * agent's read DSN, the stage self-test read) stays an app-local data-plane credential — a
- * hashed token row presented as `Authorization: Bearer`, resolved WITHOUT Access or propustka
- * (see `principal.ts`). That mirrors poplach's Sentry-style ingest DSN: high-volume machine
- * traffic must not depend on the human-auth edge.
+ * THREE planes, all propustka:
+ *   - OPERATOR — a human behind Access (`authenticate()` → AuthContext, `/rpc` + dashboard).
+ *   - MACHINE — CI ingest + the agent read DSN are propustka SERVICE TOKENS
+ *     (`iam.issueServiceToken()` / `revokeServiceToken()` / `rotateServiceToken()`): a Cloudflare
+ *     Access service token backed by a service principal carrying report.write / report.read.
+ *     The Access edge validates the `CF-Access-Client-*` pair on `/api/v1` (an "Any Access Service
+ *     Token" policy) and `authenticate()` resolves the service principal — so machine callers are
+ *     real principals checked by `can()`, NOT anonymous capabilities or app-local hashed tokens.
+ *   - SHARE — anonymous per-run browser links are capability tokens on `/s/*`.
  *
  * Two modes, selected by the `DEV` var (set in oblaka.ts):
  *   - local (`DEV='true'`)  → `FakeIamClient` in persona mode: the active operator is the
  *     `propustka_dev_principal` cookie's persona (set via `/__dev/login?as=<email>`), defaulting
  *     to the admin persona so a plain `bun run dev` can click everything (the old "local is open"
- *     gate). No Access, no IAM Worker. Capability issue/redeem/revoke run fully in-memory.
+ *     gate). No Access, no IAM Worker. Capability + service-token issue/redeem/revoke run fully
+ *     in-memory; a locally minted service token authenticates by its `CF-Access-Client-Id`.
  *   - off-local (`DEV=''`)  → real `IamClient` over `env.IAM`.
  *
  * The caller `app` id ('opice') is baked in here so it can never be forgotten or mistyped.

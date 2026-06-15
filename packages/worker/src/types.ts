@@ -36,12 +36,14 @@ export interface Project {
 export type CapabilityKind = 'ingest' | 'read' | 'share'
 
 /**
- * A local MIRROR row of a propustka capability token opice issued (migration 0007). The
- * secret + authoritative validity live in propustka; this only records metadata so the
- * dashboard can list + revoke. `id` is the propustka capability token id.
- *   - ingest → project write DSN (grant report.write on project:<slug>)
- *   - read   → project read DSN / self-test (report.read + project.read on project:<slug>)
- *   - share  → per-run read share link (report.read on run:<id> + project.read on project:<slug>)
+ * A local MIRROR row of a propustka credential opice issued (migration 0007; service-token
+ * columns in 0009). The secret + authoritative validity live in propustka; this only records
+ * metadata so the dashboard can list + revoke. The meaning of `id` depends on `kind`:
+ *   - ingest → project write DSN — a SERVICE TOKEN (report.write on project:<slug>); `id` is the
+ *              service PRINCIPAL id, `clientId` the non-secret Access client id
+ *   - read   → project read DSN / agent read — a SERVICE TOKEN (report.read + project.read); same
+ *   - share  → per-run read share link — a CAPABILITY token (report.read on run:<id> +
+ *              project.read on project:<slug>); `id` is the capability token id, `clientId` NULL
  */
 export interface CapabilityRecord {
 	id: string
@@ -49,6 +51,8 @@ export interface CapabilityRecord {
 	runId: string | null
 	kind: CapabilityKind
 	label: string | null
+	/** Service-token Access client id (ingest/read); NULL for share capabilities. */
+	clientId: string | null
 	createdBy: string | null
 	createdAt: number
 	expiresAt: number | null

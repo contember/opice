@@ -56,23 +56,37 @@ export function opCanReadAll(auth: AuthContext): boolean {
 	return auth.scopedTo('report.read', 'project') === null
 }
 
-// ── Capability plane (propustka capability tokens on public paths) ───────────────
+// ── Machine plane (propustka SERVICE-TOKEN principals on /api/v1, behind Access) ──
+//
+// CI ingest + the agent read DSN are Cloudflare Access SERVICE TOKENS backed by propustka
+// service principals (minted via iam.issueServiceToken). The Access edge validates the
+// client-id/secret pair and injects the JWT, so they authenticate exactly like an operator —
+// `authenticate()` → AuthContext — and are gated by `can()`, never redeemed as a capability.
 
-/** Redeem the `Authorization: Bearer` capability (ingest / machine). Null when absent/invalid. */
-export async function redeemBearerCapability(request: Request, services: Services): Promise<Capability | null> {
-	const secret = extractBearer(request)
-	if (!secret) return null
-	const cap = await services.iam.redeemCapability(request, secret)
-	return cap.ok ? cap : null
+/** Resolve the machine caller from the Access-injected service-token JWT. AuthContext or a typed failure. */
+export function resolveMachine(request: Request, services: Services): Promise<AuthContext | AuthFailure> {
+	return services.iam.authenticate(request)
 }
 
+/** May this machine principal WRITE run data to project `slug` (the ingest service token)? */
+export function machineCanWriteReports(auth: AuthContext, slug: string): boolean {
+	return auth.can('report.write', { type: 'project', value: slug })
+}
+
+/** May this machine principal READ project `slug`'s run reports (the agent read service token)? */
+export function machineCanReadReports(auth: AuthContext, slug: string): boolean {
+	return auth.can('report.read', { type: 'project', value: slug })
+}
+
+// ── Capability plane (propustka capability tokens — anonymous browser shares, /s/*) ──
+
 /**
- * Redeem the read capability for the public `/s/*` surface. A browser share visitor carries it as
- * `?token=` / the `opice_read` cookie; a machine reader (the `opice failures` CLI, the self-test)
- * carries it as `Authorization: Bearer`. Either is fine — it's a bearer secret, redeemed the same.
+ * Redeem the read capability for the public `/s/*` share surface. An anonymous browser visitor
+ * carries it as `?token=` / the `opice_read` cookie. (Machine readers are no longer here — they
+ * are service-token principals on /api/v1; see the machine plane above.)
  */
 export async function redeemReadCapability(request: Request, services: Services): Promise<Capability | null> {
-	const secret = extractBearer(request) ?? extractShareSecret(request)
+	const secret = extractShareSecret(request)
 	if (!secret) return null
 	const cap = await services.iam.redeemCapability(request, secret)
 	return cap.ok ? cap : null
@@ -93,11 +107,6 @@ export function capCanListRuns(cap: Capability, slug: string): boolean {
 	return cap.can('report.read', `project:${slug}`)
 }
 
-/** May this capability write run data to project `slug` (ingest)? */
-export function capCanWriteProject(cap: Capability, slug: string): boolean {
-	return cap.can('report.write', `project:${slug}`)
-}
-
 /** May this capability read a screenshot R2 key (`<slug>/<runId>/...`)? */
 export function capCanReadScreenshotKey(cap: Capability, key: string): boolean {
 	const [slug = '', runId = ''] = key.split('/')
@@ -105,13 +114,6 @@ export function capCanReadScreenshotKey(cap: Capability, key: string): boolean {
 }
 
 // ── Credential extraction ───────────────────────────────────────────────────────
-
-function extractBearer(request: Request): string | null {
-	const header = request.headers.get('authorization')
-	if (!header?.startsWith('Bearer ')) return null
-	const value = header.slice('Bearer '.length).trim()
-	return value || null
-}
 
 function extractShareSecret(request: Request): string | null {
 	const url = new URL(request.url)
