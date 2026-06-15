@@ -3,7 +3,9 @@ name: Deploy
 on:
   push:
     branches:
-      - main         # → stage
+      # main → stage auto-deploy is OFF — stage is currently broken and every
+      # main push went red. Re-add `- main` here once stage is fixed; until then
+      # deploy stage on demand via workflow_dispatch (environment=stage).
       - deploy/prod  # → prod
   workflow_dispatch:
     inputs:
