@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
+import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
 const REQUEST_TIMEOUT_MS = 10_000
@@ -33,6 +34,12 @@ export interface ReporterConfig {
 	commit?: string
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
 	source?: 'ci' | 'local'
+	/**
+	 * The tier this run SELECTED (from `OPICE_TIER`) — recorded on the run so the
+	 * dashboard can explain why scenarios were skipped. Omitted when no tier
+	 * filter was set (the run ran everything).
+	 */
+	tier?: string
 }
 
 export interface StepEvent {
@@ -86,6 +93,17 @@ export interface ScenarioStart {
 	seeds?: string[]
 	/** Identities / roles the scenario acts as. */
 	roles?: string[]
+	/** Declared tier (critical | standard | extended) — when it runs. */
+	tier?: string
+}
+
+/**
+ * A scenario the tier filter excluded from this run — registered for the record
+ * but never executed. Reported `skipped`, carrying a `reason` (which tier it
+ * declared vs the selected one) so the dashboard can explain the absence.
+ */
+export interface ScenarioSkip extends ScenarioStart {
+	reason?: string
 }
 
 export interface ScenarioFinish {
@@ -101,6 +119,8 @@ export interface ScenarioFinish {
 
 export interface Reporter {
 	startScenario(input: ScenarioStart): Promise<string>
+	/** Record a scenario the tier filter skipped (created already-finished as `skipped`). */
+	skipScenario(input: ScenarioSkip): Promise<void>
 	recordStep(event: StepEvent): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
@@ -110,6 +130,7 @@ class NoopReporter implements Reporter {
 	async startScenario(input: ScenarioStart): Promise<string> {
 		return `noop-${input.name}-${Date.now()}`
 	}
+	async skipScenario(_input: ScenarioSkip): Promise<void> {}
 	async recordStep(_event: StepEvent): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
@@ -148,6 +169,7 @@ class HttpReporter implements Reporter {
 			branch: this.config.branch,
 			commit: this.config.commit,
 			source: this.config.source,
+			tier: this.config.tier,
 		})
 		const runId = response['runId'] as string
 		// Synchronous write so the CLI can pick this up even if the test
@@ -176,8 +198,26 @@ class HttpReporter implements Reporter {
 			feature: input.feature,
 			seeds: input.seeds,
 			roles: input.roles,
+			tier: input.tier,
 		})
 		return response['scenarioId'] as string
+	}
+
+	async skipScenario(input: ScenarioSkip): Promise<void> {
+		const runId = await this.ensureRun()
+		// A skipped scenario is created already-finished on the platform — no
+		// steps follow, so we don't keep the returned id.
+		await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios`, {
+			name: input.name,
+			hash: input.hash,
+			testFile: input.testFile,
+			feature: input.feature,
+			seeds: input.seeds,
+			roles: input.roles,
+			tier: input.tier,
+			skipped: true,
+			reason: input.reason,
+		})
 	}
 
 	recordStep(event: StepEvent): Promise<void> {
@@ -333,6 +373,9 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
 		source: isCI ? 'ci' : 'local',
+		// Record the selected tier only when one was explicitly requested — a run
+		// with no OPICE_TIER ran everything and carries no tier filter.
+		tier: env['OPICE_TIER'] ? resolveSelectedTier(env) : undefined,
 	})
 	setReporter(reporter)
 	return reporter

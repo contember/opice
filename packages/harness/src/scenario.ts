@@ -4,6 +4,7 @@ import { closePage, getContext, launchPage } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, type Reporter } from './reporter.js'
 import { loadUserSetup } from './setup.js'
+import { isTierSkipped, normalizeTier, parseSelectedTier, type Tier, TIER_ORDER } from './tier.js'
 
 /**
  * `bun:test` is resolved lazily, at the moment `browserTest` registers a
@@ -44,6 +45,18 @@ export interface BrowserTestMeta {
 	hash?: string
 	/** Feature / requirement id this scenario covers (e.g. `'F-SML-03a'`). */
 	feature?: string
+	/**
+	 * Test tier — *when* this scenario runs (critical < standard < extended).
+	 * A run selects a tier via `OPICE_TIER` / `opice test --tier`; selection is a
+	 * threshold (running `standard` runs critical + standard). A scenario above
+	 * the selected tier is **skipped**: reported as `skipped` (so it still shows
+	 * on the dashboard) but never opens a browser. Defaults to `standard`.
+	 *
+	 *   critical — the must-pass core, every push
+	 *   standard — the normal suite (default), PRs / merges
+	 *   extended — slow / edge / expensive, nightly or on demand
+	 */
+	tier?: Tier
 	/**
 	 * Seeds that must be loaded for this scenario to run — machine-checkable
 	 * preconditions, not prose. e.g. `['initial-data', 'crm-master-data']`.
@@ -107,6 +120,40 @@ function captureTestFile(): string | undefined {
 	return undefined
 }
 
+// The tier this run selected (OPICE_TIER), resolved + cached once. An
+// unrecognized value warns once and falls back to running everything.
+let cachedSelectedTier: Tier | undefined
+function getSelectedTier(): Tier {
+	if (cachedSelectedTier === undefined) {
+		const parsed = parseSelectedTier()
+		if (!parsed.recognized) {
+			console.warn(
+				`[opice] unknown OPICE_TIER="${process.env['OPICE_TIER']}" — running all tiers `
+				+ `(use one of: ${TIER_ORDER.join(', ')}).`,
+			)
+		}
+		cachedSelectedTier = parsed.tier
+	}
+	return cachedSelectedTier
+}
+
+// Names of scenarios skipped by the tier filter, summarized once at process
+// exit so a tiered run prints "N skipped" instead of a line per scenario.
+const skippedScenarioNames: string[] = []
+let skipSummaryHooked = false
+function noteSkipped(name: string): void {
+	skippedScenarioNames.push(name)
+	if (skipSummaryHooked) return
+	skipSummaryHooked = true
+	process.on('exit', () => {
+		if (skippedScenarioNames.length === 0) return
+		console.warn(
+			`[opice] ${skippedScenarioNames.length} scenario(s) skipped — above the selected `
+			+ `tier '${getSelectedTier()}' (OPICE_TIER).`,
+		)
+	})
+}
+
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
@@ -165,6 +212,14 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 	// fn is the legacy registrar (it registers its own test()/hooks).
 	const isBody = fn.constructor.name === 'AsyncFunction'
 
+	// Tier gate: a scenario above the selected tier is registered but not run —
+	// reported `skipped` so the dashboard shows the full inventory.
+	const scenarioTier = normalizeTier(meta.tier)
+	if (isTierSkipped(scenarioTier, getSelectedTier())) {
+		registerSkipped(meta, scenarioTier, testFile, reporter)
+		return
+	}
+
 	describe(meta.name, () => {
 		beforeAll(async () => {
 			currentScenarioStart = Date.now()
@@ -180,6 +235,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					feature: meta.feature,
 					seeds: meta.seeds,
 					roles: meta.roles,
+					tier: scenarioTier,
 				})
 			} catch {
 				currentScenarioId = null
@@ -282,6 +338,38 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// browser was opened in beforeAll above.
 			fn()
 		}
+	})
+}
+
+/**
+ * Register a scenario the tier filter excluded. It's reported to the platform as
+ * `skipped` (so the dashboard shows it alongside what ran) but never opens a
+ * browser. The report runs in a real — instant, browser-free — `test`, not a
+ * `test.skip`: bun won't run a describe's hooks if every test in it is skipped,
+ * so a skip body is the only place left to POST from. With reporting off (local
+ * authoring), the body is a no-op against the NoopReporter.
+ */
+function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | undefined, reporter: Reporter): void {
+	noteSkipped(meta.name)
+	const { describe, test } = bunTest()
+	const reason = `tier '${tier}' above the selected tier '${getSelectedTier()}'`
+	describe(meta.name, () => {
+		test('skipped (tier)', async () => {
+			try {
+				await reporter.skipScenario({
+					name: meta.name,
+					hash: meta.hash,
+					testFile,
+					feature: meta.feature,
+					seeds: meta.seeds,
+					roles: meta.roles,
+					tier,
+					reason,
+				})
+			} catch {
+				// Best-effort: reporting a skip must never fail the run.
+			}
+		})
 	})
 }
 
