@@ -11,6 +11,13 @@ export interface OpiceConfig {
 	 * the command line, and by a per-scenario `walkthrough`/meta `retries`.
 	 */
 	retries?: number
+	/**
+	 * Default test tier to run (`critical` < `standard` < `extended`). Selection
+	 * is a threshold — `standard` runs critical + standard. Overridden by `opice
+	 * test --tier=NAME` and the `OPICE_TIER` env var. Omitted ⇒ run everything.
+	 * Scenarios above the selected tier are reported `skipped`, not run.
+	 */
+	tier?: 'critical' | 'standard' | 'extended'
 }
 
 const CONFIG_NAME = 'opice.config.json'

@@ -33,6 +33,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		warn('OPICE_API_KEY not set. Tests will run without reporting.')
 	}
 
+	// `--tier=NAME` selects which test tier runs (critical < standard < extended).
+	// CLI flag wins over OPICE_TIER, which wins over opice.config.json's `tier`.
+	// The harness reads OPICE_TIER and skips (and reports as `skipped`) any
+	// scenario above the selected tier.
+	const { tier, rest: afterTier } = extractTier(args)
+	const resolvedTier = tier ?? process.env['OPICE_TIER'] ?? config?.tier
+
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -43,12 +50,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(apiKey ? { OPICE_API_KEY: apiKey } : {}),
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
+		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(args)
+	const { retries, rest } = extractRetries(afterTier)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -94,6 +102,33 @@ function extractRetries(args: string[]): { retries: number | undefined; rest: st
 		}
 	}
 	return { retries, rest }
+}
+
+/**
+ * Pull opice's `--tier=NAME` / `--tier NAME` out of the arg list (it's an opice
+ * concept, not a bun flag) and return the selected tier plus the remaining args.
+ * The value is passed straight through to the harness via OPICE_TIER, which
+ * validates it — so an unrecognized value isn't rejected here.
+ */
+function extractTier(args: string[]): { tier: string | undefined; rest: string[] } {
+	const rest: string[] = []
+	let tier: string | undefined
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === undefined) continue
+		if (arg.startsWith('--tier=')) {
+			tier = arg.slice('--tier='.length)
+		} else if (arg === '--tier') {
+			const next = args[i + 1]
+			if (next !== undefined) {
+				tier = next
+				i++ // consume the value
+			}
+		} else {
+			rest.push(arg)
+		}
+	}
+	return { tier, rest }
 }
 
 async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined): Promise<void> {

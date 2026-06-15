@@ -13,7 +13,7 @@ Commands:
       Scaffold opice.config.json in the current project. Pass
       --with-workflow to also drop a .github/workflows/opice.yml.
 
-  test [--retries=N] [bun test args...]
+  test [--retries=N] [--tier=NAME] [bun test args...]
       Wrapper around 'bun test' that exports OPICE_* env vars from
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
@@ -21,6 +21,11 @@ Commands:
       flaky scenario that fails then passes is reported as flaky, not
       failed). Falls back to "retries" in opice.config.json; a
       per-scenario walkthrough/meta retries overrides both.
+      --tier=NAME runs a test tier (critical < standard < extended);
+      selection is a threshold, so --tier=standard runs critical +
+      standard. Scenarios above it are reported "skipped", not run.
+      Falls back to OPICE_TIER, then "tier" in opice.config.json;
+      omit to run everything.
 
   failures <run-url|run-id> [--json]
       Pull a failed run's details (failed scenarios, the failing step,

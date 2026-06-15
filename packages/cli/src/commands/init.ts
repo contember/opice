@@ -52,10 +52,16 @@ async function writeWorkflow(cwd: string): Promise<string> {
 
 const WORKFLOW_TEMPLATE = `name: opice browser tests
 
+# Tiered runs: a push runs only the critical core (fast gate), a PR runs the
+# standard suite, and the nightly schedule (or a manual dispatch) runs
+# everything. Scenarios above the selected tier are reported "skipped" on the
+# dashboard, not silently dropped. Tune the triggers + tiers to taste.
 on:
   push:
-    branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 jobs:
   e2e:
@@ -77,7 +83,7 @@ jobs:
             sleep 1
           done
       - name: Run opice browser tests
-        run: bunx opice test tests/browser/
+        run: bunx opice test tests/browser/ --tier "\${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'extended' || github.event_name == 'pull_request' && 'standard' || 'critical' }}"
         env:
           OPICE_DSN: \${{ secrets.OPICE_DSN }}
           PLAYGROUND_URL: http://localhost:5173
