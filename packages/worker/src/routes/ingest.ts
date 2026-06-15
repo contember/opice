@@ -69,9 +69,10 @@ export async function handleIngest(request: Request, services: Services, segment
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ branch?: string; commit?: string; source?: string }>(request)) ?? {}
+	const body = (await readJson<{ branch?: string; commit?: string; source?: string; tier?: string }>(request)) ?? {}
 	const source = body.source === 'ci' || body.source === 'local' ? body.source : undefined
-	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, source })
+	const tier = typeof body.tier === 'string' ? body.tier : undefined
+	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, source, tier })
 	return json({ runId: run.id })
 }
 
@@ -84,6 +85,9 @@ async function createScenario(request: Request, services: Services, runId: strin
 		feature?: string
 		seeds?: unknown
 		roles?: unknown
+		tier?: string
+		skipped?: boolean
+		reason?: string
 	}>(request)
 	if (!body?.name) {
 		return badRequest('name is required')
@@ -99,6 +103,9 @@ async function createScenario(request: Request, services: Services, runId: strin
 		feature: body.feature,
 		seeds: toStringArray(body.seeds),
 		roles: toStringArray(body.roles),
+		tier: typeof body.tier === 'string' ? body.tier : undefined,
+		skipped: body.skipped === true,
+		skipReason: typeof body.reason === 'string' ? body.reason : undefined,
 	})
 	return json({ scenarioId: id })
 }

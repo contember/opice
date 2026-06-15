@@ -6,10 +6,12 @@
 
 // Stored lifecycle status for runs and scenarios.
 export type ScenarioStatus = 'running' | 'passed' | 'failed'
-// On read, a scenario is shown as 'incomplete' when it carries a pending
-// (unauthored) step, or 'warning' when it carries a tolerated fixme step — both
-// computed, never stored. 'incomplete' outranks 'warning'.
-export type ScenarioDisplayStatus = ScenarioStatus | 'warning' | 'incomplete'
+// On read, a scenario is shown as 'skipped' when the tier filter excluded it
+// (backed by the skipped_at flag, never stored in `status`), 'incomplete' when
+// it carries a pending (unauthored) step, or 'warning' when it carries a
+// tolerated fixme step — all computed. 'skipped' wins (it never ran); otherwise
+// 'incomplete' outranks 'warning'.
+export type ScenarioDisplayStatus = ScenarioStatus | 'warning' | 'incomplete' | 'skipped'
 // Runs add 'incomplete' — a computed display status (a run that never finished
 // and was reaped, whose last activity went stale, or that contains a scenario
 // with pending steps) — and 'warning'. Neither is stored; both are derived at
@@ -61,6 +63,9 @@ export interface Run {
 	commitSha: string | null
 	status: RunStatus
 	source: RunSource | null
+	/** The tier this run selected (OPICE_TIER); null = no filter / ran everything. */
+	tier: string | null
+	/** Executed scenarios (passed + failed + running); excludes skipped. */
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
@@ -68,6 +73,8 @@ export interface Run {
 	warningScenarios: number
 	/** Subset of passed scenarios that carry a pending (unauthored) step. */
 	incompleteScenarios: number
+	/** Scenarios the tier filter excluded from this run (declared but not run). */
+	skippedScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -91,6 +98,10 @@ export interface Scenario {
 	seeds: string[]
 	/** Identities / roles the scenario acts as (browserTest meta). */
 	roles: string[]
+	/** Declared tier (critical | standard | extended); null = legacy / standard. */
+	tier: string | null
+	/** Why the scenario was skipped (set only when status is 'skipped'). */
+	skipReason: string | null
 	status: ScenarioDisplayStatus
 	durationMs: number | null
 	/**

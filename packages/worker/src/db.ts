@@ -39,6 +39,7 @@ interface RunRow {
 	branch: string | null
 	commit_sha: string | null
 	status: ScenarioStatus
+	tier: string | null
 	total_scenarios: number
 	passed_scenarios: number
 	failed_scenarios: number
@@ -61,6 +62,9 @@ interface RunCountsRow {
 	live_warning: number | null
 	// Passed scenarios that carry a pending step → shown as incomplete.
 	live_incomplete: number | null
+	// Scenarios the tier filter excluded (skipped_at set) → shown as skipped,
+	// kept out of live_total.
+	live_skipped: number | null
 }
 
 /**
@@ -87,11 +91,14 @@ interface ScenarioRow {
 	feature: string | null
 	seeds: string | null
 	roles: string | null
+	tier: string | null
 	status: ScenarioStatus
 	duration_ms: number | null
 	attempts: number
 	started_at: number
 	finished_at: number | null
+	skipped_at: number | null
+	skip_reason: string | null
 	// Computed per read: 1 when the scenario carries a tolerated fixme step /
 	// a pending step. Absent on `SELECT *` reads where the state doesn't matter.
 	has_warning?: number
@@ -163,6 +170,7 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		commitSha: r.commit_sha,
 		status,
 		source: r.source,
+		tier: r.tier,
 		// Always report live counts; the stored *_scenarios columns are a stale
 		// snapshot until finish (and stay 0 for runs that never finished).
 		totalScenarios: counts.live_total ?? 0,
@@ -170,6 +178,7 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		failedScenarios: counts.live_failed ?? 0,
 		warningScenarios: warning,
 		incompleteScenarios: incomplete,
+		skippedScenarios: counts.live_skipped ?? 0,
 		startedAt: r.started_at,
 		finishedAt: r.finished_at,
 	}
@@ -195,11 +204,16 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	feature: r.feature,
 	seeds: parseStringArray(r.seeds),
 	roles: parseStringArray(r.roles),
-	// Display overlay on a passed scenario, in priority order: a pending step →
-	// 'incomplete'; else a tolerated fixme step → 'warning'.
-	status: r.status === 'passed'
-		? (r.has_pending ? 'incomplete' : r.has_warning ? 'warning' : 'passed')
-		: r.status,
+	tier: r.tier,
+	skipReason: r.skip_reason,
+	// Display status: a skipped scenario (tier filter) wins — it never ran, so no
+	// step overlay applies. Otherwise overlay a passed scenario, in priority
+	// order: a pending step → 'incomplete'; else a tolerated fixme step → 'warning'.
+	status: r.skipped_at != null
+		? 'skipped'
+		: r.status === 'passed'
+			? (r.has_pending ? 'incomplete' : r.has_warning ? 'warning' : 'passed')
+			: r.status,
 	durationMs: r.duration_ms,
 	attempts: r.attempts,
 	startedAt: r.started_at,
@@ -317,11 +331,11 @@ export class Db {
 		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; source?: RunSource }): Promise<Run> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; source?: RunSource; tier?: string }): Promise<Run> {
 		const startedAt = Date.now()
 		await this.d1
-			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, source, started_at, last_activity_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.source ?? null, startedAt, startedAt)
+			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.source ?? null, input.tier ?? null, startedAt, startedAt)
 			.run()
 		return {
 			id: input.id,
@@ -330,11 +344,13 @@ export class Db {
 			commitSha: input.commit ?? null,
 			status: 'running',
 			source: input.source ?? null,
+			tier: input.tier ?? null,
 			totalScenarios: 0,
 			passedScenarios: 0,
 			failedScenarios: 0,
 			warningScenarios: 0,
 			incompleteScenarios: 0,
+			skippedScenarios: 0,
 			startedAt,
 			finishedAt: null,
 		}
@@ -343,9 +359,10 @@ export class Db {
 	async getRun(id: string): Promise<Run | null> {
 		const row = await this.d1
 			.prepare(`SELECT r.*,
-				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id) AS live_total,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NULL) AS live_total,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NOT NULL) AS live_skipped,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
 					AND ${HAS_WARNING} AND NOT ${HAS_PENDING}) AS live_warning,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
@@ -361,9 +378,10 @@ export class Db {
 		// separate COUNT query.
 		const { results } = await this.d1
 			.prepare(`SELECT r.*,
-				COUNT(s.id) AS live_total,
+				COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND s.skipped_at IS NULL THEN 1 ELSE 0 END), 0) AS live_total,
 				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
 				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed,
+				COALESCE(SUM(CASE WHEN s.skipped_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS live_skipped,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
 					AND ${HAS_WARNING} AND NOT ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_warning,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
@@ -383,9 +401,10 @@ export class Db {
 	async listAllRuns(opts: { limit: number; offset: number }): Promise<{ runs: RunWithProject[]; hasMore: boolean }> {
 		const { results } = await this.d1
 			.prepare(`SELECT r.*, p.slug AS project_slug, p.name AS project_name,
-				COUNT(s.id) AS live_total,
+				COALESCE(SUM(CASE WHEN s.id IS NOT NULL AND s.skipped_at IS NULL THEN 1 ELSE 0 END), 0) AS live_total,
 				COALESCE(SUM(CASE WHEN s.status = 'passed' THEN 1 ELSE 0 END), 0) AS live_passed,
 				COALESCE(SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END), 0) AS live_failed,
+				COALESCE(SUM(CASE WHEN s.skipped_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS live_skipped,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
 					AND ${HAS_WARNING} AND NOT ${HAS_PENDING} THEN 1 ELSE 0 END), 0) AS live_warning,
 				COALESCE(SUM(CASE WHEN s.status = 'passed'
@@ -421,9 +440,10 @@ export class Db {
 				FROM runs r
 			)
 			SELECT r.*,
-				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id) AS live_total,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NULL) AS live_total,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed') AS live_passed,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'failed') AS live_failed,
+				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NOT NULL) AS live_skipped,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
 					AND ${HAS_WARNING} AND NOT ${HAS_PENDING}) AS live_warning,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.status = 'passed'
@@ -460,22 +480,28 @@ export class Db {
 	}
 
 	async finishRun(id: string): Promise<void> {
-		// Derive final status + counts from the run's scenarios.
+		// Derive final status + counts from the run's scenarios. `grand` counts ALL
+		// scenarios (incl. skipped); `executed`/passed/failed exclude skipped.
 		const counts = await this.d1
 			.prepare(`SELECT
-				COUNT(*) AS total,
-				SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed,
+				COUNT(*) AS grand,
+				SUM(CASE WHEN skipped_at IS NULL THEN 1 ELSE 0 END) AS executed,
+				SUM(CASE WHEN status = 'passed' AND skipped_at IS NULL THEN 1 ELSE 0 END) AS passed,
 				SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
 			FROM scenarios WHERE run_id = ?`)
 			.bind(id)
-			.first<{ total: number; passed: number; failed: number }>()
-		const total = counts?.total ?? 0
+			.first<{ grand: number; executed: number; passed: number; failed: number }>()
+		const grand = counts?.grand ?? 0
+		const executed = counts?.executed ?? 0
 		const passed = counts?.passed ?? 0
 		const failed = counts?.failed ?? 0
-		const status: RunStatus = failed > 0 || total === 0 ? 'failed' : 'passed'
+		// Fail on a hard failure, or on a truly empty run (nothing reported at all —
+		// a load error, say). A run that reported ONLY skipped scenarios (the tier
+		// matched nothing executable) is not a failure: grand > 0 keeps it green.
+		const status: RunStatus = failed > 0 || grand === 0 ? 'failed' : 'passed'
 		await this.d1
 			.prepare(`UPDATE runs SET status = ?, total_scenarios = ?, passed_scenarios = ?, failed_scenarios = ?, finished_at = ? WHERE id = ?`)
-			.bind(status, total, passed, failed, Date.now(), id)
+			.bind(status, executed, passed, failed, Date.now(), id)
 			.run()
 	}
 
@@ -489,10 +515,21 @@ export class Db {
 		feature?: string
 		seeds?: string[]
 		roles?: string[]
+		/** Declared tier (critical | standard | extended). */
+		tier?: string
+		/** True for a scenario the tier filter excluded — created already-finished as skipped. */
+		skipped?: boolean
+		/** Why it was skipped (only with `skipped`). */
+		skipReason?: string
 	}): Promise<void> {
+		// A skipped scenario never runs: it's terminal on creation (skipped_at +
+		// finished_at set now), keeping its stored 'running' status — db reads map
+		// skipped_at to the 'skipped' display status (like runs/reaped_at).
+		const now = Date.now()
+		const skippedAt = input.skipped ? now : null
 		await this.d1
-			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, test_file, scenario_file, feature, seeds, roles, status, started_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
+			.prepare(`INSERT INTO scenarios (id, run_id, name, hash, test_file, scenario_file, feature, seeds, roles, tier, status, started_at, skipped_at, skip_reason, finished_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
 			.bind(
 				input.id,
 				input.runId,
@@ -503,7 +540,11 @@ export class Db {
 				input.feature ?? null,
 				input.seeds && input.seeds.length > 0 ? JSON.stringify(input.seeds) : null,
 				input.roles && input.roles.length > 0 ? JSON.stringify(input.roles) : null,
-				Date.now(),
+				input.tier ?? null,
+				now,
+				skippedAt,
+				input.skipped ? (input.skipReason ?? null) : null,
+				skippedAt,
 			)
 			.run()
 	}

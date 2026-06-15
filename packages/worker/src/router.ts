@@ -38,7 +38,7 @@ function assertAccess(ok: boolean): void {
 
 // ── Schemas (shared with the share router) ──────────────────────────────────────
 
-const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning', 'incomplete'])
+const StatusSchema = z.enum(['running', 'passed', 'failed', 'warning', 'incomplete', 'skipped'])
 const RunStatusSchema = z.enum(['running', 'passed', 'failed', 'incomplete', 'warning'])
 
 export const ProjectSchema = z.object({
@@ -55,11 +55,13 @@ export const RunSchema = z.object({
 	commitSha: z.string().nullable(),
 	status: RunStatusSchema,
 	source: z.enum(['ci', 'local']).nullable(),
+	tier: z.string().nullable(),
 	totalScenarios: z.number(),
 	passedScenarios: z.number(),
 	failedScenarios: z.number(),
 	warningScenarios: z.number(),
 	incompleteScenarios: z.number(),
+	skippedScenarios: z.number(),
 	startedAt: z.number(),
 	finishedAt: z.number().nullable(),
 })
@@ -82,6 +84,8 @@ export const ScenarioSchema = z.object({
 	feature: z.string().nullable(),
 	seeds: z.array(z.string()),
 	roles: z.array(z.string()),
+	tier: z.string().nullable(),
+	skipReason: z.string().nullable(),
 	status: StatusSchema,
 	durationMs: z.number().nullable(),
 	attempts: z.number(),
