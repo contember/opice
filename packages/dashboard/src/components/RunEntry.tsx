@@ -9,11 +9,13 @@ interface RunLike {
 	commitSha: string | null
 	status: 'running' | 'passed' | 'failed' | 'incomplete' | 'warning'
 	source: 'ci' | 'local' | null
+	tier: string | null
 	totalScenarios: number
 	passedScenarios: number
 	failedScenarios: number
 	warningScenarios: number
 	incompleteScenarios: number
+	skippedScenarios: number
 	startedAt: number
 	finishedAt: number | null
 }
@@ -59,11 +61,18 @@ export function RunEntry({ run: r, slug, projectName }: { run: RunLike; slug: st
 							<span style={{ color: 'var(--text-soft)' }}><strong className="tabular" style={{ color: 'var(--text-soft)' }}>{r.incompleteScenarios}</strong> incomplete</span>
 						</>
 					)}
+					{r.skippedScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--text-soft)' }}><strong className="tabular" style={{ color: 'var(--text-soft)' }}>{r.skippedScenarios}</strong> skipped</span>
+						</>
+					)}
 					<span className="sep">·</span>
 					<span><strong className="tabular">{r.totalScenarios}</strong> total</span>
 				</div>
 			</div>
 			{r.source === 'local' && <span className="e-chip chip chip-local" title="Reported from a local dev run">local</span>}
+			{r.tier && <span className="e-chip chip" title="Tier this run selected (OPICE_TIER)">tier: {r.tier}</span>}
 			{r.branch && <span className="e-chip chip">{r.branch}</span>}
 			<div className="e-aside">
 				<span className="row">

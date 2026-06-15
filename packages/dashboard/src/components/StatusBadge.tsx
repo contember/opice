@@ -15,6 +15,7 @@ const LABEL: Record<string, string> = {
 	fixmepass: 'Unexpected pass',
 	pending: 'Pending',
 	blocked: 'Blocked',
+	skipped: 'Skipped',
 }
 
 /**
@@ -51,6 +52,9 @@ function Mark({ status }: { status: string }) {
 		case 'pending':
 			// Empty: the dashed ring is the mark.
 			return null
+		case 'skipped':
+			// A dash: declared but deliberately not run (tier filter).
+			return <svg viewBox="0 0 16 16" aria-hidden><path d="M4.5 8h7" {...stroke} /></svg>
 		case 'incomplete':
 		case 'warning':
 		case 'fixmepass':

@@ -409,6 +409,9 @@ main.wide { max-width: 1360px; }
 .status-dot.failed  { background: var(--fail); color: #fff; }
 .status-dot.running { background: var(--run); color: #fff; animation: breathe 1.6s ease-in-out infinite; }
 .status-dot.incomplete { background: var(--text-soft); color: #fff; }
+/* Skipped (tier filter): hollow grey — declared but deliberately not run, so it
+ * reads quieter than the solid 'incomplete' dot. */
+.status-dot.skipped { background: transparent; color: var(--text-soft); border-color: color-mix(in srgb, var(--text-soft) 45%, transparent); }
 /* Tolerated known failures (step.fixme) and the scenario/run warning they roll
  * up into: solid amber, but static — only a live 'running' dot pulses. */
 .status-dot.warning,
@@ -422,6 +425,7 @@ main.wide { max-width: 1360px; }
 .status-dot.mini.running { background: transparent; color: var(--run);  border-color: color-mix(in srgb, var(--run) 55%, transparent); }
 .status-dot.mini.fixme,
 .status-dot.mini.fixmepass { background: transparent; color: var(--run); border-color: color-mix(in srgb, var(--run) 55%, transparent); }
+.status-dot.mini.skipped { background: transparent; color: var(--text-soft); border-color: color-mix(in srgb, var(--text-soft) 45%, transparent); }
 
 @keyframes breathe {
 	0%, 100% { opacity: 1; }
@@ -444,6 +448,7 @@ main.wide { max-width: 1360px; }
 .status-inline.running { color: var(--run);   background: var(--run-soft);  border-color: color-mix(in srgb, var(--run)  30%, transparent); }
 .status-inline.warning { color: var(--run);   background: var(--run-soft);  border-color: color-mix(in srgb, var(--run)  30%, transparent); }
 .status-inline.incomplete { color: var(--text-soft); background: color-mix(in srgb, var(--text-soft) 12%, transparent); border-color: color-mix(in srgb, var(--text-soft) 30%, transparent); }
+.status-inline.skipped { color: var(--text-soft); background: color-mix(in srgb, var(--text-soft) 10%, transparent); border-color: color-mix(in srgb, var(--text-soft) 25%, transparent); }
 .status-inline .status-dot { width: 12px; height: 12px; font-size: 8px; }
 
 /* ---------------- Branch / chip ---------------- */
@@ -1396,6 +1401,20 @@ main.wide { max-width: 1360px; }
 .s-meta .meta-chip.feature { color: var(--accent); background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
 .s-meta .meta-chip.seed::before { content: 'seed '; color: var(--text-faint); }
 .s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
+.s-meta .meta-chip.tier::before { content: 'tier '; color: var(--text-faint); }
+
+/* Why a scenario didn't run (tier filter). Stands in for the step list, which a
+ * skipped scenario never produced. */
+.wb-skip-note {
+	margin: 12px 16px;
+	padding: 10px 12px;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--text-soft);
+	background: color-mix(in srgb, var(--text-soft) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text-soft) 22%, transparent);
+	border-radius: 8px;
+}
 
 /* A step's durable intent (phase-1 contract) — quiet, above any error. */
 .step .step-intent {

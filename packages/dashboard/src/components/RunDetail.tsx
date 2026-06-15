@@ -12,7 +12,7 @@ import { StatusMark, StatusMarkInline } from './StatusBadge'
 // shapes, so a single read-only renderer serves the operator run page and the
 // anonymous share view alike.
 
-export type ScenarioStatus = 'running' | 'passed' | 'failed' | 'warning' | 'incomplete'
+export type ScenarioStatus = 'running' | 'passed' | 'failed' | 'warning' | 'incomplete' | 'skipped'
 
 export interface RunSummary {
 	id: string
@@ -21,6 +21,10 @@ export interface RunSummary {
 	commitSha: string | null
 	startedAt: number
 	finishedAt: number | null
+	/** The tier this run selected (OPICE_TIER); null = ran everything. */
+	tier?: string | null
+	/** Scenarios the tier filter excluded from this run. */
+	skippedScenarios?: number
 }
 
 export interface Scenario {
@@ -32,6 +36,8 @@ export interface Scenario {
 	feature: string | null
 	seeds: string[]
 	roles: string[]
+	tier: string | null
+	skipReason: string | null
 	durationMs: number | null
 	attempts: number
 }
@@ -57,24 +63,26 @@ const isFlaky = (s: Scenario): boolean => s.status === 'passed' && s.attempts > 
 
 // Filter tabs, surfacing problems first. 'all' is always present; the rest only
 // render when the run actually carries scenarios in that state.
-const FILTER_ORDER: ScenarioStatus[] = ['failed', 'warning', 'incomplete', 'running', 'passed']
+const FILTER_ORDER: ScenarioStatus[] = ['failed', 'warning', 'incomplete', 'running', 'passed', 'skipped']
 const FILTER_LABEL: Record<ScenarioStatus, string> = {
 	failed: 'Failed',
 	warning: 'Warnings',
 	incomplete: 'Incomplete',
 	running: 'Running',
 	passed: 'Passed',
+	skipped: 'Skipped',
 }
 
-// Triage order: broken first, passing last. Used to sort both feature groups
-// (by their worst scenario) and the rows within them, so the eye and the
-// auto-selection land on the same place.
+// Triage order: broken first, passing last, skipped (never ran) last of all.
+// Used to sort both feature groups (by their worst scenario) and the rows within
+// them, so the eye and the auto-selection land on the same place.
 const SEVERITY: Record<ScenarioStatus, number> = {
 	failed: 0,
 	warning: 1,
 	incomplete: 2,
 	running: 3,
 	passed: 4,
+	skipped: 5,
 }
 
 /**
@@ -104,6 +112,7 @@ export function RunDetail({
 				</h1>
 				<div className="subtitle">
 					{run.branch && <span className="chip">{run.branch}</span>}
+					{run.tier && <span className="chip" title="The tier this run selected (OPICE_TIER)">tier: {run.tier}</span>}
 					{run.commitSha && (
 						<>
 							<span className="sep">·</span>
@@ -116,6 +125,12 @@ export function RunDetail({
 						<>
 							<span className="sep">·</span>
 							<span className="tabular">{fmtDuration(run.finishedAt - run.startedAt)}</span>
+						</>
+					)}
+					{!!run.skippedScenarios && (
+						<>
+							<span className="sep">·</span>
+							<span className="tabular">{run.skippedScenarios} skipped</span>
 						</>
 					)}
 				</div>
@@ -317,12 +332,18 @@ function ScenarioRow({
 }
 
 function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSteps: LoadSteps }) {
+	const skipped = s.status === 'skipped'
 	const steps = useQuery({
 		queryKey: ['scenarios.steps', s.id],
 		queryFn: () => loadSteps(s.id),
+		// A skipped scenario never ran, so it has no steps — don't fetch.
+		enabled: !skipped,
 	})
 
-	const hasMeta = !!s.feature || s.seeds.length > 0 || s.roles.length > 0
+	// Tier is only worth a chip when it diverges from the default 'standard' —
+	// otherwise every scenario would carry a redundant 'standard' tag.
+	const showTier = !!s.tier && s.tier !== 'standard'
+	const hasMeta = !!s.feature || showTier || s.seeds.length > 0 || s.roles.length > 0
 
 	return (
 		<>
@@ -331,10 +352,12 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 				{isFlaky(s) && <span className="flaky-badge" title={`Passed after ${s.attempts} attempts`}>flaky · {s.attempts}×</span>}
 				{s.hash && <span className="hash">#{s.hash}</span>}
 				<span className="pull" />
-				<span className="wb-detail-dur">
-					<ClockIcon className="icon" />
-					<span className="tabular">{fmtDuration(s.durationMs)}</span>
-				</span>
+				{!skipped && (
+					<span className="wb-detail-dur">
+						<ClockIcon className="icon" />
+						<span className="tabular">{fmtDuration(s.durationMs)}</span>
+					</span>
+				)}
 			</div>
 
 			<h2 className="wb-detail-title">{s.name}</h2>
@@ -342,12 +365,17 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 			{hasMeta && (
 				<div className="s-meta">
 					{s.feature && <span className="meta-chip feature" title="Feature / requirement">{s.feature}</span>}
+					{showTier && <span className="meta-chip tier" title="Test tier — when this scenario runs">{s.tier}</span>}
 					{s.seeds.map(x => <span key={`seed-${x}`} className="meta-chip seed" title="Required seed">{x}</span>)}
 					{s.roles.map(x => <span key={`role-${x}`} className="meta-chip role" title="Acting role">{x}</span>)}
 				</div>
 			)}
 
-			{steps.isLoading ? (
+			{skipped ? (
+				<div className="wb-skip-note">
+					Skipped — {s.skipReason ?? 'excluded by the run’s tier filter'}. This scenario was not executed.
+				</div>
+			) : steps.isLoading ? (
 				<Loading message="Loading steps…" />
 			) : !steps.data || steps.data.length === 0 ? (
 				<div className="muted" style={{ padding: '12px 0', fontSize: 12.5 }}>No steps recorded.</div>
