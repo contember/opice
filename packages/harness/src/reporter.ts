@@ -44,6 +44,24 @@ export interface ReporterConfig {
 	tier?: string
 }
 
+/**
+ * Strict reporting policy, resolved once from the env in {@link configureFromEnv}.
+ *
+ * Reporting is best-effort by design — a flaky uplink or a dashboard outage must
+ * never redden an otherwise-green test run. But that decoupling hides a real
+ * failure mode: a misconfigured token or an unreachable endpoint means the run
+ * is silently NOT recorded, while CI stays green. Strict mode (opt in via
+ * `OPICE_REPORT_STRICT` / `opice test --fail-on-report-error`) makes that loud —
+ * any reporting failure fails the run (the harness throws from a scenario's
+ * `afterAll`; the CLI escalates a failed `POST /finish` to a non-zero exit).
+ */
+let strictReporting = false
+
+/** Whether strict reporting is active (see {@link strictReporting}). */
+export function isStrictReporting(): boolean {
+	return strictReporting
+}
+
 export interface StepEvent {
 	scenarioId: string
 	/**
@@ -126,6 +144,12 @@ export interface Reporter {
 	recordStep(event: StepEvent): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
+	/**
+	 * True if any report to the platform failed (network error or non-2xx). Used
+	 * by the harness to fail the run under strict reporting — see
+	 * {@link isStrictReporting}. Always false for the no-op reporter.
+	 */
+	hadFailures(): boolean
 }
 
 class NoopReporter implements Reporter {
@@ -136,6 +160,9 @@ class NoopReporter implements Reporter {
 	async recordStep(_event: StepEvent): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
+	hadFailures(): boolean {
+		return false
+	}
 }
 
 export const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
@@ -158,8 +185,14 @@ class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
 	private warnedUnreachable = false
+	/** Count of failed reports (network error or non-2xx). Drives strict mode. */
+	private failures = 0
 
 	constructor(private readonly config: ReporterConfig) {}
+
+	hadFailures(): boolean {
+		return this.failures > 0
+	}
 
 	private async ensureRun(): Promise<string> {
 		if (!this.runIdPromise) {
@@ -311,25 +344,34 @@ class HttpReporter implements Reporter {
 			// DOM and routes fetch through a same-origin policy). Callers swallow
 			// reporter errors so the test still runs, so this is the one place the
 			// failure is visible — make it loud and actionable.
-			this.warnUnreachable(`${method} ${path}`, err instanceof Error ? err.message : String(err))
+			this.noteFailure(`${method} ${path}`, err instanceof Error ? err.message : String(err))
 			throw err
 		}
 		if (!response.ok) {
 			const detail = `${response.status} ${await response.text()}`.trim()
-			this.warnUnreachable(`${method} ${path}`, detail)
+			this.noteFailure(`${method} ${path}`, detail)
 			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
 		}
 		return (await response.json()) as Record<string, unknown>
 	}
 
 	/**
-	 * A configured reporter that can't reach the platform means the run is
-	 * silently NOT recorded — the most confusing failure mode in onboarding
-	 * (the test passes, but nothing shows on the dashboard). Surface it once,
-	 * with the usual culprits, instead of letting the swallowed throw vanish.
+	 * Record a reporting failure and surface it. Callers swallow reporter errors
+	 * so the test still runs (reporting is best-effort), which makes this the one
+	 * place a failure is visible — so every failure is logged to stderr (a
+	 * configured reporter that can't reach the platform means the run is silently
+	 * NOT recorded, the most confusing failure mode in onboarding: the test
+	 * passes but nothing shows on the dashboard). The first failure prints the
+	 * full hint with the usual culprits; the rest a concise one-liner so a
+	 * recurring failure is visible without flooding the log. Counts toward
+	 * {@link hadFailures}, which strict mode fails the run on.
 	 */
-	private warnUnreachable(call: string, detail: string): void {
-		if (this.warnedUnreachable) return
+	private noteFailure(call: string, detail: string): void {
+		this.failures++
+		if (this.warnedUnreachable) {
+			console.error(`[opice] reporter error (${call}): ${detail} — this report was NOT recorded.`)
+			return
+		}
 		this.warnedUnreachable = true
 		console.error(
 			`[opice] reporter could not reach the platform (${call}: ${detail}). `
@@ -338,7 +380,8 @@ class HttpReporter implements Reporter {
 			+ `[opice]   - the test runner's global setup installs a DOM (happy-dom/jsdom) or mocks\n`
 			+ `[opice]     fetch, so the cross-origin POST is blocked (look for "Cross-Origin Request\n`
 			+ `[opice]     Blocked" / an OPTIONS … 401). Scope that setup so it skips the e2e dir.\n`
-			+ `[opice]   - a missing / expired OPICE_DSN api key (401), or an unreachable endpoint.`,
+			+ `[opice]   - a missing / expired OPICE_DSN api key (401), or an unreachable endpoint.\n`
+			+ `[opice] (set OPICE_REPORT_STRICT=1 / opice test --fail-on-report-error to fail the run on this.)`,
 		)
 	}
 }
@@ -353,7 +396,31 @@ export function setReporter(reporter: Reporter): void {
 	active = reporter
 }
 
+function isTruthy(value: string | undefined): boolean {
+	if (!value) return false
+	const v = value.toLowerCase()
+	return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+/**
+ * Strict reporting is requested but the reporter is a no-op — it can never fail,
+ * so strict mode has nothing to enforce. Warn rather than silently ignoring it:
+ * the user asked for "fail if reporting fails" and is instead getting no
+ * reporting at all, which strict can't catch.
+ */
+function warnStrictNoop(why: string): void {
+	console.error(
+		`[opice] OPICE_REPORT_STRICT is set but ${why} — strict reporting has no effect `
+		+ `(there is nothing to report, so nothing can fail).`,
+	)
+}
+
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {
+	// Strict reporting: fail the run if any report to the platform fails. Opt-in
+	// (default best-effort is locked design), resolved once here for the whole
+	// process. The CLI's `--fail-on-report-error` sets OPICE_REPORT_STRICT in the
+	// child env, so a bare `bun test` honours it too.
+	strictReporting = isTruthy(env['OPICE_REPORT_STRICT'])
 	// Individual vars win; OPICE_DSN fills any gaps (see dsn.ts).
 	const dsn = parseOpiceDsn(env['OPICE_DSN'])
 	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint
@@ -361,6 +428,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const clientId = env['OPICE_CLIENT_ID'] ?? dsn?.clientId
 	const clientSecret = env['OPICE_CLIENT_SECRET'] ?? dsn?.clientSecret
 	if (!endpoint || !projectId || !clientId || !clientSecret) {
+		if (strictReporting) warnStrictNoop('reporter credentials are not configured (no OPICE_DSN / OPICE_* vars)')
 		return new NoopReporter()
 	}
 	// Reporting is opt-in outside CI. A local `bun test` while authoring would
@@ -372,6 +440,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const mode = (env['OPICE_REPORT'] ?? 'auto').toLowerCase()
 	const shouldReport = mode === 'never' ? false : mode === 'always' ? true : isCI
 	if (!shouldReport) {
+		if (strictReporting) warnStrictNoop(`reporting is disabled here (OPICE_REPORT=${mode}, CI=${isCI})`)
 		return new NoopReporter()
 	}
 	const reporter = new HttpReporter({

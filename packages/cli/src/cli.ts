@@ -13,7 +13,7 @@ Commands:
       Scaffold opice.config.json in the current project. Pass
       --with-workflow to also drop a .github/workflows/opice.yml.
 
-  test [--retries=N] [--tier=NAME] [bun test args...]
+  test [--retries=N] [--tier=NAME] [--fail-on-report-error] [bun test args...]
       Wrapper around 'bun test' that exports OPICE_* env vars from
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
@@ -26,6 +26,11 @@ Commands:
       standard. Scenarios above it are reported "skipped", not run.
       Falls back to OPICE_TIER, then "tier" in opice.config.json;
       omit to run everything.
+      --fail-on-report-error exits non-zero if reporting to the platform
+      fails (default: reporting is best-effort and never reddens CI).
+      Use it so a bad token / unreachable endpoint can't leave CI green
+      while nothing reaches the dashboard. Falls back to
+      OPICE_REPORT_STRICT, then "failOnReportError" in opice.config.json.
 
   failures <run-url|run-id> [--json]
       Pull a failed run's details (failed scenarios, the failing step,

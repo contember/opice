@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { closePage, getContext, launchPage } from './context.js'
 import { screenshot } from './element.js'
-import { getReporter, type Reporter } from './reporter.js'
+import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { loadUserSetup } from './setup.js'
 import { isTierSkipped, normalizeTier, parseSelectedTier, type Tier, TIER_ORDER } from './tier.js'
 
@@ -306,6 +306,18 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				}
 			}
 			currentScenarioId = null
+			// Strict reporting: a swallowed report failure (here or in any earlier
+			// hook/step) must turn the run red. afterAll always runs (beforeAll
+			// catches its own report failures), so throwing here is enough to make
+			// bun exit non-zero even when every assertion passed. The detail was
+			// already logged at the point of failure (reporter.noteFailure).
+			if (isStrictReporting() && reporter.hadFailures()) {
+				throw new Error(
+					`[opice] reporting to the platform failed and strict reporting is on `
+					+ `(OPICE_REPORT_STRICT / opice test --fail-on-report-error) — failing the run. `
+					+ `See the [opice] reporter error(s) above for the cause.`,
+				)
+			}
 		}, 30_000)
 
 		if (isBody) {

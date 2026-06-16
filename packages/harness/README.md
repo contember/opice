@@ -149,4 +149,8 @@ export const setup: BrowserSetup = async (context) => {
   `never`. Outside CI, reporting is opt-in so iterating with bare `bun test` doesn't stream
   half-finished runs onto the shared dashboard. CI-detected runs are tagged `ci`, opted-in
   local runs `local`.
+- `OPICE_REPORT_STRICT` — `1`/`true` to **fail the run** if reporting to the platform fails
+  (default best-effort: a reporting failure is logged loudly but never reddens the test). Use
+  it to catch a misconfigured token / unreachable endpoint that would otherwise leave CI green
+  while nothing reaches the dashboard. `opice test --fail-on-report-error` sets this for you.
 ```

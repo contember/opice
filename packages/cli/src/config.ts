@@ -18,6 +18,14 @@ export interface OpiceConfig {
 	 * Scenarios above the selected tier are reported `skipped`, not run.
 	 */
 	tier?: 'critical' | 'standard' | 'extended'
+	/**
+	 * Fail the run if reporting to the platform fails (default best-effort: a
+	 * reporting failure is logged but never reddens CI). When set, a failed report
+	 * during the test (harness) or a failed `POST /finish` (this CLI) exits
+	 * non-zero. Overridden by `opice test --fail-on-report-error` and the
+	 * `OPICE_REPORT_STRICT` env var.
+	 */
+	failOnReportError?: boolean
 }
 
 const CONFIG_NAME = 'opice.config.json'

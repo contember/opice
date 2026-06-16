@@ -43,6 +43,14 @@ export async function testCommand(args: string[]): Promise<number> {
 	const { tier, rest: afterTier } = extractTier(args)
 	const resolvedTier = tier ?? process.env['OPICE_TIER'] ?? config?.tier
 
+	// `--fail-on-report-error` turns a swallowed reporting failure into a non-zero
+	// exit (default is best-effort: reporting never reddens CI). CLI flag wins over
+	// OPICE_REPORT_STRICT, which wins over opice.config.json's `failOnReportError`.
+	// We propagate it to the harness via OPICE_REPORT_STRICT (it fails the run from
+	// a scenario's afterAll) AND honour it here for the POST /finish finalize.
+	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
+	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
+
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -55,12 +63,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
+		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterTier)
+	const { retries, rest } = extractRetries(afterStrict)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -76,7 +85,16 @@ export async function testCommand(args: string[]): Promise<number> {
 
 	// After bun test exits, look for handoff files the reporter wrote and
 	// POST /finish for each run so it leaves "running" state.
-	await finalizeHandoffs(child.pid, project)
+	const finalizeFailed = await finalizeHandoffs(child.pid, project)
+
+	// Under strict reporting, a failed finalize (POST /finish) reddens an
+	// otherwise-green run — the same contract the harness enforces for in-test
+	// reports. Don't mask a real test failure: only escalate when bun itself was
+	// green. (An in-test report failure already failed bun via the harness.)
+	if (exitCode === 0 && strict && finalizeFailed) {
+		warn('reporting failed and --fail-on-report-error is set — exiting non-zero.')
+		return 1
+	}
 
 	return exitCode
 }
@@ -135,14 +153,38 @@ function extractTier(args: string[]): { tier: string | undefined; rest: string[]
 	return { tier, rest }
 }
 
-async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined): Promise<void> {
+/** Returns true if finalizing any run failed (so strict mode can escalate). */
+/**
+ * Pull opice's `--fail-on-report-error` boolean flag out of the arg list (it's
+ * an opice concept, not a bun flag) and return whether it was present plus the
+ * remaining args.
+ */
+function extractStrict(args: string[]): { strict: boolean; rest: string[] } {
+	const rest: string[] = []
+	let strict = false
+	for (const arg of args) {
+		if (arg === '--fail-on-report-error') strict = true
+		else rest.push(arg)
+	}
+	return { strict, rest }
+}
+
+function isTruthy(value: string | undefined): boolean {
+	if (!value) return false
+	const v = value.toLowerCase()
+	return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+/** Returns true if finalizing any run failed (so strict mode can escalate). */
+async function finalizeHandoffs(childPid: number | undefined, slug: string | undefined): Promise<boolean> {
 	let files: string[]
 	try {
 		files = await fs.readdir(HANDOFF_DIR)
 	} catch {
-		return // no handoff dir → no runs reported, nothing to finalize
+		return false // no handoff dir → no runs reported, nothing to finalize
 	}
 	const matching = childPid ? files.filter((f) => f === `${childPid}.json`) : files
+	let failed = false
 	for (const file of matching) {
 		const full = path.join(HANDOFF_DIR, file)
 		try {
@@ -150,11 +192,13 @@ async function finalizeHandoffs(childPid: number | undefined, slug: string | und
 			await finishRun(handoff)
 			printRunUrl(handoff, slug)
 		} catch (err) {
+			failed = true
 			warn(`Failed to finalize run from ${file}: ${(err as Error).message}`)
 		} finally {
 			await fs.unlink(full).catch(() => {})
 		}
 	}
+	return failed
 }
 
 function printRunUrl(handoff: Handoff, slug: string | undefined): void {
