@@ -67,6 +67,8 @@ echo "# Login flow ... " > tests/login.scenario.md
 # 5. Run + report
 bunx opice test tests/login.test.ts
 # Watch results stream into http://localhost:18182
+# Or, no platform needed — write a local HTML report (the dashboard, offline):
+bunx opice test tests/login.test.ts --report   # writes .opice/report.html
 ```
 
 ## Deploy
