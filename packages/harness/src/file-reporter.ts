@@ -259,13 +259,16 @@ function renderStep(step: StepRecord): string {
 function renderScenario(s: ScenarioRecord): string {
 	const meta = metaFor(s.status ?? 'pending')
 	const tags = [
+		s.status === 'skipped' ? `<span class="tag skip">skipped</span>` : '',
 		s.feature ? `<span class="tag">${esc(s.feature)}</span>` : '',
 		...(s.roles ?? []).map(r => `<span class="tag role">${esc(r)}</span>`),
 		(s.attempts && s.attempts > 1) ? `<span class="tag flaky">flaky ×${s.attempts}</span>` : '',
 	].join('')
+	const reason = s.reason ? `<div class="reason">${esc(s.reason)}</div>` : ''
 	return `<section class="scenario ${meta.cls}">
 		<header><span class="ic">${meta.icon}</span><h2>${esc(s.name)}</h2><span class="dur">${fmtMs(s.durationMs)}</span></header>
 		<div class="tags">${tags}</div>
+		${reason}
 		<ol class="steps">${s.steps.map(renderStep).join('')}</ol>
 	</section>`
 }
