@@ -336,6 +336,12 @@ class HttpReporter implements Reporter {
 					'content-type': 'application/json',
 				},
 				body: body == null ? undefined : JSON.stringify(body),
+				// 'manual': when Access rejects the service token it answers a 302 to its
+				// login page (an HTML 200/404 after the hop), NOT a JSON 401. The default
+				// 'follow' would chase that redirect and we'd then choke on .json() of an
+				// HTML body — a failure that slips past the !ok check below and goes
+				// silent. Keeping the 3xx lets us name it as an auth rejection instead.
+				redirect: 'manual',
 				// Don't let a stalled connection hang past the afterAll budget.
 				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 			})
@@ -347,12 +353,36 @@ class HttpReporter implements Reporter {
 			this.noteFailure(`${method} ${path}`, err instanceof Error ? err.message : String(err))
 			throw err
 		}
+		// A redirect (3xx, or an opaque redirect when the runtime hides the status)
+		// to Cloudflare Access means the service token was rejected at the edge —
+		// the request never reached the API. This is THE prod failure mode: the
+		// DSN's token isn't authorized by the `/api/v1` Access policy.
+		if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+			const location = response.headers.get('location') ?? ''
+			const detail = /cloudflareaccess\.com|\/cdn-cgi\/access\//.test(location)
+				? `redirected to Cloudflare Access login (${response.status}) — the OPICE_DSN service token was rejected at the edge. `
+					+ `Authorize it on the prod /api/v1 Access (Service Auth) policy, or check the token in OPICE_DSN.`
+				: `unexpected redirect (${response.status}${location ? ` → ${location}` : ''})`
+			this.noteFailure(`${method} ${path}`, detail)
+			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
+		}
 		if (!response.ok) {
 			const detail = `${response.status} ${await response.text()}`.trim()
 			this.noteFailure(`${method} ${path}`, detail)
 			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
 		}
-		return (await response.json()) as Record<string, unknown>
+		// Parse defensively: a 200 that isn't JSON (an auth/login HTML page slipped
+		// through, a proxy error page) must count as a failure, not a swallowed
+		// throw — otherwise strict mode never sees it.
+		try {
+			return (await response.json()) as Record<string, unknown>
+		} catch (err) {
+			const ct = response.headers.get('content-type') ?? 'unknown'
+			const detail = `${response.status} but body wasn't JSON (content-type: ${ct}) — `
+				+ `likely an auth/login or proxy page, not the opice API`
+			this.noteFailure(`${method} ${path}`, detail)
+			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
+		}
 	}
 
 	/**
@@ -376,13 +406,34 @@ class HttpReporter implements Reporter {
 		console.error(
 			`[opice] reporter could not reach the platform (${call}: ${detail}). `
 			+ `This run will NOT be recorded on the dashboard.\n`
+			+ `[opice] ${this.maskedConfig()}\n`
 			+ `[opice] Common causes:\n`
 			+ `[opice]   - the test runner's global setup installs a DOM (happy-dom/jsdom) or mocks\n`
 			+ `[opice]     fetch, so the cross-origin POST is blocked (look for "Cross-Origin Request\n`
 			+ `[opice]     Blocked" / an OPTIONS … 401). Scope that setup so it skips the e2e dir.\n`
-			+ `[opice]   - a missing / expired OPICE_DSN api key (401), or an unreachable endpoint.\n`
+			+ `[opice]   - the OPICE_DSN service token isn't authorized by the platform's /api/v1\n`
+			+ `[opice]     Cloudflare Access policy (a 302 to the Access login), or it's wrong/expired.\n`
+			+ `[opice]   - an unreachable endpoint.\n`
 			+ `[opice] (set OPICE_REPORT_STRICT=1 / opice test --fail-on-report-error to fail the run on this.)`,
 		)
+	}
+
+	/**
+	 * A masked one-line summary of the resolved reporter config, printed on the
+	 * first failure so you can tell *which* DSN reached the harness without leaking
+	 * it. endpoint + project are shown whole (not secret); the clientId keeps its
+	 * head+tail so a real Cloudflare Access service token's `.access` suffix is
+	 * visible (and a wrong shape stands out); the clientSecret is reduced to its
+	 * length + char-class — never its bytes (CI log hygiene; GH only masks the
+	 * exact secret string, not a prefix).
+	 */
+	private maskedConfig(): string {
+		const id = this.config.clientId
+		const secret = this.config.clientSecret
+		const maskedId = id.length <= 14 ? `${id.slice(0, 1)}…(len ${id.length})` : `${id.slice(0, 6)}…${id.slice(-8)} (len ${id.length})`
+		const secretShape = !secret ? '(empty!)' : `len ${secret.length}, ${/^[0-9a-f]+$/i.test(secret) ? 'hex' : 'non-hex'}`
+		return `resolved config (masked): endpoint=${this.config.endpoint} project=${this.config.projectId} `
+			+ `clientId=${maskedId} clientSecret=(${secretShape})`
 	}
 }
 
