@@ -14,10 +14,12 @@
  * credentials, so it's the zero-config local-DX path.
  *
  * Scope: events are kept in-memory per test process and the report is rewritten
- * on every scenario finish + flush. `bun test` runs one process per file, so a
- * single-file run (the usual authoring loop) produces a complete report; a
- * multi-file run writes one process's scenarios last (the CLI could aggregate
- * across files into one report — left as a follow-up).
+ * on every scenario finish + flush. `bun test` runs one process per file. For a
+ * multi-file run, `opice test` provides a fresh shared `partsDir`: each process
+ * persists its scenarios as a JSON part and every render is the union of all
+ * parts, so the report stays complete instead of the last file clobbering the
+ * rest. Under bare `bun test` (no CLI, no partsDir) only the running process's
+ * scenarios are written — fine for the usual single-file authoring loop.
  */
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -54,7 +56,21 @@ export class FileReporter implements Reporter {
 	private readonly scenarios = new Map<string, ScenarioRecord>()
 	private seq = 0
 
-	constructor(private readonly reportPath: string) {}
+	private writeCount = 0
+
+	/**
+	 * @param reportPath where the HTML report is written.
+	 * @param partsDir   optional shared dir for cross-process aggregation. `bun
+	 *   test` runs one process per file; when the CLI provides a (fresh-per-run)
+	 *   dir, each process drops its scenarios there and every render is the UNION
+	 *   of all parts — so a multi-file run yields one complete report instead of
+	 *   the last file clobbering the rest. Absent (bare `bun test`), the reporter
+	 *   just writes its own process's scenarios.
+	 */
+	constructor(
+		private readonly reportPath: string,
+		private readonly partsDir?: string,
+	) {}
 
 	async startScenario(input: ScenarioStart): Promise<string> {
 		const id = `local-${this.seq++}-${process.pid}`
@@ -131,7 +147,52 @@ export class FileReporter implements Reporter {
 	}
 
 	private async write(): Promise<void> {
-		const html = renderReport([...this.scenarios.values()].sort((a, b) => a.id.localeCompare(b.id)))
+		// Map iteration preserves insertion (= execution) order, which is what we
+		// want. Don't sort by `id`: ids are `local-<seq>-<pid>`, so a lexicographic
+		// compare orders `local-10` before `local-2` once there are ≥10 scenarios.
+		const own = [...this.scenarios.values()]
+		if (!this.partsDir) {
+			await this.emit(own)
+			return
+		}
+		// Multi-process aggregation: persist this process's scenarios as a JSON
+		// "part", then render the union of every part. Write the part atomically
+		// (tmp + rename) so a sibling process mid-render never reads a half-written
+		// file. Scenario ids embed the pid, so the merged set never collides; parts
+		// are concatenated in pid order (within a part, authoring order is kept).
+		await fs.mkdir(this.partsDir, { recursive: true })
+		const partFile = path.join(this.partsDir, `${process.pid}.json`)
+		const tmp = `${partFile}.${this.writeCount++}.tmp`
+		await fs.writeFile(tmp, JSON.stringify(own), 'utf-8')
+		await fs.rename(tmp, partFile)
+		await this.emit(await this.readParts(own))
+	}
+
+	/** Merge every sibling process's part into one ordered scenario list. */
+	private async readParts(own: ScenarioRecord[]): Promise<ScenarioRecord[]> {
+		const dir = this.partsDir
+		if (!dir) return own
+		let files: string[]
+		try {
+			files = await fs.readdir(dir)
+		} catch {
+			return own
+		}
+		const parts = files.filter(f => f.endsWith('.json')).sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+		const out: ScenarioRecord[] = []
+		for (const file of parts) {
+			try {
+				const recs = JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8')) as unknown
+				if (Array.isArray(recs)) out.push(...(recs as ScenarioRecord[]))
+			} catch {
+				// A part being written right now — skip it; the next render picks it up.
+			}
+		}
+		return out
+	}
+
+	private async emit(scenarios: ScenarioRecord[]): Promise<void> {
+		const html = renderReport(scenarios)
 		await fs.mkdir(path.dirname(path.resolve(this.reportPath)), { recursive: true })
 		await fs.writeFile(this.reportPath, html, 'utf-8')
 	}
@@ -162,7 +223,7 @@ function metaFor(status: string | undefined): StatusMeta {
 }
 
 function esc(s: string): string {
-	return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string))
+	return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
 }
 
 function fmtMs(ms: number | undefined): string {
@@ -179,8 +240,10 @@ function renderStep(step: StepRecord): string {
 	const manual = step.manual ? `<div class="manual">${esc(step.manual)}</div>` : ''
 	const reason = step.reason ? `<div class="reason">${esc(step.reason)}</div>` : ''
 	const error = step.error ? `<pre class="err">${esc(step.error)}</pre>` : ''
+	// Mark acceptances (invariant) distinctly from procedural steps.
+	const kind = step.kind === 'invariant' ? `<span class="kind">invariant</span>` : ''
 	return `<li class="step ${meta.cls}">
-		<div class="srow"><span class="ic">${meta.icon}</span><span class="sname">${esc(step.name)}</span><span class="dur">${fmtMs(step.durationMs)}</span></div>
+		<div class="srow"><span class="ic">${meta.icon}</span><span class="sname">${esc(step.name)}</span>${kind}<span class="dur">${fmtMs(step.durationMs)}</span></div>
 		${intent}${manual}${reason}${error}${shot}
 	</li>`
 }
@@ -227,6 +290,7 @@ h1{font-size:18px;margin:0 0 4px}
 .step{padding:7px 10px;border-radius:8px;margin:4px 0;background:#0f1426}
 .srow{display:flex;align-items:center;gap:8px}
 .sname{flex:1}.dur{color:#7b86a3;font-variant-numeric:tabular-nums;font-size:12px}
+.kind{font-size:10px;text-transform:uppercase;letter-spacing:.04em;padding:1px 6px;border-radius:999px;background:#2a2350;color:#b9a8ff}
 .ic{width:18px;text-align:center;font-weight:700}
 .ok>header .ic,.step.ok .ic{color:#37d399}
 .fail>header .ic,.step.fail .ic{color:#ff6b6b}

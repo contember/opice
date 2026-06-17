@@ -525,7 +525,10 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	// reporter so a local run never needs a DSN to get a rich per-step view.
 	const reportFile = env['OPICE_REPORT_FILE']
 	if (reportFile) {
-		const reporter = new FileReporter(reportFile)
+		// OPICE_REPORT_PARTS_DIR (set by `opice test`, fresh per run) lets the
+		// per-file `bun test` processes aggregate into one report instead of the
+		// last file clobbering the rest. Absent under bare `bun test`.
+		const reporter = new FileReporter(reportFile, env['OPICE_REPORT_PARTS_DIR'])
 		setReporter(reporter)
 		return reporter
 	}

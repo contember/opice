@@ -55,6 +55,10 @@ export async function testCommand(args: string[]): Promise<number> {
 	// The harness reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
 	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
 	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
+	// `bun test` runs one process per file; give them a fresh shared dir to
+	// aggregate into so a multi-file run yields one complete report (the harness
+	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
+	const reportPartsDir = reportFile ? await fs.mkdtemp(path.join(tmpdir(), 'opice-report-')) : undefined
 
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {
@@ -70,6 +74,7 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
 		...(reportFile ? { OPICE_REPORT_FILE: reportFile } : {}),
+		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
@@ -91,6 +96,11 @@ export async function testCommand(args: string[]): Promise<number> {
 
 	if (reportFile) {
 		console.log(`[opice] report: ${path.resolve(reportFile)}`)
+	}
+	// The report is fully written (the harness aggregates on every render); the
+	// parts dir is just scratch — clean it up.
+	if (reportPartsDir) {
+		await fs.rm(reportPartsDir, { recursive: true, force: true }).catch(() => {})
 	}
 
 	// After bun test exits, look for handoff files the reporter wrote and
@@ -116,11 +126,16 @@ export async function testCommand(args: string[]): Promise<number> {
  */
 /**
  * Pull opice's `--report [file]` out of the arg list (it's not a bun flag). The
- * value is optional — a bare `--report` defaults to `.opice/report.html`; a
- * following non-flag token is taken as the path. Returns the resolved file (or
- * undefined when absent) and the remaining args.
+ * value is optional — a bare `--report` defaults to `.opice/report.html`. To
+ * avoid swallowing a bun test-file argument (`opice test --report foo.test.ts`),
+ * a following token is only taken as the path when it *looks* like one (ends in
+ * `.html`/`.htm`); otherwise use the explicit `--report=<file>` form. Returns
+ * the resolved file (or undefined when absent) and the remaining args.
  */
 const DEFAULT_REPORT_FILE = '.opice/report.html'
+function looksLikeReportPath(s: string): boolean {
+	return /\.html?$/i.test(s)
+}
 function extractReport(args: string[]): { reportFile: string | undefined; rest: string[] } {
 	const rest: string[] = []
 	let reportFile: string | undefined
@@ -131,7 +146,7 @@ function extractReport(args: string[]): { reportFile: string | undefined; rest: 
 			reportFile = arg.slice('--report='.length) || DEFAULT_REPORT_FILE
 		} else if (arg === '--report') {
 			const next = args[i + 1]
-			if (next !== undefined && !next.startsWith('-')) {
+			if (next !== undefined && !next.startsWith('-') && looksLikeReportPath(next)) {
 				reportFile = next
 				i++ // consume the value
 			} else {
