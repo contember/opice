@@ -22,11 +22,12 @@
 		"typecheck": "tsc --noEmit",
 		"db:migrate:local": "wrangler d1 migrations apply opice --local",
 		"db:migrate:remote": "wrangler d1 migrations apply opice --remote",
-		"schema:provision": "bun run scripts/provision-schema.ts"
+		"schema:provision": "bun run scripts/provision-schema.ts",
+		"access:provision": "bun run scripts/provision-access.ts"
 	},
 	"dependencies": {
-		"@propustka/client": "^0.0.3",
-		"@propustka/core": "^0.0.3",
+		"@propustka/client": "^0.0.4",
+		"@propustka/core": "^0.0.4",
 		"zod": "^3.25.0"
 	},
 	"devDependencies": {
