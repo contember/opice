@@ -95,6 +95,19 @@ jobs:
           PROPUSTKA_ACCESS_CLIENT_SECRET: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_SECRET }}
         run: bun run schema:provision
 
+      # Reconcile opice's declared Cloudflare Access edge rules (packages/worker/propustka.access.ts)
+      # into Propustka — the front-door counterpart of the schema reconcile above. Same gate + auth;
+      # idempotent (manages only px:<app>: policies). Needs the IAM Worker's CF token to also carry
+      # Access: Apps and Policies — Edit.
+      - name: Reconcile Propustka Access rules
+        if: ${{ vars.PROPUSTKA_URL != '' }}
+        working-directory: packages/worker
+        env:
+          PROPUSTKA_URL: ${{ vars.PROPUSTKA_URL }}
+          PROPUSTKA_ACCESS_CLIENT_ID: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_ID }}
+          PROPUSTKA_ACCESS_CLIENT_SECRET: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_SECRET }}
+        run: bun run access:provision
+
       - name: Summary
         run: |
           echo "### Deployed opice to **${{ steps.target.outputs.env }}** :rocket:" >> "$GITHUB_STEP_SUMMARY"
