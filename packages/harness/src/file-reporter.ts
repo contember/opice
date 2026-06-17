@@ -178,9 +178,17 @@ export class FileReporter implements Reporter {
 		} catch {
 			return own
 		}
+		const ownPart = `${process.pid}.json`
 		const parts = files.filter(f => f.endsWith('.json')).sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
 		const out: ScenarioRecord[] = []
 		for (const file of parts) {
+			// Our own part is already in memory — splice `own` in at its pid-sorted
+			// position rather than re-reading and re-parsing the (screenshot-laden)
+			// file we just wrote. In the common single-file run this is the only part.
+			if (file === ownPart) {
+				out.push(...own)
+				continue
+			}
 			try {
 				const recs = JSON.parse(await fs.readFile(path.join(dir, file), 'utf-8')) as unknown
 				if (Array.isArray(recs)) out.push(...(recs as ScenarioRecord[]))
