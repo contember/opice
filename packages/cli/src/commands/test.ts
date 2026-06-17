@@ -51,6 +51,11 @@ export async function testCommand(args: string[]): Promise<number> {
 	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
+	// `--report [file]` → a self-contained local HTML report (no platform creds).
+	// The harness reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
+	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
+	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
+
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -64,12 +69,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
+		...(reportFile ? { OPICE_REPORT_FILE: reportFile } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterStrict)
+	const { retries, rest } = extractRetries(afterReport)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -82,6 +88,10 @@ export async function testCommand(args: string[]): Promise<number> {
 	const exitCode = await new Promise<number>((resolve) => {
 		child.on('exit', (code) => resolve(code ?? 1))
 	})
+
+	if (reportFile) {
+		console.log(`[opice] report: ${path.resolve(reportFile)}`)
+	}
 
 	// After bun test exits, look for handoff files the reporter wrote and
 	// POST /finish for each run so it leaves "running" state.
@@ -104,6 +114,36 @@ export async function testCommand(args: string[]): Promise<number> {
  * forwarded to bun, which only knows `--retry`). Returns the parsed budget and
  * the remaining args. An invalid value is ignored (falls through to config).
  */
+/**
+ * Pull opice's `--report [file]` out of the arg list (it's not a bun flag). The
+ * value is optional — a bare `--report` defaults to `.opice/report.html`; a
+ * following non-flag token is taken as the path. Returns the resolved file (or
+ * undefined when absent) and the remaining args.
+ */
+const DEFAULT_REPORT_FILE = '.opice/report.html'
+function extractReport(args: string[]): { reportFile: string | undefined; rest: string[] } {
+	const rest: string[] = []
+	let reportFile: string | undefined
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === undefined) continue
+		if (arg.startsWith('--report=')) {
+			reportFile = arg.slice('--report='.length) || DEFAULT_REPORT_FILE
+		} else if (arg === '--report') {
+			const next = args[i + 1]
+			if (next !== undefined && !next.startsWith('-')) {
+				reportFile = next
+				i++ // consume the value
+			} else {
+				reportFile = DEFAULT_REPORT_FILE
+			}
+		} else {
+			rest.push(arg)
+		}
+	}
+	return { reportFile, rest }
+}
+
 function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {
 	const rest: string[] = []
 	let retries: number | undefined

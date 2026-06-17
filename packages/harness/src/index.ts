@@ -22,6 +22,7 @@ export type { SelectedTier, Tier } from './tier.js'
 
 export { getReporter, setReporter, configureFromEnv } from './reporter.js'
 export type { Reporter, ReporterConfig, StepEvent, ScenarioStart, ScenarioSkip, ScenarioFinish } from './reporter.js'
+export { FileReporter } from './file-reporter.js'
 
 export { parseOpiceDsn } from './dsn.js'
 export type { OpiceDsn } from './dsn.js'
