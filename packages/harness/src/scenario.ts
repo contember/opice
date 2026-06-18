@@ -167,7 +167,13 @@ function noteSkipped(name: string): void {
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
+// Un-authored phase-1 stubs (no body, NO reason) — a genuine skeleton awaiting
+// opice-author. These trigger the "skeleton / body did NOT run" warning.
 let currentScenarioPending = 0
+// Intentional `.blocked` stubs (no body, but WITH a reason — the feature or
+// environment the step needs isn't available). The body around them DID run;
+// these must NOT be mistaken for an un-authored skeleton.
+let currentScenarioBlocked = 0
 // Monotonic per-scenario step counter. Assigned synchronously at each step()
 // call so order reflects authoring order — step records are POSTed
 // fire-and-forget and would otherwise be sequenced by arrival order at the
@@ -234,6 +240,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		beforeAll(async () => {
 			currentScenarioStart = Date.now()
 			currentScenarioPending = 0
+			currentScenarioBlocked = 0
 			currentScenarioFailures = 0
 			currentScenarioStepSeq = 0
 			currentAttempt = 0
@@ -295,14 +302,21 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					console.warn(`[opice] scenario "${meta.name}" teardown failed (ignored): ${e instanceof Error ? e.message : String(e)}`)
 				}
 			}
-			// A scenario still carrying unfilled (pending) steps is a phase-1
+			// A scenario still carrying unfilled (no-reason) stubs is a phase-1
 			// skeleton that was run before authoring. It's not a failure, but it's
 			// not done either — make it loud so a half-authored test isn't mistaken
-			// for a passing one.
+			// for a passing one. `.blocked` stubs (counted separately) are NOT this:
+			// they were authored and the body ran, so they get an accurate, calmer
+			// note instead of the alarming skeleton warning.
 			if (currentScenarioPending > 0) {
 				console.warn(
 					`[opice] scenario "${meta.name}" has ${currentScenarioPending} pending step(s) — `
 					+ 'authored skeleton, not yet filled in by opice-author. The body did NOT run.',
+				)
+			} else if (currentScenarioBlocked > 0) {
+				console.info(
+					`[opice] scenario "${meta.name}" ran with ${currentScenarioBlocked} blocked step(s) — `
+					+ 'a feature/environment they need is unavailable (the rest of the body ran and passed).',
 				)
 			}
 			if (currentScenarioId) {
@@ -355,6 +369,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioFailures = 0
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
+				currentScenarioBlocked = 0
 				try {
 					await openScenario(meta)
 				} catch (e) {
@@ -514,7 +529,12 @@ async function runUnit(unit: RunUnit): Promise<void> {
 	// feature isn't built); no reason is a plain todo awaiting authoring. No
 	// screenshot, zero duration.
 	if (!unit.fn) {
-		currentScenarioPending++
+		// A reason ⇒ an intentional `.blocked` (feature/env unavailable); the body
+		// around it still ran. No reason ⇒ a genuine un-authored skeleton stub.
+		// Count them apart so the afterAll warning only cries "skeleton" for the
+		// latter. Both still record as status 'pending' for the dashboard.
+		if (unit.reason !== undefined) currentScenarioBlocked++
+		else currentScenarioPending++
 		if (currentScenarioId) {
 			void reporter.recordStep({
 				scenarioId: currentScenarioId,
