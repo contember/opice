@@ -73,6 +73,16 @@ export interface BrowserTestMeta {
 	 */
 	setup?: () => void | Promise<void>
 	/**
+	 * One-time scenario teardown, run once after the walkthrough (in `afterAll`),
+	 * after the browser is closed. The symmetric counterpart to {@link setup} —
+	 * the place to clean up data a scenario created against a shared/persistent
+	 * DB (e.g. delete per-run rows by a unique code) so it doesn't accumulate
+	 * across local runs. Best-effort: a throw here is logged as a warning and
+	 * does NOT fail an otherwise-green run (cleanup is hygiene, not an
+	 * assertion). Runs once per scenario regardless of the retry count.
+	 */
+	teardown?: () => void | Promise<void>
+	/**
 	 * Per-scenario retry budget (body form only). A flaky scenario that fails
 	 * then passes within the budget is reported as **passed but flaky** (the
 	 * dashboard badges it). Each attempt gets a fresh browser + a clean
@@ -274,6 +284,16 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				await closePage()
 			} catch {
 				// ignore close errors
+			}
+			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the
+			// browser is closed; a failure is logged but never reds an otherwise-green
+			// run (cleanup is hygiene, not an assertion).
+			if (meta.teardown) {
+				try {
+					await meta.teardown()
+				} catch (e) {
+					console.warn(`[opice] scenario "${meta.name}" teardown failed (ignored): ${e instanceof Error ? e.message : String(e)}`)
+				}
 			}
 			// A scenario still carrying unfilled (pending) steps is a phase-1
 			// skeleton that was run before authoring. It's not a failure, but it's
