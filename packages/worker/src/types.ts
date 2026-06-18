@@ -140,5 +140,11 @@ export interface Step {
 	/** Mandatory note from step.fixme (why the failure is tolerated). */
 	reason: string | null
 	screenshotKey: string | null
+	/**
+	 * True when a screenshot was captured but its upload to R2 failed (a transient
+	 * R2 error, swallowed so it can't fail the run). Distinguishes "upload failed"
+	 * from "no screenshot" — both leave screenshotKey null.
+	 */
+	screenshotFailed: boolean
 	createdAt: number
 }

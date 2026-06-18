@@ -278,7 +278,7 @@ class HttpReporter implements Reporter {
 		const screenshot = event.screenshotPath
 			? await this.encodeScreenshot(event.screenshotPath)
 			: undefined
-		await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+		const result = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
 			attempt: event.attempt,
 			sequence: event.sequence,
 			kind: event.kind,
@@ -291,6 +291,13 @@ class HttpReporter implements Reporter {
 			reason: event.reason,
 			screenshot,
 		})
+		// The step itself was recorded; only its screenshot upload to R2 failed
+		// (a transient R2 error the platform swallowed). Surface it in the run log
+		// so the gap on the dashboard isn't a mystery — but it's NOT a reporting
+		// failure (the step is there), so it doesn't touch the strict-mode count.
+		if (screenshot && result['screenshotFailed'] === true) {
+			console.error(`[opice] screenshot upload failed for step "${event.name}" — the step was recorded without it (transient storage error).`)
+		}
 	}
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {

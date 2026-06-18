@@ -119,6 +119,7 @@ interface StepRow {
 	manual: string | null
 	reason: string | null
 	screenshot_r2_key: string | null
+	screenshot_failed: number
 	created_at: number
 }
 
@@ -236,6 +237,7 @@ const toStep = (r: StepRow): Step => ({
 	manual: r.manual,
 	reason: r.reason,
 	screenshotKey: r.screenshot_r2_key,
+	screenshotFailed: r.screenshot_failed !== 0,
 	createdAt: r.created_at,
 })
 
@@ -648,6 +650,18 @@ export class Db {
 		await this.d1
 			.prepare('UPDATE steps SET screenshot_r2_key = ? WHERE id = ?')
 			.bind(key, stepId)
+			.run()
+	}
+
+	/**
+	 * Flag that a step's screenshot was captured but its upload to R2 failed —
+	 * the step row is kept (the upload is best-effort), but the dashboard can show
+	 * the gap rather than rendering it as "no screenshot". See ingest `createStep`.
+	 */
+	async markScreenshotFailed(stepId: number): Promise<void> {
+		await this.d1
+			.prepare('UPDATE steps SET screenshot_failed = 1 WHERE id = ?')
+			.bind(stepId)
 			.run()
 	}
 

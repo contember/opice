@@ -934,6 +934,20 @@ main.wide { max-width: 1360px; }
 	border-radius: 0 4px 4px 0;
 }
 
+/* Screenshot was captured but its upload to R2 failed — a muted gap where the
+ * image would be (dashed to read as "missing"), amber because it's a degraded
+ * state worth noticing, not a test failure. */
+.step .step-screenshot-failed {
+	display: inline-block;
+	margin-top: 8px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--run);
+	border: 1px dashed color-mix(in srgb, var(--run) 50%, transparent);
+	padding: 6px 12px;
+	border-radius: 4px;
+}
+
 /* ---------------- Screenshot frame ---------------- */
 
 .shot {

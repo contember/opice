@@ -243,14 +243,54 @@ async function createStep(
 		reason: body.reason,
 	})
 
+	let screenshotFailed = false
 	if (body.screenshot) {
 		const key = `${project.slug}/${runId}/step-${stepId}.png`
-		const bytes = base64ToBytes(body.screenshot)
-		await services.screenshots.put(key, bytes, { httpMetadata: { contentType: 'image/png' } })
-		await services.db.attachScreenshot(stepId, key)
+		// The screenshot is non-essential telemetry — the step row is already
+		// written. R2 occasionally answers `put` with a transient internal error
+		// ("...Please try again. (10001)"); retry it, and if it still fails (or the
+		// base64 is malformed), log and move on rather than 500-ing the whole step
+		// ingest (which, under the reporter's strict mode, would fail the CI run
+		// over a flaky screenshot). Decoding is inside the try for the same reason.
+		try {
+			const bytes = base64ToBytes(body.screenshot)
+			await putWithRetry(services.screenshots, key, bytes, { httpMetadata: { contentType: 'image/png' } })
+			await services.db.attachScreenshot(stepId, key)
+		} catch (err) {
+			screenshotFailed = true
+			console.error(`screenshot upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+			// Flag the step so the dashboard shows the gap (best-effort — a failed
+			// flag write just leaves it looking like a step with no screenshot).
+			try {
+				await services.db.markScreenshotFailed(stepId)
+			} catch (markErr) {
+				console.error(`could not flag screenshot failure for ${key}: ${markErr instanceof Error ? markErr.message : String(markErr)}`)
+			}
+		}
 	}
 
-	return json({ stepId })
+	// `screenshotFailed` lets the runner surface the dropped screenshot in the run
+	// log without making it a reporting failure (the step itself was recorded).
+	return json({ stepId, screenshotFailed })
+}
+
+/**
+ * Retry an R2 `put` through transient internal errors (code 10001). R2 surfaces
+ * these as a thrown Error; a short backoff usually clears them. Stays well inside
+ * the request budget — at most a couple of attempts with sub-second waits.
+ */
+async function putWithRetry(bucket: R2Bucket, key: string, bytes: Uint8Array, options: R2PutOptions): Promise<void> {
+	const backoffMs = [150, 500]
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await bucket.put(key, bytes, options)
+			return
+		} catch (err) {
+			const delay = backoffMs[attempt]
+			if (delay === undefined) throw err
+			await new Promise(resolve => setTimeout(resolve, delay))
+		}
+	}
 }
 
 function base64ToBytes(b64: string): Uint8Array {

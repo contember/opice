@@ -52,6 +52,9 @@ export interface Step {
 	intent: string | null
 	reason: string | null
 	screenshotUrl: string | null
+	// Screenshot was captured but its upload to R2 failed (transient R2 error,
+	// swallowed so it couldn't fail the run) — shown as a gap, not a real image.
+	screenshotFailed: boolean
 }
 
 /** Fetch the steps of one scenario. The caller binds the right RPC client. */
@@ -407,7 +410,7 @@ function StepRow({ step: st }: { step: Step }) {
 				{st.name}
 			</span>
 			<span className="duration">{st.status === 'pending' ? (blocked ? 'blocked' : 'not authored') : fmtDuration(st.durationMs)}</span>
-			{(st.intent || st.error || st.reason || st.screenshotUrl) && (
+			{(st.intent || st.error || st.reason || st.screenshotUrl || st.screenshotFailed) && (
 				<div className="step-detail">
 					{st.intent && <div className="step-intent">{st.intent}</div>}
 					{st.reason && (
@@ -417,6 +420,11 @@ function StepRow({ step: st }: { step: Step }) {
 					)}
 					{st.error && <div className="step-error">{st.error}</div>}
 					{st.screenshotUrl && <Polaroid src={st.screenshotUrl} caption={st.name} />}
+					{!st.screenshotUrl && st.screenshotFailed && (
+						<div className="step-screenshot-failed" title="A screenshot was captured but its upload to storage failed (transient R2 error).">
+							screenshot upload failed
+						</div>
+					)}
 				</div>
 			)}
 		</div>

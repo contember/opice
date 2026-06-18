@@ -107,6 +107,7 @@ export const StepSchema = z.object({
 	manual: z.string().nullable(),
 	reason: z.string().nullable(),
 	screenshotUrl: z.string().nullable(),
+	screenshotFailed: z.boolean(),
 	createdAt: z.number(),
 })
 
