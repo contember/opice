@@ -25,6 +25,12 @@ import { resolveSelectedTier } from './tier.js'
 const REQUEST_TIMEOUT_MS = 10_000
 /** Total cap on `flush()` waiting for pending step uploads (afterAll-bounded). */
 const FLUSH_BUDGET_MS = 15_000
+/**
+ * Backoff between retries of a transient reporter failure (network error, 5xx,
+ * 429). Length = number of retries; kept short so retries stay inside the
+ * afterAll / flush budgets above.
+ */
+const REPORT_BACKOFF_MS = [300, 800]
 
 export interface ReporterConfig {
 	endpoint: string
@@ -325,6 +331,38 @@ class HttpReporter implements Reporter {
 	}
 
 	private async fetch(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
+		const call = `${method} ${path}`
+		// Retry only TRANSIENT failures (network error, 5xx, 429) with a short
+		// backoff — a momentary blip or a worker cold-start shouldn't read as a lost
+		// report. NON-transient failures (a 3xx to Access, a 4xx, a non-JSON 200)
+		// are config/auth problems a retry can't fix, so they surface immediately —
+		// which is exactly what strict mode is meant to make loud. `noteFailure` (and
+		// the failure count strict mode reads) only fires once retries are spent, so
+		// a blip that clears on retry isn't recorded as a failure at all.
+		for (let attempt = 0; ; attempt++) {
+			const result = await this.attempt(method, path, body)
+			if ('data' in result) return result.data
+			const delay = REPORT_BACKOFF_MS[attempt]
+			if (result.retryable && delay !== undefined) {
+				await new Promise((resolve) => setTimeout(resolve, delay))
+				continue
+			}
+			this.noteFailure(call, result.detail)
+			throw result.error
+		}
+	}
+
+	/**
+	 * One round-trip to the platform. Classifies the outcome — `data` on success,
+	 * otherwise `retryable` tells {@link fetch} whether a retry could help — so the
+	 * retry/throw decision lives in one place.
+	 */
+	private async attempt(
+		method: string,
+		path: string,
+		body?: unknown,
+	): Promise<{ data: Record<string, unknown> } | { retryable: boolean; detail: string; error: Error }> {
+		const call = `${method} ${path}`
 		let response: Response
 		try {
 			response = await fetch(this.config.endpoint + path, {
@@ -347,41 +385,41 @@ class HttpReporter implements Reporter {
 			})
 		} catch (err) {
 			// Network error / blocked request (e.g. a test runner that installs a
-			// DOM and routes fetch through a same-origin policy). Callers swallow
-			// reporter errors so the test still runs, so this is the one place the
-			// failure is visible — make it loud and actionable.
-			this.noteFailure(`${method} ${path}`, err instanceof Error ? err.message : String(err))
-			throw err
+			// DOM and routes fetch through a same-origin policy) — could be a transient
+			// blip, so it's retryable.
+			const error = err instanceof Error ? err : new Error(String(err))
+			return { retryable: true, detail: error.message, error }
 		}
 		// A redirect (3xx, or an opaque redirect when the runtime hides the status)
 		// to Cloudflare Access means the service token was rejected at the edge —
 		// the request never reached the API. This is THE prod failure mode: the
-		// DSN's token isn't authorized by the `/api/v1` Access policy.
+		// DSN's token isn't authorized by the `/api/v1` Access policy. Never transient.
 		if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
 			const location = response.headers.get('location') ?? ''
 			const detail = /cloudflareaccess\.com|\/cdn-cgi\/access\//.test(location)
 				? `redirected to Cloudflare Access login (${response.status}) — the OPICE_DSN service token was rejected at the edge. `
 					+ `Authorize it on the prod /api/v1 Access (Service Auth) policy, or check the token in OPICE_DSN.`
 				: `unexpected redirect (${response.status}${location ? ` → ${location}` : ''})`
-			this.noteFailure(`${method} ${path}`, detail)
-			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
+			return { retryable: false, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
 		}
 		if (!response.ok) {
 			const detail = `${response.status} ${await response.text()}`.trim()
-			this.noteFailure(`${method} ${path}`, detail)
-			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
+			// 5xx and 429 are the platform asking us to back off and retry (e.g. a
+			// transient R2 internal error bubbling up as a 500); other 4xx mean the
+			// request itself is wrong (auth, validation) — a retry won't change that.
+			const retryable = response.status >= 500 || response.status === 429
+			return { retryable, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
 		}
 		// Parse defensively: a 200 that isn't JSON (an auth/login HTML page slipped
 		// through, a proxy error page) must count as a failure, not a swallowed
-		// throw — otherwise strict mode never sees it.
+		// throw — otherwise strict mode never sees it. Not transient.
 		try {
-			return (await response.json()) as Record<string, unknown>
-		} catch (err) {
+			return { data: (await response.json()) as Record<string, unknown> }
+		} catch {
 			const ct = response.headers.get('content-type') ?? 'unknown'
 			const detail = `${response.status} but body wasn't JSON (content-type: ${ct}) — `
 				+ `likely an auth/login or proxy page, not the opice API`
-			this.noteFailure(`${method} ${path}`, detail)
-			throw new Error(`opice reporter ${method} ${path} failed: ${detail}`)
+			return { retryable: false, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
 		}
 	}
 
