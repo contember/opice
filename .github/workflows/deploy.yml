@@ -106,6 +106,9 @@ jobs:
           PROPUSTKA_URL: ${{ vars.PROPUSTKA_URL }}
           PROPUSTKA_ACCESS_CLIENT_ID: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_ID }}
           PROPUSTKA_ACCESS_CLIENT_SECRET: ${{ secrets.PROPUSTKA_ACCESS_CLIENT_SECRET }}
+          # propustka.access.ts builds the CF Access destinations from this; the human audience is
+          # propustka's central HUMAN_EMAIL_DOMAINS/HUMAN_EMAILS, not passed per app.
+          OPICE_HOSTNAME: ${{ vars.OPICE_HOSTNAME }}
         run: bun run access:provision
 
       - name: Summary
