@@ -66,6 +66,8 @@ jobs:
         working-directory: packages/worker
         env:
           CLOUDFLARE_ENV: ${{ steps.target.outputs.env }}
+          # Per-target Custom Domain (GitHub Environment var). Unset → *.workers.dev.
+          OPICE_HOSTNAME: ${{ vars.OPICE_HOSTNAME }}
         run: |
           bunx oblaka oblaka.ts \
             --env=${{ steps.target.outputs.env }} \

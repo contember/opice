@@ -8,6 +8,7 @@
 		"nodejs_compat_v2"
 	],
 	"compatibility_date": "2025-10-01",
+	"routes": [],
 	"observability": {
 		"enabled": true
 	},

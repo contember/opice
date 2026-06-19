@@ -8,12 +8,22 @@ export default define(({ env }) => {
 	}
 	const isLocal = env === 'local'
 
+	// Public hostname, bound below as a Custom Domain. Driven per-env by the OPICE_HOSTNAME deploy var
+	// (a GitHub Environment variable the workflow passes) so each target gets its OWN domain instead of
+	// one hardcoded account. Unset (stage/local) -> *.workers.dev.
+	const hostname = isLocal ? undefined : process.env['OPICE_HOSTNAME']
+
 	return new Worker({
 		dir: '.',
 		name: 'opice-worker',
 		main: './src/index.ts',
 		compatibility_flags: ['nodejs_compat_v2'],
 		compatibility_date: '2025-10-01',
+		// Bind the public hostname (OPICE_HOSTNAME) as a Custom Domain (auto-creates DNS + cert + route);
+		// Cloudflare Access fronts it (see propustka.access.ts). Declared HERE as IaC because oblaka
+		// regenerates wrangler.jsonc on every deploy — a domain attached only in the dashboard gets
+		// wiped by the next `wrangler deploy`. Unset -> *.workers.dev.
+		routes: hostname ? [{ pattern: hostname, custom_domain: true }] : [],
 		observability: { enabled: true },
 		// Reap runs abandoned mid-flight (see scheduled() in src/index.ts).
 		triggers: { crons: ['*/5 * * * *'] },
