@@ -52,9 +52,25 @@ export async function testCommand(args: string[]): Promise<number> {
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
-	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
-	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
-	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
+	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door. A bare
+	// `--report` only consumes a following token when it *looks like* a report
+	// path (ends in .html/.htm) so it never swallows a bun test-file arg.
+	const report = extractOptionalValueFlag(afterStrict, 'report', looksLikeReportPath)
+	const afterReport = report.rest
+	const reportFile = (report.present ? (report.value ?? DEFAULT_REPORT_FILE) : undefined) ?? process.env['OPICE_REPORT_FILE']
+
+	// `--video [=dir]` → record a screen capture of each scenario's walkthrough,
+	// saved as `<scenario-name>.webm` (great for tutorial footage). Off by default
+	// — it's overhead nobody wants on a normal CI run. The harness reads
+	// OPICE_VIDEO / OPICE_VIDEO_DIR; the flag is the friendly door. A custom dir
+	// MUST use the `--video=dir` form — a bare `--video` never consumes the next
+	// token (a dir name is indistinguishable from a bun test-name filter, so
+	// swallowing it would silently run the whole suite). No `isValue` ⇒ never
+	// consume a following arg.
+	const videoFlag = extractOptionalValueFlag(afterReport, 'video')
+	const afterVideo = videoFlag.rest
+	const videoEnabled = videoFlag.present || isTruthy(process.env['OPICE_VIDEO'])
+	const videoDir = videoFlag.value ?? process.env['OPICE_VIDEO_DIR']
 	// `bun test` runs one process per file; give them a fresh shared dir to
 	// aggregate into so a multi-file run yields one complete report (the harness
 	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
@@ -82,12 +98,14 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
 		...(reportFile ? { OPICE_REPORT_FILE: reportFile } : {}),
 		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
+		...(videoEnabled ? { OPICE_VIDEO: '1' } : {}),
+		...(videoDir ? { OPICE_VIDEO_DIR: videoDir } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterReport)
+	const { retries, rest } = extractRetries(afterVideo)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -143,27 +161,46 @@ const DEFAULT_REPORT_FILE = '.opice/report.html'
 function looksLikeReportPath(s: string): boolean {
 	return /\.html?$/i.test(s)
 }
-function extractReport(args: string[]): { reportFile: string | undefined; rest: string[] } {
+
+/**
+ * Pull an opice optional-value flag (`--name` / `--name=value`) out of the arg
+ * list — these aren't bun flags, so they must be stripped before the remainder
+ * passes to `bun test`. Returns whether the flag was present, its value (if any),
+ * and the remaining args.
+ *
+ * The `--name=value` form always sets the value. The bare `--name value` form
+ * only consumes the following token when `isValue(token)` says it's a value and
+ * not a passthrough (a leading `-`, or a bun test-file/name arg). Omit `isValue`
+ * to make bare `--name` NEVER consume the next token — the safe default when a
+ * value is indistinguishable from a bun positional (use the `=` form for those).
+ */
+function extractOptionalValueFlag(
+	args: string[],
+	name: string,
+	isValue?: (token: string) => boolean,
+): { present: boolean; value: string | undefined; rest: string[] } {
 	const rest: string[] = []
-	let reportFile: string | undefined
+	const eq = `--${name}=`
+	let present = false
+	let value: string | undefined
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]
 		if (arg === undefined) continue
-		if (arg.startsWith('--report=')) {
-			reportFile = arg.slice('--report='.length) || DEFAULT_REPORT_FILE
-		} else if (arg === '--report') {
+		if (arg.startsWith(eq)) {
+			present = true
+			value = arg.slice(eq.length) || undefined
+		} else if (arg === `--${name}`) {
+			present = true
 			const next = args[i + 1]
-			if (next !== undefined && !next.startsWith('-') && looksLikeReportPath(next)) {
-				reportFile = next
+			if (isValue && next !== undefined && !next.startsWith('-') && isValue(next)) {
+				value = next
 				i++ // consume the value
-			} else {
-				reportFile = DEFAULT_REPORT_FILE
 			}
 		} else {
 			rest.push(arg)
 		}
 	}
-	return { reportFile, rest }
+	return { present, value, rest }
 }
 
 function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {

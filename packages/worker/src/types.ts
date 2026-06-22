@@ -106,6 +106,12 @@ export interface Scenario {
 	tier: string | null
 	/** Why the scenario was skipped (set only when status is 'skipped'). */
 	skipReason: string | null
+	/**
+	 * R2 key of the scenario's walkthrough video (opt-in, OPICE_VIDEO), in the
+	 * shared screenshots bucket under `<slug>/<runId>/...`. Null when video was off
+	 * or the best-effort upload failed. The RPC layer maps this to a `videoUrl`.
+	 */
+	videoKey: string | null
 	status: ScenarioDisplayStatus
 	durationMs: number | null
 	/**

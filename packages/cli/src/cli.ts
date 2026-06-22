@@ -13,7 +13,7 @@ Commands:
       Scaffold opice.config.json in the current project. Pass
       --with-workflow to also drop a .github/workflows/opice.yml.
 
-  test [--retries=N] [--tier=NAME] [--fail-on-report-error] [--report[=FILE]] [bun test args...]
+  test [--retries=N] [--tier=NAME] [--fail-on-report-error] [--report[=FILE]] [--video[=DIR]] [bun test args...]
       Wrapper around 'bun test' that exports OPICE_* env vars from
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
@@ -38,6 +38,11 @@ Commands:
       swallow a following bun test-file arg). Screenshots are written to
       a <report>-assets/ folder beside it, so move the two together.
       Multiple test files aggregate into one report.
+      --video[=DIR] records a screen capture of each scenario's
+      walkthrough, saved as <scenario-name>.webm — handy for tutorial
+      footage. Off by default (recording is overhead). A bare --video
+      writes to opice-videos/; --video=DIR picks another folder. Set
+      OPICE_VIDEO_SIZE=WxH (e.g. 1280x720) to fix the recording size.
 
   failures <run-url|run-id> [--json]
       Pull a failed run's details (failed scenarios, the failing step,

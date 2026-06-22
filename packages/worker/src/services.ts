@@ -15,7 +15,13 @@ export interface Services {
 	 * `revokeCapability`. The machine (data-plane token) plane never touches it — see principal.ts.
 	 */
 	readonly iam: Iam
-	readonly screenshots: R2Bucket
+	/**
+	 * R2 bucket holding all run artifacts — step screenshots AND scenario videos —
+	 * keyed under `<slug>/<runId>/...`. The CF binding is still named `SCREENSHOTS`
+	 * (renaming a live bucket would orphan stored objects), but the code-level name
+	 * is artifact-neutral since it's no longer screenshots-only.
+	 */
+	readonly runAssets: R2Bucket
 	readonly assets: Fetcher
 	readonly config: Config
 }
@@ -31,7 +37,7 @@ export function buildServices(env: Env): Services {
 	return {
 		db: new Db(env.DB),
 		iam: createIam(env),
-		screenshots: env.SCREENSHOTS,
+		runAssets: env.SCREENSHOTS,
 		assets: env.ASSETS,
 		config: {
 			environment: env.ENVIRONMENT,

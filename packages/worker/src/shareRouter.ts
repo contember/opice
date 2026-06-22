@@ -1,5 +1,6 @@
 import type { Capability } from '@propustka/client'
 import { z } from 'zod'
+import { withVideoUrl } from './asset-url'
 import { capCanListRuns, capCanReadProject, capCanReadRun } from './principal'
 import { ProjectSchema, RunSchema, ScenarioSchema, StepSchema } from './router'
 import { initRpc, RpcDispatchError } from './rpc'
@@ -85,7 +86,7 @@ const runs = rpc.router({
 			if (!run) notFound(`Run not found: ${input.runId}`)
 			const slug = await projectSlugForRun(ctx.services, run.projectId)
 			assertAccess(slug != null && capCanReadRun(ctx.cap, slug, run.id))
-			return ctx.services.db.listScenariosForRun(input.runId)
+			return withVideoUrl(await ctx.services.db.listScenariosForRun(input.runId), '/s/videos')
 		}),
 })
 

@@ -40,6 +40,8 @@ export interface Scenario {
 	skipReason: string | null
 	durationMs: number | null
 	attempts: number
+	/** URL of the scenario's walkthrough video (opt-in OPICE_VIDEO), or null. */
+	videoUrl: string | null
 }
 
 export interface Step {
@@ -371,6 +373,13 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 					{showTier && <span className="meta-chip tier" title="Test tier — when this scenario runs">{s.tier}</span>}
 					{s.seeds.map(x => <span key={`seed-${x}`} className="meta-chip seed" title="Required seed">{x}</span>)}
 					{s.roles.map(x => <span key={`role-${x}`} className="meta-chip role" title="Acting role">{x}</span>)}
+				</div>
+			)}
+
+			{!skipped && s.videoUrl && (
+				<div className="s-video">
+					{/* Walkthrough recording (opt-in OPICE_VIDEO) — great for tutorials. */}
+					<video className="s-video-player" src={s.videoUrl} controls preload="metadata" />
 				</div>
 			)}
 
