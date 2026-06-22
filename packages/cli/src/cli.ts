@@ -31,11 +31,12 @@ Commands:
       Use it so a bad token / unreachable endpoint can't leave CI green
       while nothing reaches the dashboard. Falls back to
       OPICE_REPORT_STRICT, then "failOnReportError" in opice.config.json.
-      --report[=FILE] writes a self-contained local HTML report — the
-      dashboard view, offline, no platform credentials — instead of
-      streaming results to the platform. A bare --report defaults to
-      .opice/report.html; --report=FILE picks another path (use this
-      form so it doesn't swallow a following bun test-file arg).
+      --report[=FILE] writes a local HTML report — the dashboard view,
+      offline, no platform credentials — instead of streaming results to
+      the platform. A bare --report defaults to .opice/report.html;
+      --report=FILE picks another path (use this form so it doesn't
+      swallow a following bun test-file arg). Screenshots are written to
+      a <report>-assets/ folder beside it, so move the two together.
       Multiple test files aggregate into one report.
 
   failures <run-url|run-id> [--json]
