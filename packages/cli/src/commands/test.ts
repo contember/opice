@@ -51,14 +51,21 @@ export async function testCommand(args: string[]): Promise<number> {
 	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
-	// `--report [file]` → a self-contained local HTML report (no platform creds).
-	// The harness reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
+	// `--report [file]` → a local HTML report (no platform creds). The harness
+	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
 	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
 	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
 	// `bun test` runs one process per file; give them a fresh shared dir to
 	// aggregate into so a multi-file run yields one complete report (the harness
 	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
 	const reportPartsDir = reportFile ? await fs.mkdtemp(path.join(tmpdir(), 'opice-report-')) : undefined
+	// Clear last run's screenshots. The FileReporter writes them beside the report
+	// as `<report>-assets/` (name kept in sync with @opice/harness's assetsDirName)
+	// so a deleted test's old screens don't linger in the new report.
+	if (reportFile) {
+		const assetsDir = path.join(path.dirname(reportFile), path.basename(reportFile).replace(/\.[^.]*$/, '') + '-assets')
+		await fs.rm(assetsDir, { recursive: true, force: true }).catch(() => {})
+	}
 
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {

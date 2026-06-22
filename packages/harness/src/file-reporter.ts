@@ -1,13 +1,15 @@
 /**
- * Local "dashboard-level" report — a self-contained HTML file.
+ * Local "dashboard-level" report — a static `report.html` plus a sibling
+ * `<report>-assets/` folder of screenshots.
  *
  * Reporting is a swappable {@link Reporter} (startScenario / recordStep /
  * finishScenario / flush). The {@link HttpReporter} streams per-step events to
  * the hosted platform; with no `OPICE_DSN` it's a no-op and you get only bun's
  * pass/fail line. This `FileReporter` implements the same interface and, instead
  * of POSTing, renders the same per-step data (status, timing, intent/manual,
- * error, screenshot) into a single static `report.html` you open in a browser —
- * the dashboard view, locally, no server.
+ * error, screenshot) into `report.html` you open in a browser — the dashboard
+ * view, locally, no server. Screenshots are written as files alongside (not
+ * base64-inlined) so the HTML stays small and loads fast even on a big run.
  *
  * Selected by {@link configureFromEnv} when `OPICE_REPORT_FILE` is set
  * (`opice test --report <file>` sets it for you). It needs no platform
@@ -35,7 +37,7 @@ type StepRecord = {
 	intent?: string
 	manual?: string
 	reason?: string
-	screenshot?: string // data URI
+	screenshot?: string // report-relative URL into the assets dir
 }
 
 type ScenarioRecord = {
@@ -57,6 +59,17 @@ export class FileReporter implements Reporter {
 	private seq = 0
 
 	private writeCount = 0
+	private shotCount = 0
+
+	/**
+	 * Screenshots live as files in a sibling `<report>-assets/` dir, referenced by
+	 * relative URL — NOT inlined as base64. Inlining made the single HTML balloon
+	 * to tens of MB on a large run (150+ scenarios × many screens), so it parsed
+	 * slowly and the browser decoded every image up front. As files, the HTML
+	 * stays text-only and `loading="lazy"` fetches only the screens on screen.
+	 */
+	private readonly assetsName: string
+	private readonly assetsDir: string
 
 	/**
 	 * @param reportPath where the HTML report is written.
@@ -70,7 +83,24 @@ export class FileReporter implements Reporter {
 	constructor(
 		private readonly reportPath: string,
 		private readonly partsDir?: string,
-	) {}
+	) {
+		this.assetsName = assetsDirName(reportPath)
+		this.assetsDir = path.join(path.dirname(reportPath), this.assetsName)
+	}
+
+	/** Copy a screenshot into the assets dir; return its report-relative URL. */
+	private async materializeScreenshot(src: string | undefined): Promise<string | undefined> {
+		if (!src) return undefined
+		try {
+			await fs.mkdir(this.assetsDir, { recursive: true })
+			// pid keeps names unique across the per-file processes that share one dir.
+			const name = `${process.pid}-${this.shotCount++}.png`
+			await fs.copyFile(src, path.join(this.assetsDir, name))
+			return `${this.assetsName}/${name}`
+		} catch {
+			return undefined
+		}
+	}
 
 	async startScenario(input: ScenarioStart): Promise<string> {
 		const id = `local-${this.seq++}-${process.pid}`
@@ -123,7 +153,7 @@ export class FileReporter implements Reporter {
 			intent: event.intent,
 			manual: event.manual,
 			reason: event.reason,
-			screenshot: await encodeScreenshot(event.screenshotPath),
+			screenshot: await this.materializeScreenshot(event.screenshotPath),
 		})
 		await this.write()
 	}
@@ -206,14 +236,14 @@ export class FileReporter implements Reporter {
 	}
 }
 
-async function encodeScreenshot(p: string | undefined): Promise<string | undefined> {
-	if (!p) return undefined
-	try {
-		const buf = await fs.readFile(p)
-		return `data:image/png;base64,${buf.toString('base64')}`
-	} catch {
-		return undefined
-	}
+/**
+ * The screenshots dir sits beside the report and is named after it
+ * (`report.html` → `report-assets/`), so several reports can share a directory
+ * and the folder name reads as "belongs to this report". The CLI clears it at
+ * the start of a run so a removed test's old screens don't linger.
+ */
+export function assetsDirName(reportPath: string): string {
+	return path.basename(reportPath).replace(/\.[^.]*$/, '') + '-assets'
 }
 
 function esc(s: string): string {
