@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
+import { FileReporter } from './file-reporter.js'
 import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
@@ -517,6 +518,20 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	// process. The CLI's `--fail-on-report-error` sets OPICE_REPORT_STRICT in the
 	// child env, so a bare `bun test` honours it too.
 	strictReporting = isTruthy(env['OPICE_REPORT_STRICT'])
+	// Local HTML report (enhanced local DX): OPICE_REPORT_FILE selects the file
+	// reporter, which writes a self-contained report.html and needs NO platform
+	// credentials — the zero-config "dashboard, locally" path. `opice test
+	// --report <file>` sets the var for you. Takes precedence over the platform
+	// reporter so a local run never needs a DSN to get a rich per-step view.
+	const reportFile = env['OPICE_REPORT_FILE']
+	if (reportFile) {
+		// OPICE_REPORT_PARTS_DIR (set by `opice test`, fresh per run) lets the
+		// per-file `bun test` processes aggregate into one report instead of the
+		// last file clobbering the rest. Absent under bare `bun test`.
+		const reporter = new FileReporter(reportFile, env['OPICE_REPORT_PARTS_DIR'])
+		setReporter(reporter)
+		return reporter
+	}
 	// Individual vars win; OPICE_DSN fills any gaps (see dsn.ts).
 	const dsn = parseOpiceDsn(env['OPICE_DSN'])
 	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint

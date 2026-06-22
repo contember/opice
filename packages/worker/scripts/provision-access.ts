@@ -29,6 +29,7 @@
  * The target Propustka must know opice's app id (an `ACCESS_APPS` value) — see `opiceAppId`.
  */
 
+import type { AppAccess } from '@propustka/client'
 import { reconcileAccess } from '@propustka/client'
 import { opiceAppAccess, opiceAppId } from '../propustka.access'
 
@@ -51,9 +52,9 @@ const DRY_RUN = process.argv.includes('--dry-run')
 
 // ── reporting ─────────────────────────────────────────────────────────────────
 
-function describe(): string[] {
+function describe(access: AppAccess): string[] {
 	const lines = [`  • ${opiceAppId}`]
-	for (const cfApp of opiceAppAccess.apps) {
+	for (const cfApp of access.apps) {
 		lines.push(`      ${cfApp.name}  [${cfApp.destinations.join(', ')}]`)
 		lines.push(`          rules: ${cfApp.rules.map((r) => r.kind).join(', ')}`)
 	}
@@ -63,9 +64,13 @@ function describe(): string[] {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+	// The hostname these Access apps front. Required even for --dry-run, since it shapes the
+	// declared destinations (the module is now a pure function of it — no import-time env read).
+	const access = opiceAppAccess(required('OPICE_HOSTNAME'))
+
 	if (DRY_RUN) {
 		console.log('DRY RUN — no changes. Would reconcile these Access rules:\n')
-		for (const line of describe()) console.log(line)
+		for (const line of describe(access)) console.log(line)
 		console.log('\n1 app — none pushed (--dry-run).')
 		return
 	}
@@ -77,10 +82,10 @@ async function main(): Promise<void> {
 	console.log(`Reconciling opice's Access rules against ${url} (${authMode})\n`)
 
 	// reconcileAccess (@propustka/client) does the idempotent PUT + both-or-neither token guard.
-	await reconcileAccess({ url, app: opiceAppId, access: opiceAppAccess, accessClientId, accessClientSecret })
+	await reconcileAccess({ url, app: opiceAppId, access, accessClientId, accessClientSecret })
 
-	const cfApps = opiceAppAccess.apps.length
-	const rules = opiceAppAccess.apps.reduce((n, a) => n + a.rules.length, 0)
+	const cfApps = access.apps.length
+	const rules = access.apps.reduce((n, a) => n + a.rules.length, 0)
 	console.log(`✓ ${opiceAppId.padEnd(16)} ${cfApps} CF app(s), ${rules} rule(s)`)
 	console.log('\nDone. Access rules are reconciled (idempotent — non-managed policies untouched).')
 }

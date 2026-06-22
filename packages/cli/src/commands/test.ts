@@ -51,6 +51,22 @@ export async function testCommand(args: string[]): Promise<number> {
 	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
+	// `--report [file]` → a local HTML report (no platform creds). The harness
+	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
+	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
+	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
+	// `bun test` runs one process per file; give them a fresh shared dir to
+	// aggregate into so a multi-file run yields one complete report (the harness
+	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
+	const reportPartsDir = reportFile ? await fs.mkdtemp(path.join(tmpdir(), 'opice-report-')) : undefined
+	// Clear last run's screenshots. The FileReporter writes them beside the report
+	// as `<report>-assets/` (name kept in sync with @opice/harness's assetsDirName)
+	// so a deleted test's old screens don't linger in the new report.
+	if (reportFile) {
+		const assetsDir = path.join(path.dirname(reportFile), path.basename(reportFile).replace(/\.[^.]*$/, '') + '-assets')
+		await fs.rm(assetsDir, { recursive: true, force: true }).catch(() => {})
+	}
+
 	const git = detectGitMeta()
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -64,12 +80,14 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
+		...(reportFile ? { OPICE_REPORT_FILE: reportFile } : {}),
+		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterStrict)
+	const { retries, rest } = extractRetries(afterReport)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -82,6 +100,15 @@ export async function testCommand(args: string[]): Promise<number> {
 	const exitCode = await new Promise<number>((resolve) => {
 		child.on('exit', (code) => resolve(code ?? 1))
 	})
+
+	if (reportFile) {
+		console.log(`[opice] report: ${path.resolve(reportFile)}`)
+	}
+	// The report is fully written (the harness aggregates on every render); the
+	// parts dir is just scratch — clean it up.
+	if (reportPartsDir) {
+		await fs.rm(reportPartsDir, { recursive: true, force: true }).catch(() => {})
+	}
 
 	// After bun test exits, look for handoff files the reporter wrote and
 	// POST /finish for each run so it leaves "running" state.
@@ -104,6 +131,41 @@ export async function testCommand(args: string[]): Promise<number> {
  * forwarded to bun, which only knows `--retry`). Returns the parsed budget and
  * the remaining args. An invalid value is ignored (falls through to config).
  */
+/**
+ * Pull opice's `--report [file]` out of the arg list (it's not a bun flag). The
+ * value is optional — a bare `--report` defaults to `.opice/report.html`. To
+ * avoid swallowing a bun test-file argument (`opice test --report foo.test.ts`),
+ * a following token is only taken as the path when it *looks* like one (ends in
+ * `.html`/`.htm`); otherwise use the explicit `--report=<file>` form. Returns
+ * the resolved file (or undefined when absent) and the remaining args.
+ */
+const DEFAULT_REPORT_FILE = '.opice/report.html'
+function looksLikeReportPath(s: string): boolean {
+	return /\.html?$/i.test(s)
+}
+function extractReport(args: string[]): { reportFile: string | undefined; rest: string[] } {
+	const rest: string[] = []
+	let reportFile: string | undefined
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === undefined) continue
+		if (arg.startsWith('--report=')) {
+			reportFile = arg.slice('--report='.length) || DEFAULT_REPORT_FILE
+		} else if (arg === '--report') {
+			const next = args[i + 1]
+			if (next !== undefined && !next.startsWith('-') && looksLikeReportPath(next)) {
+				reportFile = next
+				i++ // consume the value
+			} else {
+				reportFile = DEFAULT_REPORT_FILE
+			}
+		} else {
+			rest.push(arg)
+		}
+	}
+	return { reportFile, rest }
+}
+
 function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {
 	const rest: string[] = []
 	let retries: number | undefined

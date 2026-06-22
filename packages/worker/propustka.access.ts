@@ -18,36 +18,35 @@ import { opiceAppId } from './propustka.schema'
  * app; for an existing app it preserves the app's own destinations and changes only its policies —
  * so this never re-routes a live app.
  */
-// The opice hostname these Access apps front — REQUIRED, from the OPICE_HOSTNAME deploy var (the same
-// var oblaka.ts binds as the Custom Domain). No hardcoded default: a missing value fails loudly rather
-// than silently reconciling some other account's hostname. WHO the humans are is NOT declared here —
-// propustka owns that centrally (HUMAN_EMAIL_DOMAINS / HUMAN_EMAILS).
-const host = process.env['OPICE_HOSTNAME']
-if (!host) {
-	throw new Error('OPICE_HOSTNAME is not set — provide it for the deploy/reconcile (no hardcoded default).')
-}
-
-export const opiceAppAccess: AppAccess = {
-	apps: [
-		{
-			// Operators in a browser (humans) + machines (the read/ingest service tokens).
-			key: 'operator',
-			name: 'opice-operator',
-			destinations: [host],
-			sessionDuration: '24h',
-			rules: [
-				{ kind: 'service-auth' },
-				{ kind: 'human' },
-			],
-		},
-		{
-			// Public carve-out: the machine API, share links, and the install doc — no Access.
-			key: 'public',
-			name: 'opice-public',
-			destinations: [`${host}/api/v1`, `${host}/s`, `${host}/install.md`],
-			rules: [{ kind: 'public' }],
-		},
-	],
+// `host` is the opice hostname these Access apps front — the caller supplies it (the deploy script
+// reads it from the OPICE_HOSTNAME var, the same one oblaka.ts binds as the Custom Domain). Taking it
+// as a parameter keeps this module a pure, side-effect-free declaration: importing it never touches
+// `process.env` (it ships in the Worker tsconfig graph, which has no node globals) and never throws.
+// The caller fails loudly on a missing host — no hardcoded default reconciles some other account.
+// WHO the humans are is NOT declared here — propustka owns that centrally (HUMAN_EMAIL_DOMAINS / HUMAN_EMAILS).
+export function opiceAppAccess(host: string): AppAccess {
+	return {
+		apps: [
+			{
+				// Operators in a browser (humans) + machines (the read/ingest service tokens).
+				key: 'operator',
+				name: 'opice-operator',
+				destinations: [host],
+				sessionDuration: '24h',
+				rules: [
+					{ kind: 'service-auth' },
+					{ kind: 'human' },
+				],
+			},
+			{
+				// Public carve-out: the machine API, share links, and the install doc — no Access.
+				key: 'public',
+				name: 'opice-public',
+				destinations: [`${host}/api/v1`, `${host}/s`, `${host}/install.md`],
+				rules: [{ kind: 'public' }],
+			},
+		],
+	}
 }
 
 // Re-exported so `scripts/provision-access.ts` reads the id + declaration from one place — the same
