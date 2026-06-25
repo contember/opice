@@ -51,9 +51,17 @@ export async function testCommand(args: string[]): Promise<number> {
 	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
+	// `--select FILE[,FILE...]` (repeatable) → run these scenarios IN ADDITION to
+	// the tier, deduplicated (a selected scenario already within the tier is not
+	// run twice). The harness reads OPICE_SELECT; CLI flag wins over the env var.
+	// Canonical use: a PR runs `--tier critical --select <changed test files>` so a
+	// touched standard/extended scenario runs without the whole suite.
+	const { select: selectFlag, rest: afterSelect } = extractSelect(afterStrict)
+	const select = selectFlag ?? process.env['OPICE_SELECT']
+
 	// `--report [file]` → a local HTML report (no platform creds). The harness
 	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door.
-	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterStrict)
+	const { reportFile: reportFlag, rest: afterReport } = extractReport(afterSelect)
 	const reportFile = reportFlag ?? process.env['OPICE_REPORT_FILE']
 	// `bun test` runs one process per file; give them a fresh shared dir to
 	// aggregate into so a multi-file run yields one complete report (the harness
@@ -79,6 +87,7 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
+		...(select ? { OPICE_SELECT: select } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
 		...(reportFile ? { OPICE_REPORT_FILE: reportFile } : {}),
 		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
@@ -213,6 +222,40 @@ function extractTier(args: string[]): { tier: string | undefined; rest: string[]
 		}
 	}
 	return { tier, rest }
+}
+
+/**
+ * Pull opice's `--select=FILE[,FILE...]` / `--select FILE[,FILE...]` out of the
+ * arg list (it's an opice concept, not a bun flag — passing the files straight to
+ * `bun test` would run ONLY them and lose the tier's always-on core). The flag is
+ * repeatable and each occurrence may carry a comma list; all entries accumulate
+ * into one comma-joined value passed to the harness via OPICE_SELECT. Returns the
+ * joined selection (or undefined when absent) and the remaining args.
+ */
+function extractSelect(args: string[]): { select: string | undefined; rest: string[] } {
+	const rest: string[] = []
+	const entries: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === undefined) continue
+		if (arg.startsWith('--select=')) {
+			entries.push(arg.slice('--select='.length))
+		} else if (arg === '--select') {
+			const next = args[i + 1]
+			if (next !== undefined && !next.startsWith('-')) {
+				entries.push(next)
+				i++ // consume the value
+			}
+		} else {
+			rest.push(arg)
+		}
+	}
+	const joined = entries
+		.flatMap((e) => e.split(','))
+		.map((e) => e.trim())
+		.filter(Boolean)
+		.join(',')
+	return { select: joined || undefined, rest }
 }
 
 /** Returns true if finalizing any run failed (so strict mode can escalate). */

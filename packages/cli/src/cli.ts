@@ -13,7 +13,7 @@ Commands:
       Scaffold opice.config.json in the current project. Pass
       --with-workflow to also drop a .github/workflows/opice.yml.
 
-  test [--retries=N] [--tier=NAME] [--fail-on-report-error] [--report[=FILE]] [bun test args...]
+  test [--retries=N] [--tier=NAME] [--select=FILE[,FILE...]] [--fail-on-report-error] [--report[=FILE]] [bun test args...]
       Wrapper around 'bun test' that exports OPICE_* env vars from
       opice.config.json + git so the harness reporter streams results
       to the platform. All trailing args pass through to bun test.
@@ -26,6 +26,13 @@ Commands:
       standard. Scenarios above it are reported "skipped", not run.
       Falls back to OPICE_TIER, then "tier" in opice.config.json;
       omit to run everything.
+      --select=FILE[,FILE...] (repeatable) runs the named scenarios IN
+      ADDITION to the tier, deduplicated — a scenario already within the
+      tier is not run twice. Use it to run exactly the scenarios a change
+      touched on top of the always-on tier, e.g. on a PR:
+      --tier critical --select "$(git diff --name-only origin/main...HEAD \\
+      -- 'tests/browser/*.test.ts' | paste -sd,)". Falls back to
+      OPICE_SELECT. Paths match shape-tolerantly (repo-relative/absolute).
       --fail-on-report-error exits non-zero if reporting to the platform
       fails (default: reporting is best-effort and never reddens CI).
       Use it so a bad token / unreachable endpoint can't leave CI green
