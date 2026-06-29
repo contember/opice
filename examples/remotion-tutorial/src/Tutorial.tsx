@@ -18,7 +18,7 @@ export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds
 				<Intro name={manifest.scenario} />
 			</Sequence>
 			<Sequence from={introFrames} durationInFrames={videoFrames}>
-				<VideoStage base={base} steps={manifest.steps} width={width} height={height} />
+				<VideoStage base={base} steps={manifest.steps} width={width} height={height} videoDurSec={videoFrames / fps} />
 			</Sequence>
 			<Sequence from={introFrames + videoFrames} durationInFrames={outroFrames}>
 				<Outro />
@@ -27,24 +27,62 @@ export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds
 	)
 }
 
-/** Active-step zoom toward the cursor anchor; scale eases in/out at step edges so
- *  back-to-back steps never jump. Returns origin in % of the frame. */
-function focusAt(tSec: number, steps: VideoStep[], w: number, h: number): { scale: number; ox: number; oy: number } {
-	const ms = tSec * 1000
-	const active = steps.find(
-		(s) => s.cursor && s.cursor.x >= 0 && s.cursor.y >= 0 && ms >= s.tStartMs && ms <= s.tStartMs + s.durationMs,
-	)
-	if (!active?.cursor) return { scale: 1, ox: 50, oy: 50 }
-	const localMs = ms - active.tStartMs
-	const ramp = clamp01(Math.min(localMs / 350, (active.durationMs - localMs) / 350))
-	return { scale: 1 + 0.16 * ramp, ox: (active.cursor.x / w) * 100, oy: (active.cursor.y / h) * 100 }
+const smoothstep = (a: number, b: number, x: number) => {
+	const t = clamp01((x - a) / (b - a))
+	return t * t * (3 - 2 * t)
 }
 
-const VideoStage: React.FC<{ base: string; steps: VideoStep[]; width: number; height: number }> = ({ base, steps, width, height }) => {
+// How much to zoom at most (1 = none). Keep it gentle — a subtle push-in, not a
+// magnifying glass. Record the source at >= the composition size so this stays
+// crisp. Tune here.
+const ZOOM = 0.08
+const EASE_SECONDS = 0.8
+
+/** A calm "camera": a slight, continuously-eased push-in whose focus pans
+ *  smoothly between each step's cursor anchor — no per-step zoom in/out, no
+ *  snapping. Origin is returned in % of the frame. */
+function camera(tSec: number, steps: VideoStep[], w: number, h: number, videoDurSec: number): { scale: number; ox: number; oy: number } {
+	const keys = steps
+		.filter((s) => s.cursor && s.cursor.x >= 0 && s.cursor.y >= 0)
+		.map((s) => ({ t: (s.tStartMs + s.durationMs / 2) / 1000, x: (s.cursor!.x / w) * 100, y: (s.cursor!.y / h) * 100 }))
+
+	let ox = 50
+	let oy = 50
+	if (keys.length === 1) {
+		ox = keys[0].x
+		oy = keys[0].y
+	} else if (keys.length > 1) {
+		const first = keys[0]
+		const last = keys[keys.length - 1]
+		if (tSec <= first.t) {
+			ox = first.x
+			oy = first.y
+		} else if (tSec >= last.t) {
+			ox = last.x
+			oy = last.y
+		} else {
+			for (let i = 0; i < keys.length - 1; i++) {
+				const a = keys[i]
+				const b = keys[i + 1]
+				if (tSec >= a.t && tSec <= b.t) {
+					const e = smoothstep(a.t, b.t, tSec)
+					ox = a.x + (b.x - a.x) * e
+					oy = a.y + (b.y - a.y) * e
+					break
+				}
+			}
+		}
+	}
+	// Ease the push-in at the very start and end so it breathes, otherwise hold.
+	const env = Math.min(smoothstep(0, EASE_SECONDS, tSec), smoothstep(0, EASE_SECONDS, videoDurSec - tSec))
+	return { scale: 1 + ZOOM * env, ox, oy }
+}
+
+const VideoStage: React.FC<{ base: string; steps: VideoStep[]; width: number; height: number; videoDurSec: number }> = ({ base, steps, width, height, videoDurSec }) => {
 	const frame = useCurrentFrame()
 	const { fps } = useVideoConfig()
 	const tSec = frame / fps
-	const focus = focusAt(tSec, steps, width, height)
+	const focus = camera(tSec, steps, width, height, videoDurSec)
 	return (
 		<AbsoluteFill style={{ backgroundColor: '#fff', overflow: 'hidden' }}>
 			<AbsoluteFill style={{ transform: `scale(${focus.scale})`, transformOrigin: `${focus.ox}% ${focus.oy}%` }}>
