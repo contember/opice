@@ -1,0 +1,6 @@
+node_modules/
+out/
+bun.lock
+# Generated recordings (produced by opice; see README to make your own)
+public/*.webm
+public/*.json
