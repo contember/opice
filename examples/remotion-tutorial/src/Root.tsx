@@ -20,8 +20,10 @@ export interface VideoManifest {
 }
 
 export interface TutorialProps {
-	/** Base filename (no extension) of the recording + manifest under `public/`. */
-	base: string
+	/** Base filename (no extension) of the recording + manifest under `public/`.
+	 *  Optional only so `<Composition>` accepts the component (it's always supplied
+	 *  via defaultProps); falls back to `'create-a-site'`. */
+	base?: string
 	/** Max camera push-in toward the active step's cursor. 0 = no zoom (default —
 	 *  a still, full-frame screencast). Try ~0.08 for a subtle follow. */
 	zoom?: number
@@ -47,8 +49,9 @@ export const RemotionRoot: React.FC = () => {
 			height={720}
 			defaultProps={{ base: 'create-a-site', zoom: 0 } satisfies TutorialProps}
 			calculateMetadata={async ({ props }) => {
-				const manifest: VideoManifest = await (await fetch(staticFile(`${props.base}.json`))).json()
-				const meta = await getVideoMetadata(staticFile(`${props.base}.webm`))
+				const base = props.base ?? 'create-a-site'
+				const manifest: VideoManifest = await (await fetch(staticFile(`${base}.json`))).json()
+				const meta = await getVideoMetadata(staticFile(`${base}.webm`))
 				const width = manifest.size?.width ?? meta.width
 				const height = manifest.size?.height ?? meta.height
 				const durationInFrames = Math.ceil((INTRO_SECONDS + meta.durationInSeconds + OUTRO_SECONDS) * FPS)
@@ -57,7 +60,7 @@ export const RemotionRoot: React.FC = () => {
 					fps: FPS,
 					width,
 					height,
-					props: { ...props, manifest, introSeconds: INTRO_SECONDS, outroSeconds: OUTRO_SECONDS },
+					props: { ...props, base, manifest, introSeconds: INTRO_SECONDS, outroSeconds: OUTRO_SECONDS },
 				}
 			}}
 		/>

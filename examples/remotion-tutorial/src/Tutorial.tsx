@@ -5,7 +5,7 @@ const BLUE = '#005ae0'
 const FONT = 'Inter, "SF Pro Display", system-ui, -apple-system, sans-serif'
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
-export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds = 2.4, outroSeconds = 2.4, zoom = 0 }) => {
+export const Tutorial: React.FC<TutorialProps> = ({ base = 'create-a-site', manifest, introSeconds = 2.4, outroSeconds = 2.4, zoom = 0 }) => {
 	const { fps, width, height, durationInFrames } = useVideoConfig()
 	if (!manifest) return null
 	const introFrames = Math.round(introSeconds * fps)
