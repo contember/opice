@@ -22,6 +22,9 @@ export interface VideoManifest {
 export interface TutorialProps {
 	/** Base filename (no extension) of the recording + manifest under `public/`. */
 	base: string
+	/** Max camera push-in toward the active step's cursor. 0 = no zoom (default —
+	 *  a still, full-frame screencast). Try ~0.08 for a subtle follow. */
+	zoom?: number
 	/** Filled in by calculateMetadata. */
 	manifest?: VideoManifest
 	introSeconds?: number
@@ -42,7 +45,7 @@ export const RemotionRoot: React.FC = () => {
 			durationInFrames={300}
 			width={1280}
 			height={720}
-			defaultProps={{ base: 'create-a-site' } satisfies TutorialProps}
+			defaultProps={{ base: 'create-a-site', zoom: 0 } satisfies TutorialProps}
 			calculateMetadata={async ({ props }) => {
 				const manifest: VideoManifest = await (await fetch(staticFile(`${props.base}.json`))).json()
 				const meta = await getVideoMetadata(staticFile(`${props.base}.webm`))

@@ -5,7 +5,7 @@ const BLUE = '#005ae0'
 const FONT = 'Inter, "SF Pro Display", system-ui, -apple-system, sans-serif'
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
-export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds = 2.4, outroSeconds = 2.4 }) => {
+export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds = 2.4, outroSeconds = 2.4, zoom = 0 }) => {
 	const { fps, width, height, durationInFrames } = useVideoConfig()
 	if (!manifest) return null
 	const introFrames = Math.round(introSeconds * fps)
@@ -18,7 +18,7 @@ export const Tutorial: React.FC<TutorialProps> = ({ base, manifest, introSeconds
 				<Intro name={manifest.scenario} />
 			</Sequence>
 			<Sequence from={introFrames} durationInFrames={videoFrames}>
-				<VideoStage base={base} steps={manifest.steps} width={width} height={height} videoDurSec={videoFrames / fps} />
+				<VideoStage base={base} steps={manifest.steps} width={width} height={height} videoDurSec={videoFrames / fps} zoom={zoom} />
 			</Sequence>
 			<Sequence from={introFrames + videoFrames} durationInFrames={outroFrames}>
 				<Outro />
@@ -32,16 +32,12 @@ const smoothstep = (a: number, b: number, x: number) => {
 	return t * t * (3 - 2 * t)
 }
 
-// How much to zoom at most (1 = none). Keep it gentle — a subtle push-in, not a
-// magnifying glass. Record the source at >= the composition size so this stays
-// crisp. Tune here.
-const ZOOM = 0.08
 const EASE_SECONDS = 0.8
 
-/** A calm "camera": a slight, continuously-eased push-in whose focus pans
- *  smoothly between each step's cursor anchor — no per-step zoom in/out, no
- *  snapping. Origin is returned in % of the frame. */
-function camera(tSec: number, steps: VideoStep[], w: number, h: number, videoDurSec: number): { scale: number; ox: number; oy: number } {
+/** A calm "camera": an optional slight, continuously-eased push-in (`zoom`, 0 =
+ *  off) whose focus pans smoothly between each step's cursor anchor — no per-step
+ *  zoom in/out, no snapping. Origin is returned in % of the frame. */
+function camera(tSec: number, steps: VideoStep[], w: number, h: number, videoDurSec: number, zoom: number): { scale: number; ox: number; oy: number } {
 	const keys = steps
 		.filter((s) => s.cursor && s.cursor.x >= 0 && s.cursor.y >= 0)
 		.map((s) => ({ t: (s.tStartMs + s.durationMs / 2) / 1000, x: (s.cursor!.x / w) * 100, y: (s.cursor!.y / h) * 100 }))
@@ -75,19 +71,22 @@ function camera(tSec: number, steps: VideoStep[], w: number, h: number, videoDur
 	}
 	// Ease the push-in at the very start and end so it breathes, otherwise hold.
 	const env = Math.min(smoothstep(0, EASE_SECONDS, tSec), smoothstep(0, EASE_SECONDS, videoDurSec - tSec))
-	return { scale: 1 + ZOOM * env, ox, oy }
+	return { scale: 1 + zoom * env, ox, oy }
 }
 
-const VideoStage: React.FC<{ base: string; steps: VideoStep[]; width: number; height: number; videoDurSec: number }> = ({ base, steps, width, height, videoDurSec }) => {
+const VideoStage: React.FC<{ base: string; steps: VideoStep[]; width: number; height: number; videoDurSec: number; zoom: number }> = ({ base, steps, width, height, videoDurSec, zoom }) => {
 	const frame = useCurrentFrame()
 	const { fps } = useVideoConfig()
 	const tSec = frame / fps
-	const focus = camera(tSec, steps, width, height, videoDurSec)
+	const video = <OffthreadVideo src={staticFile(`${base}.webm`)} />
 	return (
 		<AbsoluteFill style={{ backgroundColor: '#fff', overflow: 'hidden' }}>
-			<AbsoluteFill style={{ transform: `scale(${focus.scale})`, transformOrigin: `${focus.ox}% ${focus.oy}%` }}>
-				<OffthreadVideo src={staticFile(`${base}.webm`)} />
-			</AbsoluteFill>
+			{zoom > 0
+				? (() => {
+					const focus = camera(tSec, steps, width, height, videoDurSec, zoom)
+					return <AbsoluteFill style={{ transform: `scale(${focus.scale})`, transformOrigin: `${focus.ox}% ${focus.oy}%` }}>{video}</AbsoluteFill>
+				})()
+				: video}
 			<Caption steps={steps} tSec={tSec} />
 		</AbsoluteFill>
 	)
