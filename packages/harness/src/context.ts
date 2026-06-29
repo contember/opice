@@ -26,6 +26,31 @@ let page: Page | null = null
 // Filename stem for the current scenario's recording — set by `launchPage` and
 // consumed by `closePage` when it saves the video. Null when video is off.
 let currentVideoLabel: string | null = null
+// Human scenario name + step timeline for the recording's sidecar manifest
+// (consumed by a post-production step — captions, zoom-to-cursor, chapters).
+let currentVideoName: string | null = null
+let videoStartMs = 0
+interface VideoStep {
+	name: string
+	kind: string
+	sequence: number
+	/** Start offset from the first video frame, in ms. */
+	tStartMs: number
+	durationMs: number
+	status: string
+	/** Cursor position (viewport px) at the end of the step — the action's anchor. */
+	cursor?: { x: number; y: number }
+}
+let videoSteps: VideoStep[] = []
+
+/** The recording's sidecar manifest: enough for a post-production layer to add
+ *  captions, chapters and zoom-to-action without re-driving the app. */
+interface VideoManifest {
+	scenario: string
+	video: string
+	size?: { width: number; height: number }
+	steps: VideoStep[]
+}
 
 /** Headed mode for local debugging (`OPICE_HEADED=1` or Playwright's `PWDEBUG`). */
 function headed(): boolean {
@@ -195,8 +220,43 @@ export async function launchPage(label?: string): Promise<Page> {
 	// code runs, so the whole walkthrough (including full navigations) shows it.
 	if (video?.cursor) await context.addInitScript(CURSOR_SCRIPT)
 	currentVideoLabel = video ? slugify(label ?? 'scenario') : null
+	currentVideoName = video ? (label ?? 'scenario') : null
+	videoSteps = []
 	page = await context.newPage()
+	// t=0 reference for the manifest: the recording starts with this page.
+	videoStartMs = Date.now()
 	return page
+}
+
+/**
+ * Record one executed step into the recording's timeline. No-op unless a video
+ * is being recorded. Called from the scenario runner after each step so the
+ * sidecar manifest carries `{ name, start, duration, cursor }` for every step.
+ * The cursor anchor is read from the synthetic cursor element (best-effort — the
+ * page may be mid-navigation).
+ */
+export async function recordVideoStep(s: { name: string; kind: string; sequence: number; startMs: number; durationMs: number; status: string }): Promise<void> {
+	if (!currentVideoLabel || !page) return
+	let cursor: { x: number; y: number } | undefined
+	try {
+		const raw = await page.evaluate(
+			`(() => { const c = document.getElementById('__opice_cursor'); if (!c) return null; const x = parseFloat(c.style.left), y = parseFloat(c.style.top); return (isFinite(x) && isFinite(y)) ? { x, y } : null; })()`,
+		)
+		if (raw && typeof raw === 'object' && 'x' in raw && 'y' in raw) {
+			cursor = { x: Number((raw as { x: unknown }).x), y: Number((raw as { y: unknown }).y) }
+		}
+	} catch {
+		// Page navigating / closed — cursor anchor is optional.
+	}
+	videoSteps.push({
+		name: s.name,
+		kind: s.kind,
+		sequence: s.sequence,
+		tStartMs: Math.max(0, s.startMs - videoStartMs),
+		durationMs: s.durationMs,
+		status: s.status,
+		...(cursor ? { cursor } : {}),
+	})
 }
 
 /**
@@ -210,12 +270,18 @@ export async function closePage(): Promise<string | undefined> {
 	// file only once the context closes, so we save it afterwards.
 	const video = page?.video() ?? null
 	const label = currentVideoLabel
+	const name = currentVideoName
+	const steps = videoSteps
+	const viewport = page?.viewportSize() ?? undefined
 	try {
 		await context?.close()
 	} finally {
 		page = null
 		context = null
 		currentVideoLabel = null
+		currentVideoName = null
+		videoSteps = []
+		videoStartMs = 0
 	}
 	if (!video || !label) return undefined
 	const cfg = videoConfig()
@@ -224,6 +290,14 @@ export async function closePage(): Promise<string | undefined> {
 	try {
 		await fs.mkdir(dir, { recursive: true })
 		await video.saveAs(target)
+		// Sidecar manifest: the step timeline a post-production layer needs.
+		const manifest: VideoManifest = {
+			scenario: name ?? label,
+			video: path.basename(target),
+			...(cfg?.size ?? viewport ? { size: cfg?.size ?? viewport } : {}),
+			steps,
+		}
+		await fs.writeFile(target.replace(/\.webm$/, '.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 		return target
 	} catch (e) {
 		console.warn(`[opice] failed to save video for "${label}" (ignored): ${e instanceof Error ? e.message : String(e)}`)

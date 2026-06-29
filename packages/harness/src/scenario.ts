@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage } from './context.js'
+import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { loadUserSetup } from './setup.js'
@@ -617,6 +617,9 @@ async function runUnit(unit: RunUnit): Promise<void> {
 				screenshotPath,
 			})
 		}
+		// Record into the video manifest (no-op unless OPICE_VIDEO is on). Awaited
+		// so the cursor anchor is read at the step's end, before the next action.
+		await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
 	}
 }
 
