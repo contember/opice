@@ -37,7 +37,33 @@ interface VideoConfig {
 	dir: string
 	/** Recording (and viewport) size; defaults to Playwright's viewport. */
 	size?: { width: number; height: number }
+	/** Draw a synthetic cursor so clicks/moves are followable in the recording. */
+	cursor: boolean
+	/** Per-action delay (ms) so the cursor glides into place before each click. */
+	slowMo: number
 }
+
+// Injected into every page when video + cursor are on. Playwright drives the
+// real OS cursor, which isn't captured in the recording — so a viewer can't see
+// where clicks land. This draws a dot that follows the (real, Playwright-driven)
+// mouse events; the CSS transition + `slowMo` pacing make it glide to each
+// target before the click fires. Pure DOM, no deps, removed automatically when
+// video is off (it's only injected then).
+const CURSOR_SCRIPT = `(() => {
+  const STYLE = 'position:fixed;left:-50px;top:-50px;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;'
+    + 'background:rgba(0,90,224,0.22);border:2px solid #005ae0;box-shadow:0 2px 10px rgba(0,90,224,0.45);'
+    + 'z-index:2147483647;pointer-events:none;transition:left .18s ease-out,top .18s ease-out,transform .1s ease-out';
+  const ensure = () => {
+    let c = document.getElementById('__opice_cursor');
+    if (!c && document.body) { c = document.createElement('div'); c.id = '__opice_cursor'; c.setAttribute('style', STYLE); document.body.appendChild(c); }
+    return c;
+  };
+  const at = (x, y) => { const c = ensure(); if (c) { c.style.left = x + 'px'; c.style.top = y + 'px'; } };
+  document.addEventListener('mousemove', (e) => at(e.clientX, e.clientY), true);
+  document.addEventListener('mousedown', () => { const c = ensure(); if (c) c.style.transform = 'scale(0.65)'; }, true);
+  document.addEventListener('mouseup', () => { const c = ensure(); if (c) c.style.transform = 'scale(1)'; }, true);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensure); else ensure();
+})()`
 
 /**
  * Video recording config, or null when off. Opt-in via `OPICE_VIDEO` — recording
@@ -51,7 +77,20 @@ function videoConfig(): VideoConfig | null {
 	if (!isTruthy(process.env['OPICE_VIDEO'])) return null
 	const dir = process.env['OPICE_VIDEO_DIR'] || 'opice-videos'
 	const size = parseSize(process.env['OPICE_VIDEO_SIZE'])
-	return size ? { dir, size } : { dir }
+	// Cursor on by default (it's what makes a recording followable); opt out with
+	// `OPICE_VIDEO_CURSOR=0`. `OPICE_VIDEO_SLOWMO` paces actions so the cursor
+	// glides before each click (defaults to 120ms; 0 disables pacing).
+	const cursorEnv = process.env['OPICE_VIDEO_CURSOR']
+	const cursor = cursorEnv === undefined ? true : isTruthy(cursorEnv)
+	const slowMo = parsePositiveInt(process.env['OPICE_VIDEO_SLOWMO']) ?? 120
+	return { dir, cursor, slowMo, ...(size ? { size } : {}) }
+}
+
+/** Parse a non-negative integer; undefined if absent/invalid. */
+function parsePositiveInt(raw: string | undefined): number | undefined {
+	if (raw === undefined) return undefined
+	const n = Number(raw)
+	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined
 }
 
 /** Parse a `WIDTHxHEIGHT` string (e.g. `1280x720`); undefined if absent/invalid. */
@@ -115,7 +154,12 @@ export function getContext(): BrowserContext {
 /** Launch the shared browser once; reuse it on subsequent scenarios. */
 async function getBrowser(): Promise<Browser> {
 	if (!browser || !browser.isConnected()) {
-		browser = await chromium.launch({ headless: !headed() })
+		// `slowMo` paces Playwright's actions so the synthetic cursor can glide to
+		// each target before the click. It's per-run (OPICE_VIDEO is process-wide),
+		// so applying it at launch on the shared browser is fine.
+		const video = videoConfig()
+		const slowMo = video && video.slowMo > 0 ? video.slowMo : undefined
+		browser = await chromium.launch({ headless: !headed(), ...(slowMo ? { slowMo } : {}) })
 	}
 	return browser
 }
@@ -147,6 +191,9 @@ export async function launchPage(label?: string): Promise<Page> {
 			}
 			: {},
 	)
+	// Draw the synthetic cursor on every page of this context, before any app
+	// code runs, so the whole walkthrough (including full navigations) shows it.
+	if (video?.cursor) await context.addInitScript(CURSOR_SCRIPT)
 	currentVideoLabel = video ? slugify(label ?? 'scenario') : null
 	page = await context.newPage()
 	return page
