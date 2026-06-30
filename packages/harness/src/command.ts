@@ -1,9 +1,8 @@
-import { existsSync } from 'node:fs'
-import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Locator, Page } from 'playwright'
 import { z } from 'zod'
 import { getPage } from './context.js'
+import { findUserFile } from './find-file.js'
 import { locatorOn } from './element.js'
 
 /**
@@ -95,21 +94,12 @@ function isCommand(value: unknown): value is Command {
 }
 
 /**
- * Locate a repo's `browser-tools.ts` (or `.js`/`.mjs`), walking up from `from`.
- * Returns the absolute path, or null if none is found before the filesystem
- * root or a `package.json` boundary without one above it.
+ * Locate a repo's `browser-tools.ts` (or `.js`/`.mjs`), walking up from `from`
+ * but never above the repository root (see {@link findUserFile} — this file is
+ * imported and executed). Returns the absolute path, or null if none is found.
  */
-export function findUserCommandsFile(from: string = process.cwd()): string | null {
-	let dir = path.resolve(from)
-	for (;;) {
-		for (const name of ['browser-tools.ts', 'browser-tools.js', 'browser-tools.mjs']) {
-			const candidate = path.join(dir, name)
-			if (existsSync(candidate)) return candidate
-		}
-		const parent = path.dirname(dir)
-		if (parent === dir) return null
-		dir = parent
-	}
+export function findUserCommandsFile(from?: string): string | null {
+	return findUserFile(['browser-tools.ts', 'browser-tools.js', 'browser-tools.mjs'], from)
 }
 
 /**

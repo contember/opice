@@ -1,7 +1,5 @@
-import { existsSync } from 'node:fs'
-import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import type { BrowserContext } from 'playwright'
+import { findUserFile, loadUserExport } from './find-file.js'
 
 /**
  * Repo-level browser context setup — the context analog of `browser-tools.ts`.
@@ -24,20 +22,12 @@ import type { BrowserContext } from 'playwright'
 export type BrowserSetup = (context: BrowserContext) => void | Promise<void>
 
 /**
- * Locate a repo's `browser-setup.ts` (or `.js`/`.mjs`), walking up from `from`.
- * Returns the absolute path, or null if none is found before the filesystem root.
+ * Locate a repo's `browser-setup.ts` (or `.js`/`.mjs`), walking up from `from`
+ * but never above the repository root (see {@link findUserFile} — this file is
+ * imported and executed). Returns the absolute path, or null if none is found.
  */
-export function findUserSetupFile(from: string = process.cwd()): string | null {
-	let dir = path.resolve(from)
-	for (;;) {
-		for (const name of ['browser-setup.ts', 'browser-setup.js', 'browser-setup.mjs']) {
-			const candidate = path.join(dir, name)
-			if (existsSync(candidate)) return candidate
-		}
-		const parent = path.dirname(dir)
-		if (parent === dir) return null
-		dir = parent
-	}
+export function findUserSetupFile(from?: string): string | null {
+	return findUserFile(['browser-setup.ts', 'browser-setup.js', 'browser-setup.mjs'], from)
 }
 
 /**
@@ -46,9 +36,6 @@ export function findUserSetupFile(from: string = process.cwd()): string | null {
  * doesn't export a function.
  */
 export async function loadUserSetup(from?: string): Promise<BrowserSetup | null> {
-	const file = findUserSetupFile(from)
-	if (!file) return null
-	const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>
-	const fn = mod['setup'] ?? mod['default']
-	return typeof fn === 'function' ? (fn as BrowserSetup) : null
+	const loaded = await loadUserExport(findUserSetupFile(from), ['setup'])
+	return loaded ? (loaded.fn as BrowserSetup) : null
 }

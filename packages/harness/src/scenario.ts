@@ -63,7 +63,16 @@ export interface BrowserTestMeta {
 	 * preconditions, not prose. e.g. `['initial-data', 'crm-master-data']`.
 	 */
 	seeds?: string[]
-	/** Identities / roles the scenario acts as, e.g. `['crmOperator']`. */
+	/**
+	 * Identities / roles the scenario acts as, e.g. `['member']`. When the repo
+	 * provides a `browser-auth.ts`, each role is resolved to a stored session and
+	 * the context opens already authenticated — so the walkthrough skips the login
+	 * ceremony and starts on its target page. A role the provider maps to an empty
+	 * state (e.g. `'new-user'`) stays logged-out, for scenarios whose subject IS the
+	 * sign-up journey. With no provider present — or for a role the provider returns
+	 * `null`/`undefined` for — roles are pure annotation, so adding a provider never
+	 * breaks scenarios whose `roles` were only ever free-text labels.
+	 */
 	roles?: string[]
 	/**
 	 * One-time scenario setup, run once before the walkthrough (in `beforeAll`) —
@@ -479,14 +488,17 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
  */
 async function openScenario(meta: BrowserTestMeta): Promise<void> {
 	// Pass the scenario name so an opt-in video recording is saved under a
-	// readable, scenario-named file (see OPICE_VIDEO in context.ts).
-	const page = await launchPage(meta.name)
+	// readable, scenario-named file (see OPICE_VIDEO in context.ts). The roles
+	// drive which stored session (if any) seeds the context, so the scenario can
+	// open already authenticated instead of signing in by hand; baseUrl scopes
+	// that session cache per environment.
+	const base = meta.url ?? PLAYGROUND_URL
+	const page = await launchPage(meta.name, { roles: meta.roles, baseUrl: base })
 	// Repo-level context setup (browser-setup.ts) runs before the first
 	// navigation, so an addInitScript it registers fires before the app's own
 	// scripts on first paint.
 	const setup = await loadUserSetup()
 	if (setup) await setup(getContext())
-	const base = meta.url ?? PLAYGROUND_URL
 	const url = meta.hash ? `${base}#${meta.hash}` : base
 	// `domcontentloaded`, not the default `load`: an SPA paints after its JS runs
 	// and may hold `load` on a slow chunk or long-lived connection, so waiting for

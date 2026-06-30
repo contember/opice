@@ -36,6 +36,9 @@ export type { Command, CommandCtx } from './command.js'
 export { loadUserSetup, findUserSetupFile } from './setup.js'
 export type { BrowserSetup } from './setup.js'
 
+export { findUserAuthFile, loadUserAuth, resolveStorageState } from './auth.js'
+export type { AuthResolveContext, BrowserAuth, StorageState } from './auth.js'
+
 // Playwright's web-first `expect` (retrying locator matchers + generic matchers)
 // works under `bun:test`; re-export it so tests use a single `expect`.
 export { expect } from '@playwright/test'
