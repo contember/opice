@@ -49,8 +49,8 @@ test('renders a scenario, its steps, statuses and the summary', async () => {
 	expect(html).toContain('element not found: foo') // error surfaced
 	expect(html).toContain('F-1') // feature tag
 	// Summary: 1 scenario, 0 passed (it failed), 2 steps.
-	expect(html).toContain('<b>1</b> scenario')
-	expect(html).toContain('<b>2</b> steps')
+	expect(html).toContain('>1 scenario<')
+	expect(html).toContain('>2 steps<')
 })
 
 test('keeps only the final attempt’s steps when a flaky scenario retries', async () => {
@@ -68,7 +68,7 @@ test('keeps only the final attempt’s steps when a flaky scenario retries', asy
 	const html = await readReport(report)
 	expect(html).toContain('attempt-1 step')
 	expect(html).not.toContain('attempt-0 step') // earlier attempt dropped
-	expect(html).toContain('flaky ×2') // flaky badge from attempts > 1
+	expect(html).toContain('flaky · 2×') // flaky badge from attempts > 1
 })
 
 test('records a tier-skipped scenario as skipped', async () => {
@@ -113,7 +113,7 @@ test('aggregates scenarios from sibling processes via partsDir', async () => {
 	// clobber the first.
 	expect(html).toContain('Other-file scenario')
 	expect(html).toContain('This-file scenario')
-	expect(html).toContain('<b>2</b> scenarios')
+	expect(html).toContain('>2 scenarios<')
 })
 
 test('escapes HTML in scenario/step text', async () => {
