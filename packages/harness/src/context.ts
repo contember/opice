@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { isTruthy } from './env.js'
+import { slugify } from './slug.js'
 
 /**
  * The live Playwright page for the running scenario.
@@ -111,6 +112,23 @@ function videoConfig(): VideoConfig | null {
 	return { dir, cursor, slowMo, ...(size ? { size } : {}) }
 }
 
+// Warn once per run that a recorded run is NOT a faithful timing replica of a
+// normal run: `slowMo` paces every action and a synthetic cursor is injected into
+// the app, so a timing-sensitive walkthrough can pass while recording yet behave
+// differently in a plain CI run. Recording is for tutorial footage, not for
+// inferring pass/fail timing — say so loudly rather than letting the footage
+// silently misrepresent the suite.
+let warnedRecordingTiming = false
+function warnRecordingTiming(): void {
+	if (warnedRecordingTiming) return
+	warnedRecordingTiming = true
+	console.warn(
+		'[opice] OPICE_VIDEO is on — the run is paced for recording (slowMo) and a synthetic cursor is '
+		+ 'injected into the app under test. A recorded run does NOT have the same timing as a normal run; '
+		+ 'use the footage for tutorials, not to infer timing-sensitive pass/fail behaviour.',
+	)
+}
+
 /** Parse a non-negative integer; undefined if absent/invalid. */
 function parsePositiveInt(raw: string | undefined): number | undefined {
 	if (raw === undefined) return undefined
@@ -125,17 +143,6 @@ function parseSize(raw: string | undefined): { width: number; height: number } |
 	const width = Number(m[1])
 	const height = Number(m[2])
 	return width > 0 && height > 0 ? { width, height } : undefined
-}
-
-/** Turn a scenario name into a safe, readable video filename stem. */
-function slugify(name: string): string {
-	const slug = name
-		.normalize('NFKD')
-		.replace(/[̀-ͯ]/g, '')
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-+|-+$/g, '')
-	return slug || 'scenario'
 }
 
 // Video filename stems already saved this process. Two scenarios whose names
@@ -208,6 +215,7 @@ export async function launchPage(label?: string): Promise<Page> {
 	}
 	const b = await getBrowser()
 	const video = videoConfig()
+	if (video) warnRecordingTiming()
 	context = await b.newContext(
 		video
 			? {
@@ -219,7 +227,7 @@ export async function launchPage(label?: string): Promise<Page> {
 	// Draw the synthetic cursor on every page of this context, before any app
 	// code runs, so the whole walkthrough (including full navigations) shows it.
 	if (video?.cursor) await context.addInitScript(CURSOR_SCRIPT)
-	currentVideoLabel = video ? slugify(label ?? 'scenario') : null
+	currentVideoLabel = video ? slugify(label ?? 'scenario', 'scenario') : null
 	currentVideoName = video ? (label ?? 'scenario') : null
 	videoSteps = []
 	page = await context.newPage()
@@ -287,10 +295,23 @@ export async function closePage(): Promise<string | undefined> {
 	const cfg = videoConfig()
 	const dir = cfg?.dir ?? 'opice-videos'
 	const target = path.join(dir, `${uniqueVideoStem(label)}.webm`)
+	// Saving the .webm is the part that matters — it's what gets uploaded to R2.
+	let saved = false
 	try {
 		await fs.mkdir(dir, { recursive: true })
 		await video.saveAs(target)
-		// Sidecar manifest: the step timeline a post-production layer needs.
+		saved = true
+	} catch (e) {
+		console.warn(`[opice] failed to save video for "${label}" (ignored): ${e instanceof Error ? e.message : String(e)}`)
+	} finally {
+		// Drop the raw hash-named copy under the scratch dir.
+		await video.delete().catch(() => {})
+	}
+	if (!saved) return undefined
+	// The sidecar manifest is a nice-to-have for post-production; a failure to
+	// write it must NOT discard the successfully-saved video (which would skip the
+	// R2 upload and leave the dashboard with no recording for the scenario).
+	try {
 		const manifest: VideoManifest = {
 			scenario: name ?? label,
 			video: path.basename(target),
@@ -298,14 +319,10 @@ export async function closePage(): Promise<string | undefined> {
 			steps,
 		}
 		await fs.writeFile(target.replace(/\.webm$/, '.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-		return target
 	} catch (e) {
-		console.warn(`[opice] failed to save video for "${label}" (ignored): ${e instanceof Error ? e.message : String(e)}`)
-		return undefined
-	} finally {
-		// Drop the raw hash-named copy under the scratch dir.
-		await video.delete().catch(() => {})
+		console.warn(`[opice] saved video for "${label}" but failed to write its manifest (ignored): ${e instanceof Error ? e.message : String(e)}`)
 	}
+	return target
 }
 
 // Graceful shutdown of the shared browser when the test process winds down. If
