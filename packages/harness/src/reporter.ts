@@ -19,11 +19,18 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
+import { isTruthy } from './env.js'
 import { FileReporter } from './file-reporter.js'
 import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
 const REQUEST_TIMEOUT_MS = 10_000
+/**
+ * Longer cap for a video PUT — a walkthrough webm is megabytes, not the few KB of
+ * a step screenshot, so it needs more headroom than {@link REQUEST_TIMEOUT_MS}.
+ * Still bounded so a stalled upload can't hang the scenario's afterAll forever.
+ */
+const VIDEO_REQUEST_TIMEOUT_MS = 30_000
 /** Total cap on `flush()` waiting for pending step uploads (afterAll-bounded). */
 const FLUSH_BUDGET_MS = 15_000
 /**
@@ -133,6 +140,12 @@ export interface ScenarioSkip extends ScenarioStart {
 	reason?: string
 }
 
+export interface VideoUpload {
+	scenarioId: string
+	/** Local path to the saved `.webm` (from the harness context, OPICE_VIDEO). */
+	filePath: string
+}
+
 export interface ScenarioFinish {
 	scenarioId: string
 	status: 'passed' | 'failed'
@@ -149,6 +162,13 @@ export interface Reporter {
 	/** Record a scenario the tier filter skipped (created already-finished as `skipped`). */
 	skipScenario(input: ScenarioSkip): Promise<void>
 	recordStep(event: StepEvent): Promise<void>
+	/**
+	 * Upload a scenario's walkthrough video (opt-in, OPICE_VIDEO) to the platform.
+	 * Best-effort like a screenshot — a failure is logged but never fails the run
+	 * (it doesn't count toward {@link hadFailures}). No-op unless reporting to the
+	 * platform.
+	 */
+	uploadVideo(input: VideoUpload): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
 	/**
@@ -165,6 +185,7 @@ class NoopReporter implements Reporter {
 	}
 	async skipScenario(_input: ScenarioSkip): Promise<void> {}
 	async recordStep(_event: StepEvent): Promise<void> {}
+	async uploadVideo(_input: VideoUpload): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
 	hadFailures(): boolean {
@@ -298,6 +319,62 @@ class HttpReporter implements Reporter {
 		// failure (the step is there), so it doesn't touch the strict-mode count.
 		if (screenshot && result['screenshotFailed'] === true) {
 			console.error(`[opice] screenshot upload failed for step "${event.name}" — the step was recorded without it (transient storage error).`)
+		}
+	}
+
+	/**
+	 * Stream a scenario's walkthrough video to the platform as a binary PUT (it
+	 * doesn't fit the JSON-body shape `fetch` uses for every other call). Awaited
+	 * inline by the harness before the scenario finishes — there's at most one per
+	 * scenario, and a fire-and-forget upload could be cut off when the test process
+	 * exits. Best-effort: any failure (missing file, R2 hiccup, auth) is logged and
+	 * swallowed — a dropped video must never fail the run, so it does NOT touch the
+	 * strict-mode failure count.
+	 */
+	async uploadVideo(input: VideoUpload): Promise<void> {
+		// Resolve the run id first (cheap — it's memoized once the first scenario
+		// started) so we don't hold the whole video buffer in memory across the
+		// run-start round-trip. A rejected run-start is swallowed: no run ⇒ nothing
+		// to attach the video to, but it must never throw out of this best-effort path.
+		const runId = await this.ensureRun().catch(() => undefined)
+		if (!runId) return
+		let body: Blob
+		try {
+			// `fs.readFile` returns a Node Buffer, which Blob accepts directly — no
+			// intermediate Uint8Array copy (Blob copies the part into its own storage
+			// once regardless).
+			body = new Blob([await fs.readFile(input.filePath)], { type: 'video/webm' })
+		} catch (err) {
+			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath} (${err instanceof Error ? err.message : String(err)})`)
+			return
+		}
+		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`
+		try {
+			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`, {
+				method: 'PUT',
+				headers: {
+					'cf-access-client-id': this.config.clientId,
+					'cf-access-client-secret': this.config.clientSecret,
+					'content-type': 'video/webm',
+				},
+				body,
+				redirect: 'manual',
+				signal: AbortSignal.timeout(VIDEO_REQUEST_TIMEOUT_MS),
+			})
+			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the video was NOT uploaded (service token rejected at the edge).`)
+				return
+			}
+			if (!response.ok) {
+				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the video was NOT uploaded.`)
+				return
+			}
+			const data = (await response.json().catch(() => null)) as { videoFailed?: boolean } | null
+			if (data?.videoFailed) {
+				console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
+			}
+		} catch (err) {
+			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the video was NOT uploaded.`)
 		}
 	}
 
@@ -491,12 +568,6 @@ export function getReporter(): Reporter {
 
 export function setReporter(reporter: Reporter): void {
 	active = reporter
-}
-
-function isTruthy(value: string | undefined): boolean {
-	if (!value) return false
-	const v = value.toLowerCase()
-	return v === '1' || v === 'true' || v === 'yes' || v === 'on'
 }
 
 /**

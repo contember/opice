@@ -107,8 +107,11 @@ export function capCanListRuns(cap: Capability, slug: string): boolean {
 	return cap.can('report.read', `project:${slug}`)
 }
 
-/** May this capability read a screenshot R2 key (`<slug>/<runId>/...`)? */
-export function capCanReadScreenshotKey(cap: Capability, key: string): boolean {
+/**
+ * May this capability read a run-asset R2 key (`<slug>/<runId>/...`)? Guards both
+ * step screenshots and scenario videos — they share the bucket + key namespace.
+ */
+export function capCanReadAssetKey(cap: Capability, key: string): boolean {
 	const [slug = '', runId = ''] = key.split('/')
 	return slug !== '' && runId !== '' && capCanReadRun(cap, slug, runId)
 }

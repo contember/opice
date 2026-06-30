@@ -1417,6 +1417,18 @@ main.wide { max-width: 1360px; }
 .s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
 .s-meta .meta-chip.tier::before { content: 'tier '; color: var(--text-faint); }
 
+/* Scenario walkthrough video (opt-in OPICE_VIDEO) — a tutorial-grade recording
+   of the whole walkthrough, shown above the step list. */
+.s-video { padding: 8px 16px 4px; }
+.s-video-player {
+	width: 100%;
+	max-height: 420px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: #000;
+	display: block;
+}
+
 /* Why a scenario didn't run (tier filter). Stands in for the step list, which a
  * skipped scenario never produced. */
 .wb-skip-note {

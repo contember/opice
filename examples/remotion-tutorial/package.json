@@ -1,0 +1,21 @@
+{
+	"name": "opice-remotion-tutorial",
+	"private": true,
+	"version": "0.0.0",
+	"description": "Post-production template: turn an opice recording + manifest into a captioned, zoom-to-cursor tutorial video. Standalone (not part of the opice workspace) so the Remotion dependency + license stay opt-in.",
+	"scripts": {
+		"studio": "remotion studio",
+		"render": "remotion render Tutorial"
+	},
+	"dependencies": {
+		"@remotion/cli": "4.0.484",
+		"@remotion/media-utils": "4.0.484",
+		"react": "18.3.1",
+		"react-dom": "18.3.1",
+		"remotion": "4.0.484"
+	},
+	"devDependencies": {
+		"@types/react": "18.3.12",
+		"typescript": "5.6.3"
+	}
+}

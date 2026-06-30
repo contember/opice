@@ -16,8 +16,10 @@ CF Worker + one D1 database + R2. Ingests test runs (reporter writes) and serves
 ## Request routing (`src/index.ts` → `route()`)
 One `fetch` handler dispatches by path prefix:
 - `/__dev/login?as=<email>` → DEV-only operator persona switch (sets the FakeIamClient cookie); 404 off-local
-- **PUBLIC (Access bypass):** `/s/rpc` → read-only share RPC (`shareRouter`); `/s/screenshots/*` → capability-checked R2 proxy; `/s/*` → share SPA shell (`?token=`→cookie exchange); `/install.md`
-- **BEHIND ACCESS:** `/api/v1/<slug>/*` → the machine API (`handleApi` — service-token principal; POST/PATCH ingest writes + GET reads for `opice failures`/agent); `/rpc` → operator RPC (`appRouter`); `/screenshots/*` → operator R2 proxy; everything else → operator SPA shell
+- **PUBLIC (Access bypass):** `/s/rpc` → read-only share RPC (`shareRouter`); `/s/screenshots/*` + `/s/videos/*` → capability-checked R2 proxy; `/s/*` → share SPA shell (`?token=`→cookie exchange); `/install.md`
+- **BEHIND ACCESS:** `/api/v1/<slug>/*` → the machine API (`handleApi` — service-token principal; POST/PATCH ingest writes incl. `PUT …/scenarios/<id>/video`, + GET reads for `opice failures`/agent); `/rpc` → operator RPC (`appRouter`); `/screenshots/*` + `/videos/*` → operator R2 proxy; everything else → operator SPA shell
+
+Screenshots (per-step PNGs) and scenario walkthrough videos (opt-in `OPICE_VIDEO`, one webm per scenario) share the **one** `SCREENSHOTS` R2 bucket and the `<slug>/<runId>/...` key namespace, so the same scope checks (`capCanReadAssetKey`, the machine read's leading-slug match) guard both — they differ only by content-type. Ingest: a step screenshot rides inline (base64) in the step POST; a video is a separate binary `PUT` streamed to R2 (`uploadVideo` in `routes/ingest.ts`). Both are best-effort — a dropped asset never reds the run. `scenarios.video_r2_key` (migration 0011) holds the key; the RPC maps it to a `videoUrl` (operator `/videos/…`, share `/s/videos/…`, machine `/api/v1/<slug>/videos/…`).
 
 `scheduled()` cron (every 5 min) reaps runs abandoned mid-flight so they stop reading as "running". Reads also compute `incomplete` lazily (`STALE_RUN_MS` in `db.ts`) so local/lopata — where cron may not fire — stays correct.
 

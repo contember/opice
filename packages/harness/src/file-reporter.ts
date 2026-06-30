@@ -25,7 +25,7 @@
  */
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { Reporter, ScenarioFinish, ScenarioSkip, ScenarioStart, StepEvent } from './reporter.js'
+import type { Reporter, ScenarioFinish, ScenarioSkip, ScenarioStart, StepEvent, VideoUpload } from './reporter.js'
 
 type StepRecord = {
 	sequence: number
@@ -157,6 +157,13 @@ export class FileReporter implements Reporter {
 		})
 		await this.write()
 	}
+
+	/**
+	 * No-op: the local HTML report doesn't embed video. The harness still saves the
+	 * `.webm` to disk (OPICE_VIDEO_DIR) — only the platform reporter ships it to R2
+	 * for the dashboard's player.
+	 */
+	async uploadVideo(_input: VideoUpload): Promise<void> {}
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {
 		const scenario = this.scenarios.get(input.scenarioId)

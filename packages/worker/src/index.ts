@@ -4,7 +4,7 @@ import { handleDashboard } from './routes/dashboard'
 import { handleApi } from './routes/ingest'
 import { handleInstallMd } from './routes/install'
 import { handleRpc } from './routes/rpc'
-import { handleScreenshot } from './routes/screenshots'
+import { handleScreenshot, handleVideo } from './routes/screenshots'
 import { handleShare } from './routes/share'
 import { buildServices, type Services } from './services'
 
@@ -61,6 +61,9 @@ async function route(request: Request, services: Services): Promise<Response> {
 	}
 	if (path.startsWith('/screenshots/')) {
 		return handleScreenshot(request, services, path.slice('/screenshots/'.length))
+	}
+	if (path.startsWith('/videos/')) {
+		return handleVideo(request, services, path.slice('/videos/'.length))
 	}
 	// The operator dashboard SPA shell.
 	return handleDashboard(request, services)

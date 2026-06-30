@@ -99,6 +99,7 @@ interface ScenarioRow {
 	finished_at: number | null
 	skipped_at: number | null
 	skip_reason: string | null
+	video_r2_key: string | null
 	// Computed per read: 1 when the scenario carries a tolerated fixme step /
 	// a pending step. Absent on `SELECT *` reads where the state doesn't matter.
 	has_warning?: number
@@ -209,6 +210,7 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	roles: parseStringArray(r.roles),
 	tier: r.tier,
 	skipReason: r.skip_reason,
+	videoKey: r.video_r2_key,
 	// Display status: a skipped scenario (tier filter) wins — it never ran, so no
 	// step overlay applies. Otherwise overlay a passed scenario, in priority
 	// order: a pending step → 'incomplete'; else a tolerated fixme step → 'warning'.
@@ -650,6 +652,14 @@ export class Db {
 		await this.d1
 			.prepare('UPDATE steps SET screenshot_r2_key = ? WHERE id = ?')
 			.bind(key, stepId)
+			.run()
+	}
+
+	/** Point a scenario at its uploaded walkthrough video (R2 key). See ingest `uploadVideo`. */
+	async attachVideo(scenarioId: string, key: string): Promise<void> {
+		await this.d1
+			.prepare('UPDATE scenarios SET video_r2_key = ? WHERE id = ?')
+			.bind(key, scenarioId)
 			.run()
 	}
 

@@ -1,0 +1,68 @@
+import { getVideoMetadata } from '@remotion/media-utils'
+import { Composition, staticFile } from 'remotion'
+import { Tutorial } from './Tutorial'
+
+export interface VideoStep {
+	name: string
+	kind: string
+	sequence: number
+	tStartMs: number
+	durationMs: number
+	status: string
+	cursor?: { x: number; y: number }
+}
+
+export interface VideoManifest {
+	scenario: string
+	video: string
+	size?: { width: number; height: number }
+	steps: VideoStep[]
+}
+
+export interface TutorialProps {
+	/** Base filename (no extension) of the recording + manifest under `public/`.
+	 *  Optional only so `<Composition>` accepts the component (it's always supplied
+	 *  via defaultProps); falls back to `'create-a-site'`. */
+	base?: string
+	/** Max camera push-in toward the active step's cursor. 0 = no zoom (default —
+	 *  a still, full-frame screencast). Try ~0.08 for a subtle follow. */
+	zoom?: number
+	/** Filled in by calculateMetadata. */
+	manifest?: VideoManifest
+	introSeconds?: number
+	outroSeconds?: number
+}
+
+const FPS = 30
+const INTRO_SECONDS = 2.4
+const OUTRO_SECONDS = 2.4
+
+export const RemotionRoot: React.FC = () => {
+	return (
+		<Composition
+			id="Tutorial"
+			component={Tutorial}
+			fps={FPS}
+			// Sensible fallbacks; calculateMetadata overrides from the manifest/video.
+			durationInFrames={300}
+			width={1280}
+			height={720}
+			defaultProps={{ base: 'create-a-site', zoom: 0 } satisfies TutorialProps}
+			calculateMetadata={async ({ props }) => {
+				const base = props.base ?? 'create-a-site'
+				const manifest: VideoManifest = await (await fetch(staticFile(`${base}.json`))).json()
+				const meta = await getVideoMetadata(staticFile(`${base}.webm`))
+				const width = manifest.size?.width ?? meta.width
+				const height = manifest.size?.height ?? meta.height
+				const durationInFrames = Math.ceil((INTRO_SECONDS + meta.durationInSeconds + OUTRO_SECONDS) * FPS)
+				return {
+					durationInFrames,
+					fps: FPS,
+					width,
+					height,
+					props: { ...props, base, manifest, introSeconds: INTRO_SECONDS, outroSeconds: OUTRO_SECONDS },
+				}
+			}}
+		/>
+	)
+}

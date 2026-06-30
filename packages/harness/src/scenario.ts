@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage } from './context.js'
+import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { decideScenarioRun, parseSelectList } from './select.js'
@@ -322,11 +322,21 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		}, 30_000)
 
 		afterAll(async () => {
+			let videoPath: string | undefined
 			try {
-				await closePage()
+				videoPath = await closePage()
 			} catch {
 				// ignore close errors
 			}
+			// Ship the scenario's walkthrough video (opt-in, OPICE_VIDEO) to the
+			// platform. KICK IT OFF now but don't await yet — the PUT is independent
+			// of the step/screenshot uploads flush() drains, so they should overlap
+			// rather than run back-to-back. It's awaited together with flush() below
+			// (still before the process can exit). Best-effort: uploadVideo swallows
+			// its own failures, so this promise never rejects.
+			const videoUpload = videoPath && currentScenarioId
+				? reporter.uploadVideo({ scenarioId: currentScenarioId, filePath: videoPath })
+				: Promise.resolve()
 			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the
 			// browser is closed; a failure is logged but never reds an otherwise-green
 			// run (cleanup is hygiene, not an assertion).
@@ -355,12 +365,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				)
 			}
 			if (currentScenarioId) {
-				// Drain pending step records (incl. their screenshot uploads)
-				// before marking the scenario done. step() fires recordStep
-				// fire-and-forget; the test process would otherwise exit while
-				// those requests were still in flight.
+				// Drain pending step records (incl. their screenshot uploads) AND the
+				// scenario's video upload before marking the scenario done. step() fires
+				// recordStep fire-and-forget and the video PUT was kicked off above; the
+				// test process would otherwise exit while those requests were still in
+				// flight. Both run concurrently — they share no ordering dependency.
 				try {
-					await reporter.flush()
+					await Promise.all([reporter.flush(), videoUpload])
 				} catch {
 					// best-effort
 				}
@@ -387,7 +398,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					+ `See the [opice] reporter error(s) above for the cause.`,
 				)
 			}
-		}, 30_000)
+			// Budget covers the slowest teardown path: the video upload (its own ~30s
+			// cap) and flush (~15s) run concurrently, so worst case is ~max(30s, 15s)
+			// plus teardown — comfortably inside this. Each returns as soon as its work
+			// is done, so the normal path costs nothing; the headroom just keeps a slow
+			// best-effort video PUT from tripping the hook timeout and redding an
+			// otherwise-green scenario.
+		}, 60_000)
 
 		if (isBody) {
 			const body = fn as () => Promise<void>
@@ -461,7 +478,9 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
  * this again (a retry attempt) tears down the failed attempt's page cleanly.
  */
 async function openScenario(meta: BrowserTestMeta): Promise<void> {
-	const page = await launchPage()
+	// Pass the scenario name so an opt-in video recording is saved under a
+	// readable, scenario-named file (see OPICE_VIDEO in context.ts).
+	const page = await launchPage(meta.name)
 	// Repo-level context setup (browser-setup.ts) runs before the first
 	// navigation, so an addInitScript it registers fires before the app's own
 	// scripts on first paint.
@@ -633,6 +652,9 @@ async function runUnit(unit: RunUnit): Promise<void> {
 				screenshotPath,
 			})
 		}
+		// Record into the video manifest (no-op unless OPICE_VIDEO is on). Awaited
+		// so the cursor anchor is read at the step's end, before the next action.
+		await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
 	}
 }
 

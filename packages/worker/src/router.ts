@@ -1,5 +1,6 @@
 import type { AuthContext, IssueCapabilityRequest } from '@propustka/client'
 import { z } from 'zod'
+import { withVideoUrl } from './asset-url'
 import {
 	opCanReadAll,
 	opCanReadProject,
@@ -91,6 +92,8 @@ export const ScenarioSchema = z.object({
 	attempts: z.number(),
 	startedAt: z.number(),
 	finishedAt: z.number().nullable(),
+	/** URL of the scenario's walkthrough video (opt-in OPICE_VIDEO), or null. */
+	videoUrl: z.string().nullable(),
 })
 
 export const StepSchema = z.object({
@@ -263,7 +266,7 @@ const runs = rpc.router({
 			if (!run) notFound(`Run not found: ${input.runId}`)
 			const slug = await projectSlugForRun(ctx.services, run.projectId)
 			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
-			return ctx.services.db.listScenariosForRun(input.runId)
+			return withVideoUrl(await ctx.services.db.listScenariosForRun(input.runId), '/videos')
 		}),
 })
 

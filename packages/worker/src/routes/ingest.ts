@@ -1,4 +1,5 @@
-import { badRequest, json, notFound, readJson, unauthorized } from '../http'
+import { withVideoUrl } from '../asset-url'
+import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
 import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
@@ -74,6 +75,9 @@ async function handleWrite(request: Request, services: Services, project: Projec
 		if (request.method === 'POST' && path[2] === 'scenarios' && path[3] && path[4] === 'steps' && path.length === 5) {
 			return createStep(request, services, project, runId, path[3])
 		}
+		if (request.method === 'PUT' && path[2] === 'scenarios' && path[3] && path[4] === 'video' && path.length === 5) {
+			return uploadVideo(request, services, project, runId, path[3])
+		}
 		if (request.method === 'POST' && path[2] === 'finish' && path.length === 3) {
 			await services.db.finishRun(runId)
 			return json({ ok: true })
@@ -90,6 +94,7 @@ async function handleWrite(request: Request, services: Services, project: Projec
  *   GET runs/<runId>/scenarios        → its scenarios
  *   GET scenarios/<scenarioId>/steps  → a scenario's steps
  *   GET screenshots/<key...>          → a screenshot (R2 proxy)
+ *   GET videos/<key...>               → a scenario walkthrough video (R2 proxy)
  */
 async function handleRead(services: Services, project: Project, path: string[]): Promise<Response> {
 	if (path[0] === 'runs' && path[1]) {
@@ -101,7 +106,8 @@ async function handleRead(services: Services, project: Project, path: string[]):
 			return json(run)
 		}
 		if (path[2] === 'scenarios' && path.length === 3) {
-			return json(await services.db.listScenariosForRun(run.id))
+			const scenarios = await services.db.listScenariosForRun(run.id)
+			return json(withVideoUrl(scenarios, `/api/v1/${project.slug}/videos`))
 		}
 	}
 
@@ -119,27 +125,26 @@ async function handleRead(services: Services, project: Project, path: string[]):
 	}
 
 	if (path[0] === 'screenshots' && path.length > 1) {
-		return readScreenshot(services, project, path.slice(1).join('/'))
+		return readAsset(services, project, path.slice(1).join('/'), 'image/png')
+	}
+	if (path[0] === 'videos' && path.length > 1) {
+		return readAsset(services, project, path.slice(1).join('/'), 'video/webm')
 	}
 
 	return notFound()
 }
 
-async function readScreenshot(services: Services, project: Project, key: string): Promise<Response> {
-	// The R2 key is `<slug>/<runId>/...`; a read token may only fetch its own project's keys.
+/**
+ * Stream a run asset (`<slug>/<runId>/...`) from the run-assets bucket to a
+ * machine reader (agent read DSN / `opice failures`). Serves both step
+ * screenshots and scenario videos. A read token may only fetch keys in its own
+ * project (the key's leading slug must match); the body is served by `serveR2Asset`.
+ */
+async function readAsset(services: Services, project: Project, key: string, fallbackType: string): Promise<Response> {
 	if ((key.split('/')[0] ?? '') !== project.slug) {
 		return notFound()
 	}
-	const obj = await services.screenshots.get(key)
-	if (!obj) {
-		return notFound()
-	}
-	return new Response(obj.body, {
-		headers: {
-			'content-type': obj.httpMetadata?.contentType ?? 'image/png',
-			'cache-control': 'public, max-age=3600',
-		},
-	})
+	return serveR2Asset(services.runAssets, key, fallbackType)
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
@@ -254,7 +259,7 @@ async function createStep(
 		// over a flaky screenshot). Decoding is inside the try for the same reason.
 		try {
 			const bytes = base64ToBytes(body.screenshot)
-			await putWithRetry(services.screenshots, key, bytes, { httpMetadata: { contentType: 'image/png' } })
+			await putWithRetry(services.runAssets, key, bytes, { httpMetadata: { contentType: 'image/png' } })
 			await services.db.attachScreenshot(stepId, key)
 		} catch (err) {
 			screenshotFailed = true
@@ -272,6 +277,57 @@ async function createStep(
 	// `screenshotFailed` lets the runner surface the dropped screenshot in the run
 	// log without making it a reporting failure (the step itself was recorded).
 	return json({ stepId, screenshotFailed })
+}
+
+/**
+ * Largest video body we'll buffer + store. A walkthrough webm is normally a few
+ * MB; this guards the Worker's memory against a pathological upload (we buffer
+ * the whole body so `putWithRetry` can re-send it on a transient R2 error).
+ */
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024
+
+/**
+ * Receive a scenario's walkthrough video (opt-in, `OPICE_VIDEO`) as a binary PUT
+ * and store it in the shared run-assets bucket under `<slug>/<runId>/...`. The
+ * video is non-essential telemetry, exactly like a step screenshot: the scenario
+ * row already exists, so a *storage* failure is logged and reported as
+ * `{ videoFailed: true }` (HTTP 200) rather than 500-ing — which, under the
+ * reporter's strict mode, would fail the CI run over a dropped video. A malformed
+ * request (empty or over-size body) is a genuine 400, not a storage failure; the
+ * reporter treats any non-2xx as best-effort and never reds the run either way.
+ */
+async function uploadVideo(
+	request: Request,
+	services: Services,
+	project: Project,
+	runId: string,
+	scenarioId: string,
+): Promise<Response> {
+	const scenario = await services.db.getScenario(scenarioId)
+	if (!scenario || scenario.runId !== runId) {
+		return notFound('scenario not found')
+	}
+	// Reject an over-size body up front when the length is declared, before buffering.
+	const declared = Number(request.headers.get('content-length') ?? '')
+	if (Number.isFinite(declared) && declared > MAX_VIDEO_BYTES) {
+		return badRequest(`video too large (${declared} bytes > ${MAX_VIDEO_BYTES})`)
+	}
+	const buffer = await request.arrayBuffer()
+	if (buffer.byteLength === 0) {
+		return badRequest('empty video body')
+	}
+	if (buffer.byteLength > MAX_VIDEO_BYTES) {
+		return badRequest(`video too large (${buffer.byteLength} bytes > ${MAX_VIDEO_BYTES})`)
+	}
+	const key = `${project.slug}/${runId}/video-${scenarioId}.webm`
+	try {
+		await putWithRetry(services.runAssets, key, new Uint8Array(buffer), { httpMetadata: { contentType: 'video/webm' } })
+		await services.db.attachVideo(scenarioId, key)
+	} catch (err) {
+		console.error(`video upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+		return json({ videoFailed: true })
+	}
+	return json({ ok: true, videoKey: key })
 }
 
 /**
