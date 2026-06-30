@@ -192,8 +192,15 @@ function mergeStates(entries: Array<{ role: string; state: StorageState }>): Sto
 	if (entries.length === 1) return entries[0]!.state
 
 	const cookies = new Map<string, { role: string; cookie: Cookie }>()
-	// origin → (localStorage name → { role, value })
-	const origins = new Map<string, Map<string, { role: string; item: Origin['localStorage'][number] }>>()
+	// origin → its merged state. `extra` carries every per-origin field OTHER than
+	// localStorage — notably Playwright's `indexedDB`, which is absent from the
+	// public storageState() type but present at runtime when a provider captures it
+	// with `storageState({ indexedDB: true })` (auth libraries like Firebase keep
+	// the session there). Rebuilding origins as a bare `{ origin, localStorage }`
+	// would silently drop it, breaking IndexedDB-backed sessions; we preserve it by
+	// shallow-merging the non-localStorage fields last-wins, so a later role that
+	// contributes only localStorage can't clobber an earlier role's indexedDB.
+	const origins = new Map<string, { extra: Record<string, unknown>; byName: Map<string, { role: string; item: Origin['localStorage'][number] }> }>()
 
 	for (const { role, state } of entries) {
 		for (const c of state.cookies ?? []) {
@@ -205,27 +212,33 @@ function mergeStates(entries: Array<{ role: string; state: StorageState }>): Sto
 			cookies.set(key, { role, cookie: c })
 		}
 		for (const o of state.origins ?? []) {
-			let byName = origins.get(o.origin)
-			if (!byName) {
-				byName = new Map()
-				origins.set(o.origin, byName)
+			let entry = origins.get(o.origin)
+			if (!entry) {
+				entry = { extra: {}, byName: new Map() }
+				origins.set(o.origin, entry)
 			}
-			for (const item of o.localStorage ?? []) {
-				const prev = byName.get(item.name)
+			// Accumulate every field except localStorage (which we union below);
+			// later contributors override earlier ones field-by-field, but an
+			// omitted field never erases a value an earlier role supplied.
+			const { localStorage, ...rest } = o as Origin & Record<string, unknown>
+			Object.assign(entry.extra, rest)
+			for (const item of localStorage ?? []) {
+				const prev = entry.byName.get(item.name)
 				if (prev && prev.role !== role && prev.item.value !== item.value) {
 					reportIdentityConflict('localStorage key', prev.role, role, item.name, o.origin)
 				}
-				byName.set(item.name, { role, item })
+				entry.byName.set(item.name, { role, item })
 			}
 		}
 	}
 
 	return {
 		cookies: [...cookies.values()].map(v => v.cookie),
-		origins: [...origins.entries()].map(([origin, byName]) => ({
+		origins: [...origins.entries()].map(([origin, entry]) => ({
+			...entry.extra,
 			origin,
-			localStorage: [...byName.values()].map(v => v.item),
-		})),
+			localStorage: [...entry.byName.values()].map(v => v.item),
+		})) as StorageState['origins'],
 	}
 }
 

@@ -122,6 +122,11 @@ async function writeRichProvider(): Promise<void> {
 	// — a legitimate union, not a conflict.
 	const ls = (name: string, value: string) =>
 		`{ cookies: [], origins: [{ origin: 'http://localhost', localStorage: [{ name: '${name}', value: '${value}' }] }] }`
+	// An origin carrying Playwright's runtime-only `indexedDB` field (absent from
+	// the public storageState() type) — how auth libraries like Firebase persist a
+	// session. The merge must not drop it.
+	const idb =
+		`{ cookies: [], origins: [{ origin: 'http://localhost', localStorage: [{ name: 'fb_marker', value: '1' }], indexedDB: [{ name: 'firebaseLocalStorageDb', version: 1 }] }] }`
 	const code = `
 export async function authenticate(role, ctx) {
 	if (role === 'label-only') return undefined         // not an auth role → annotation
@@ -129,6 +134,7 @@ export async function authenticate(role, ctx) {
 	if (role === 'seller') return ${cookie('seller')}   // same cookie name, different value
 	if (role === 'flags') return ${ls('feature_flags', '1')}
 	if (role === 'tenant') return ${ls('tenant_ctx', 'acme')}  // same origin, different key
+	if (role === 'idb') return ${idb}                   // origin carries indexedDB
 	if (role === 'rotating') {
 		// Refresh by MUTATING the cached object in place and returning the same ref.
 		if (ctx.cached) { ctx.cached.cookies[0].value = 'v2'; return ctx.cached }
@@ -187,6 +193,19 @@ test('disjoint localStorage keys on the same origin union cleanly (no false conf
 	const keys = (origin?.localStorage ?? []).map(e => e.name).sort()
 	expect(keys).toEqual(['feature_flags', 'tenant_ctx'])
 	expect(warnings.join('\n')).toBe('') // no conflict — disjoint keys merge
+})
+
+test('merging an indexedDB-backed role with another role preserves the indexedDB data', async () => {
+	await writeRichProvider()
+	// 'idb' brings an IndexedDB-backed session on http://localhost; 'flags' brings
+	// only localStorage on the same origin. The union must keep BOTH the merged
+	// localStorage and the indexedDB field (a naive rebuild would drop the latter).
+	const state = await resolveStorageState(['idb', 'flags'], browser, dir)
+	const origin = state?.origins?.find(o => o.origin === 'http://localhost') as
+		| (StorageState['origins'][number] & { indexedDB?: Array<{ name: string }> })
+		| undefined
+	expect((origin?.localStorage ?? []).map(e => e.name).sort()).toEqual(['fb_marker', 'feature_flags'])
+	expect(origin?.indexedDB?.[0]?.name).toBe('firebaseLocalStorageDb')
 })
 
 test('OPICE_AUTH_STRICT=1 turns a genuine identity conflict into a hard failure', async () => {
