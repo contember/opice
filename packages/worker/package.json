@@ -26,14 +26,15 @@
 		"access:provision": "bun run scripts/provision-access.ts"
 	},
 	"dependencies": {
-		"@propustka/client": "^0.0.4",
-		"@propustka/core": "^0.0.4",
+		"@propustka/client": "^0.0.5",
+		"@propustka/core": "^0.0.5",
+		"vozka-config": "^0.0.1",
 		"zod": "^3.25.0"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20251001.0",
 		"lopata": "latest",
-		"oblaka-iac": "latest",
+		"oblaka-iac": "^0.0.18",
 		"wrangler": "^4.24.0"
 	}
 }

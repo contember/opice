@@ -20,6 +20,9 @@ export {
 } from './tier.js'
 export type { SelectedTier, Tier } from './tier.js'
 
+export { decideScenarioRun, isScenarioSelected, normalizeSelectPath, parseSelectList, splitSelect } from './select.js'
+export type { RunReason, ScenarioGate } from './select.js'
+
 export { getReporter, setReporter, configureFromEnv } from './reporter.js'
 export type { Reporter, ReporterConfig, StepEvent, ScenarioStart, ScenarioSkip, ScenarioFinish, VideoUpload } from './reporter.js'
 export { FileReporter } from './file-reporter.js'

@@ -77,14 +77,15 @@
       "name": "@opice/worker",
       "version": "0.0.1",
       "dependencies": {
-        "@propustka/client": "^0.0.4",
-        "@propustka/core": "^0.0.4",
+        "@propustka/client": "^0.0.5",
+        "@propustka/core": "^0.0.5",
+        "vozka-config": "^0.0.1",
         "zod": "^3.25.0",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20251001.0",
         "lopata": "latest",
-        "oblaka-iac": "latest",
+        "oblaka-iac": "^0.0.18",
         "wrangler": "^4.24.0",
       },
     },
@@ -286,9 +287,9 @@
 
     "@poppinss/exception": ["@poppinss/exception@1.2.3", "", {}, "sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw=="],
 
-    "@propustka/client": ["@propustka/client@0.0.4", "", { "dependencies": { "@propustka/core": "^0.0.4" } }, "sha512-IVkDDIXeErLkYB6KIVFNEUG0K9HyzHwxMahOXpC1mYQjdGSUtoqT9BPZ1GnjEM4WFqfctzmzqt3UK+uB/oaPTw=="],
+    "@propustka/client": ["@propustka/client@0.0.5", "", { "dependencies": { "@propustka/core": "^0.0.5" } }, "sha512-cIhJRGBpRVe73v1R5qrS7w4wShj3oDcyzRLslz1fPUCbTaoqkl9SvJchWBn2u5s2obf33kBeeAj+drO/cNS8Rg=="],
 
-    "@propustka/core": ["@propustka/core@0.0.4", "", {}, "sha512-1uX4DX9WOJQhynhu23xLu1kZvxkscHkSuYg+HTY94AypNy2JVZ7+k1gvNNhrxNPQttr5m364VECQlQoT5ddbzg=="],
+    "@propustka/core": ["@propustka/core@0.0.5", "", {}, "sha512-V1gXdq2NXcTB5ITVLBOkuY1wDAsxf7SFnOz/L+ZTETtwAfq0u9vDnOOSR0SxSGpW2nelMr9hTzMsTFgd61dtYA=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-rc.3", "", {}, "sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q=="],
 
@@ -414,7 +415,7 @@
 
     "kleur": ["kleur@4.1.5", "", {}, "sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ=="],
 
-    "lopata": ["lopata@0.18.4", "", { "dependencies": { "smol-toml": "^1.6.0" }, "bin": { "lopata": "src/cli.ts" } }, "sha512-tqzSNwGboZKPQMQPaDoGlhePxcB5pwYQ7EgP8Z2vdYgPAttiZTbjsnxDjQ7kcHvY0AH6MP4vFU/dtytgfVlhMA=="],
+    "lopata": ["lopata@0.20.0", "", { "dependencies": { "smol-toml": "^1.6.0" }, "bin": { "lopata": "src/cli.ts" } }, "sha512-mgSzsjZY4uS7b2NcTK3t+Vww1BwGUEgJsdA57CHGZ/2I7YBnIC5PM7dMlLbAQob50s+WnwvnwfSEhXCDzcWQCQ=="],
 
     "lru-cache": ["lru-cache@5.1.1", "", { "dependencies": { "yallist": "^3.0.2" } }, "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w=="],
 
@@ -426,7 +427,7 @@
 
     "node-releases": ["node-releases@2.0.44", "", {}, "sha512-5WUyunoPMsvvEhS8AxHtRzP+oA8UCkJ7YRxatWKjngndhDGLiqEVAQKWjFAiAiuL8zMRGzGSJxFnLetoa43qGQ=="],
 
-    "oblaka-iac": ["oblaka-iac@0.0.14", "", { "dependencies": { "jsonc-parser": "^3.3.1" }, "peerDependencies": { "typescript": "^5" }, "bin": { "oblaka": "src/commands/run.ts" } }, "sha512-KAU4ecrDOd4MNbL9qv3LSaS2j4qMuzwDFY1AEjboJJ/8MdzJDcYO3C2ZKZqZLCCJJUh4rCz8pD+YE5QNQEIDsQ=="],
+    "oblaka-iac": ["oblaka-iac@0.0.18", "", { "dependencies": { "jsonc-parser": "^3.3.1" }, "peerDependencies": { "typescript": "^5" }, "bin": { "oblaka": "src/commands/run.ts" } }, "sha512-v2l15cz9DXTYlrx4W+2vtjtTKMMNoAdIT+/1RBYfBk+nVBnBopkdxXarRUxWA0ndykRdoFxTy8zcXlh0RYmrYw=="],
 
     "path-to-regexp": ["path-to-regexp@6.3.0", "", {}, "sha512-Yhpw4T9C6hPpgPeA28us07OJeqZ5EzQTkbfwuhsUg0c237RomFoETJgmp2sa3F/41gfLE6G5cqcYwznmeEeOlQ=="],
 
@@ -477,6 +478,8 @@
     "update-browserslist-db": ["update-browserslist-db@1.2.3", "", { "dependencies": { "escalade": "^3.2.0", "picocolors": "^1.1.1" }, "peerDependencies": { "browserslist": ">= 4.21.0" }, "bin": { "update-browserslist-db": "cli.js" } }, "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w=="],
 
     "vite": ["vite@7.3.3", "", { "dependencies": { "esbuild": "^0.27.0", "fdir": "^6.5.0", "picomatch": "^4.0.3", "postcss": "^8.5.6", "rollup": "^4.43.0", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "jiti": ">=1.21.0", "less": "^4.0.0", "lightningcss": "^1.21.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-/4XH147Ui7OGTjg3HbdWe5arnZQSbfuRzdr9Ec7TQi5I7R+ir0Rlc9GIvD4v0XZurELqA035KVXJXpR61xhiTA=="],
+
+    "vozka-config": ["vozka-config@0.0.1", "", { "peerDependencies": { "@propustka/core": "^0.0.5", "oblaka-iac": ">=0.0.17" } }, "sha512-hvQ6LFvecbjWYfJKFuDc1zltfMCnoyOLRXNCSGJQJN7bH6NrsEF7/6+wD2Jp6tWKjp5nKajc8QPnVtQ1T436Ig=="],
 
     "workerd": ["workerd@1.20260518.1", "", { "optionalDependencies": { "@cloudflare/workerd-darwin-64": "1.20260518.1", "@cloudflare/workerd-darwin-arm64": "1.20260518.1", "@cloudflare/workerd-linux-64": "1.20260518.1", "@cloudflare/workerd-linux-arm64": "1.20260518.1", "@cloudflare/workerd-windows-64": "1.20260518.1" }, "bin": { "workerd": "bin/workerd" } }, "sha512-rLquk/eeqqJCbdGljSSuIZWW25vzYjTblXkD/tXQXKR5YsSIC91EtlqrzA1L4TJDZCxXKeFXPYqkW7R16UipXQ=="],
 

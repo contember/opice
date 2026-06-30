@@ -3,8 +3,9 @@ import path from 'node:path'
 import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
+import { decideScenarioRun, parseSelectList } from './select.js'
 import { loadUserSetup } from './setup.js'
-import { isTierSkipped, normalizeTier, parseSelectedTier, type Tier, TIER_ORDER } from './tier.js'
+import { normalizeTier, parseSelectedTier, type Tier, TIER_ORDER } from './tier.js'
 
 /**
  * `bun:test` is resolved lazily, at the moment `browserTest` registers a
@@ -147,6 +148,15 @@ function getSelectedTier(): Tier {
 	return cachedSelectedTier
 }
 
+// The explicit selection set for this run (OPICE_SELECT / `opice test --select`),
+// parsed + cached once. A selected scenario runs even when its tier sits above
+// the selected one.
+let cachedSelectList: string[] | undefined
+function getSelectList(): string[] {
+	if (cachedSelectList === undefined) cachedSelectList = parseSelectList()
+	return cachedSelectList
+}
+
 // Names of scenarios skipped by the tier filter, summarized once at process
 // exit so a tiered run prints "N skipped" instead of a line per scenario.
 const skippedScenarioNames: string[] = []
@@ -160,6 +170,24 @@ function noteSkipped(name: string): void {
 		console.warn(
 			`[opice] ${skippedScenarioNames.length} scenario(s) skipped — above the selected `
 			+ `tier '${getSelectedTier()}' (OPICE_TIER).`,
+		)
+	})
+}
+
+// Names of scenarios force-run because they were explicitly selected
+// (OPICE_SELECT) despite sitting above the selected tier — summarized once at
+// exit so a PR run shows "also ran N changed scenario(s)" rather than a line each.
+const selectedScenarioNames: string[] = []
+let selectSummaryHooked = false
+function noteSelected(name: string): void {
+	selectedScenarioNames.push(name)
+	if (selectSummaryHooked) return
+	selectSummaryHooked = true
+	process.on('exit', () => {
+		if (selectedScenarioNames.length === 0) return
+		console.warn(
+			`[opice] ${selectedScenarioNames.length} scenario(s) force-run via --select `
+			+ `(OPICE_SELECT) — above the selected tier '${getSelectedTier()}' but explicitly selected.`,
 		)
 	})
 }
@@ -228,13 +256,20 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 	// fn is the legacy registrar (it registers its own test()/hooks).
 	const isBody = fn.constructor.name === 'AsyncFunction'
 
-	// Tier gate: a scenario above the selected tier is registered but not run —
-	// reported `skipped` so the dashboard shows the full inventory.
+	// Tier gate, with an explicit-selection override. `decideScenarioRun` returns
+	// ONE verdict: a scenario runs when it is within the selected tier OR when it
+	// was explicitly selected (`--select` / OPICE_SELECT) — the union, deduplicated,
+	// so a scenario that qualifies both ways registers (and runs) exactly once and a
+	// changed `critical` scenario is never run twice. A scenario that is neither is
+	// registered but not run, reported `skipped` so the dashboard shows the full
+	// inventory.
 	const scenarioTier = normalizeTier(meta.tier)
-	if (isTierSkipped(scenarioTier, getSelectedTier())) {
+	const gate = decideScenarioRun(scenarioTier, getSelectedTier(), testFile, getSelectList())
+	if (!gate.run) {
 		registerSkipped(meta, scenarioTier, testFile, reporter)
 		return
 	}
+	if (gate.reason === 'selected') noteSelected(meta.name)
 
 	describe(meta.name, () => {
 		beforeAll(async () => {

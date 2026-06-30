@@ -56,6 +56,13 @@ const WORKFLOW_TEMPLATE = `name: opice browser tests
 # standard suite, and the nightly schedule (or a manual dispatch) runs
 # everything. Scenarios above the selected tier are reported "skipped" on the
 # dashboard, not silently dropped. Tune the triggers + tiers to taste.
+#
+# To keep PRs fast yet exercise what they touch, run the critical core PLUS the
+# changed scenarios instead of the whole standard suite: pass the changed test
+# files via --select (deduplicated against the tier, never run twice), e.g.
+#   --tier critical --select "\$(git diff --name-only origin/main...HEAD \\
+#     -- 'tests/browser/*.test.ts' | paste -sd,)"
+# (needs actions/checkout fetch-depth: 0 so the base ref is available).
 on:
   push:
   pull_request:
