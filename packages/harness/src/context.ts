@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
+import { resolveStorageState } from './auth.js'
 import { isTruthy } from './env.js'
 import { slugify } from './slug.js'
 
@@ -202,7 +203,7 @@ async function getBrowser(): Promise<Browser> {
  * scenario whose teardown didn't complete is closed first so state never
  * bleeds across scenarios.
  */
-export async function launchPage(label?: string): Promise<Page> {
+export async function launchPage(label?: string, opts?: { roles?: string[]; baseUrl?: string }): Promise<Page> {
 	if (context) {
 		// A leftover context is a discarded attempt (a retry relaunches here): drop
 		// its half-recorded video rather than saving it — only the final attempt,
@@ -214,16 +215,23 @@ export async function launchPage(label?: string): Promise<Page> {
 		page = null
 	}
 	const b = await getBrowser()
+	// Resolve the scenario's roles to a stored session (cookies + localStorage) and
+	// seed the context with it, so the walkthrough opens already authenticated. Null
+	// when there's no auth provider or the role is a logged-out one — then it's a
+	// plain fresh context, exactly as before. `baseUrl` scopes the session cache per
+	// environment, so a session minted against stage isn't reused against local.
+	const storageState = await resolveStorageState(opts?.roles, b, undefined, opts?.baseUrl)
 	const video = videoConfig()
 	if (video) warnRecordingTiming()
-	context = await b.newContext(
-		video
+	context = await b.newContext({
+		...(video
 			? {
 				recordVideo: { dir: VIDEO_RAW_DIR, ...(video.size ? { size: video.size } : {}) },
 				...(video.size ? { viewport: video.size } : {}),
 			}
-			: {},
-	)
+			: {}),
+		...(storageState ? { storageState } : {}),
+	})
 	// Draw the synthetic cursor on every page of this context, before any app
 	// code runs, so the whole walkthrough (including full navigations) shows it.
 	if (video?.cursor) await context.addInitScript(CURSOR_SCRIPT)
