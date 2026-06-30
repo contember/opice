@@ -34,6 +34,8 @@ export interface TutorialProps {
 	codeTitle?: string
 	/** Filename shown in the code card's title bar (default "index.html"). */
 	codeFile?: string
+	/** Optional callout shown below the code card (e.g. "takes effect after deploy"). */
+	codeNote?: string
 	/** How long the code card holds (seconds, default 5.5). Ignored without `code`. */
 	codeSeconds?: number
 	/** Where the code/implement cards sit (when NOT using `insertCodeAfterStep`):

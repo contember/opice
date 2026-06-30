@@ -8,7 +8,7 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 export const Tutorial: React.FC<TutorialProps> = (
 	{
 		base = 'create-a-site', manifest, introSeconds = 2.4, outroSeconds = 2.4, codeSeconds = 0, implementSeconds = 0, zoom = 0,
-		code, codeTitle, codeFile, implementCode, implementTitle, implementFile, implementRange, codePlacement = 'before',
+		code, codeTitle, codeFile, codeNote, implementCode, implementTitle, implementFile, implementRange, codePlacement = 'before',
 		splitOutMs, resumeInMs, videoTotalSec,
 	},
 ) => {
@@ -21,7 +21,7 @@ export const Tutorial: React.FC<TutorialProps> = (
 	const videoFrames = durationInFrames - introFrames - codeFrames - implementFrames - outroFrames
 
 	const codeCard = code
-		? <CodeCard code={code} title={codeTitle ?? 'Add this to your site'} file={codeFile ?? 'index.html'} />
+		? <CodeCard code={code} title={codeTitle ?? 'Add this to your site'} file={codeFile ?? 'index.html'} note={codeNote} />
 		: null
 	const implementCard = implementCode
 		? <ImplementCard code={implementCode} title={implementTitle ?? 'Paste it into your site'} file={implementFile ?? 'index.html'} range={implementRange} />
@@ -113,7 +113,7 @@ function highlight(line: string, key: number): React.ReactNode {
 	return parts
 }
 
-const CodeCard: React.FC<{ code: string; title: string; file: string }> = ({ code, title, file }) => {
+const CodeCard: React.FC<{ code: string; title: string; file: string; note?: string }> = ({ code, title, file, note }) => {
 	const frame = useCurrentFrame()
 	const { fps, durationInFrames } = useVideoConfig()
 	const appear = spring({ frame, fps, config: { damping: 200 } })
@@ -149,6 +149,12 @@ const CodeCard: React.FC<{ code: string; title: string; file: string }> = ({ cod
 						))}
 					</div>
 				</div>
+				{note && (
+					<div style={{ marginTop: 20, display: 'flex', alignItems: 'center', gap: 14, fontFamily: FONT }}>
+						<span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 8, background: 'rgba(255,203,107,0.16)', color: '#ffcb6b', fontWeight: 800, fontSize: 20 }}>!</span>
+						<span style={{ color: '#c9d1d9', fontSize: 23, fontWeight: 500 }}>{note}</span>
+					</div>
+				)}
 			</div>
 		</AbsoluteFill>
 	)
