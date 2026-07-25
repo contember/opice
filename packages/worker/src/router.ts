@@ -75,6 +75,36 @@ const RunWithProjectSchema = RunSchema.extend({
 const RunPageSchema = z.object({ runs: z.array(RunSchema), hasMore: z.boolean() })
 const RunWithProjectPageSchema = z.object({ runs: z.array(RunWithProjectSchema), hasMore: z.boolean() })
 
+/** Compact footprint counts carried on every scenario read. */
+export const FootprintSummarySchema = z.object({
+	files: z.number(),
+	components: z.number(),
+	endpoints: z.number(),
+	models: z.number(),
+	requests: z.number(),
+	topModels: z.array(z.string()),
+	warnings: z.number(),
+})
+
+/**
+ * The full footprint blob, as stored in R2. Deliberately loose about
+ * `requests`: the harness owns that shape and will grow it, and a strict schema
+ * here would mean an older worker silently dropping fields a newer harness
+ * sends. The parts the platform reasons about — files, models, endpoints — are
+ * validated at ingest, which is where it matters.
+ */
+export const ScenarioFootprintSchema = z.object({
+	scenario: z.string(),
+	testFile: z.string().optional(),
+	collected: z.array(z.string()),
+	files: z.array(z.object({ path: z.string(), source: z.string(), executed: z.number().optional() })),
+	components: z.array(z.string()),
+	requests: z.array(z.unknown()),
+	endpoints: z.array(z.object({ route: z.string(), methods: z.array(z.string()), count: z.number() })),
+	models: z.array(z.object({ name: z.string(), write: z.boolean() })),
+	warnings: z.array(z.string()).optional(),
+})
+
 export const ScenarioSchema = z.object({
 	id: z.string(),
 	runId: z.string(),
@@ -94,6 +124,12 @@ export const ScenarioSchema = z.object({
 	finishedAt: z.number().nullable(),
 	/** URL of the scenario's walkthrough video (opt-in OPICE_VIDEO), or null. */
 	videoUrl: z.string().nullable(),
+	/**
+	 * Counts from the scenario's footprint (opt-in OPICE_FOOTPRINT), or null when
+	 * it wasn't collected. The full detail lives in R2 and is fetched on demand
+	 * via `scenarios.footprint` — a list view only ever needs the counts.
+	 */
+	footprint: FootprintSummarySchema.nullable(),
 })
 
 export const StepSchema = z.object({
@@ -283,6 +319,60 @@ const scenarios = rpc.router({
 			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
 			return mapSteps(await ctx.services.db.listStepsForScenario(input.scenarioId))
 		}),
+
+	/**
+	 * The scenario's full footprint, read from R2 on demand.
+	 *
+	 * Not folded into the scenario read: a footprint is orders of magnitude
+	 * bigger than the row that points at it, and a run page listing fifty
+	 * scenarios would otherwise pull fifty blobs to render fifty badges. The
+	 * counts on the row cover the list; this covers the panel you opened.
+	 */
+	footprint: rpc.procedure
+		.input(z.object({ scenarioId: z.string() }))
+		.output(ScenarioFootprintSchema.nullable())
+		.handler(async ({ ctx, input }) => {
+			const scenario = await ctx.services.db.getScenario(input.scenarioId)
+			if (!scenario) notFound(`Scenario not found: ${input.scenarioId}`)
+			const run = await ctx.services.db.getRun(scenario.runId)
+			if (!run) notFound(`Run not found: ${scenario.runId}`)
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
+			return readFootprintBlob(ctx.services, scenario.footprintKey)
+		}),
+
+	/**
+	 * The inverse question: which scenarios touch this file / component /
+	 * endpoint / model? Answered from the change-tracking index, so it spans
+	 * every scenario the project has ever indexed — not just the run you're
+	 * looking at.
+	 */
+	touching: rpc.procedure
+		.input(z.object({
+			projectId: z.number(),
+			kind: z.enum(['file', 'component', 'endpoint', 'model']),
+			value: z.string(),
+		}))
+		.output(z.array(z.object({
+			scenarioKey: z.string(),
+			testFile: z.string().nullable(),
+			scenarioName: z.string(),
+			writes: z.boolean(),
+			updatedAt: z.number(),
+		})))
+		.handler(async ({ ctx, input }) => {
+			const project = await ctx.services.db.getProjectById(input.projectId)
+			if (!project) notFound(`Project not found: ${input.projectId}`)
+			assertAccess(opCanReadReports(ctx.auth, project.slug))
+			const edges = await ctx.services.db.listScenariosTouching(project.id, input.kind, input.value)
+			return edges.map((e) => ({
+				scenarioKey: e.scenarioKey,
+				testFile: e.testFile,
+				scenarioName: e.scenarioName,
+				writes: e.writes,
+				updatedAt: e.updatedAt,
+			}))
+		}),
 })
 
 // Run-scoped, read-only share links — propustka capability tokens. Any operator with
@@ -340,6 +430,26 @@ async function projectSlugForRun(services: Services, projectId: number): Promise
 
 function mapSteps(rows: Awaited<ReturnType<Services['db']['listStepsForScenario']>>) {
 	return rows.map(s => ({ ...s, screenshotUrl: s.screenshotKey ? `/screenshots/${s.screenshotKey}` : null }))
+}
+
+/**
+ * Read a footprint blob out of R2. Shared by the operator and share routers.
+ *
+ * A missing or unparseable object reads as `null`, not an error: the scenario
+ * row is the record that a footprint was collected, and the blob is best-effort
+ * telemetry that may have failed to store. A 500 here would break a run page
+ * over a panel that was always optional.
+ */
+export async function readFootprintBlob(services: Services, key: string | null): Promise<unknown> {
+	if (!key) return null
+	try {
+		const object = await services.runAssets.get(key)
+		if (!object) return null
+		return JSON.parse(await object.text()) as unknown
+	} catch (err) {
+		console.error(`footprint blob unreadable (${key}): ${err instanceof Error ? err.message : String(err)}`)
+		return null
+	}
 }
 
 interface MintInput {

@@ -32,6 +32,54 @@ export interface Project {
 	createdAt: number
 }
 
+/** A queryable dimension of a footprint — mirrors `@opice/harness`'s FootprintEdgeKind. */
+export type FootprintEdgeKind = 'file' | 'component' | 'endpoint' | 'model'
+
+/** Compact footprint counts stored on a scenario (mirrors the harness's FootprintSummary). */
+export interface FootprintSummary {
+	files: number
+	components: number
+	endpoints: number
+	models: number
+	requests: number
+	topModels: string[]
+	warnings: number
+}
+
+/** One row of the change-tracking index: this scenario touches this thing. */
+export interface FootprintEdge {
+	scenarioKey: string
+	testFile: string | null
+	scenarioName: string
+	kind: FootprintEdgeKind
+	value: string
+	/** Executed fraction x1000 (files only). */
+	weight: number | null
+	/** Model edges: reached through a mutation. */
+	writes: boolean
+	runId: string | null
+	branch: string | null
+	updatedAt: number
+}
+
+/** Why a scenario was selected by an impact query. */
+export interface ImpactReason {
+	kind: FootprintEdgeKind
+	value: string
+	/** The changed path that matched it. */
+	matched: string
+}
+
+/** A scenario the impact query says a change reaches. */
+export interface ImpactedScenario {
+	scenarioKey: string
+	testFile: string | null
+	scenarioName: string
+	reasons: ImpactReason[]
+	/** When this scenario's footprint was last refreshed. */
+	updatedAt: number
+}
+
 /** What a mirrored capability is for (see migration 0007). */
 export type CapabilityKind = 'ingest' | 'read' | 'share'
 
@@ -112,6 +160,14 @@ export interface Scenario {
 	 * or the best-effort upload failed. The RPC layer maps this to a `videoUrl`.
 	 */
 	videoKey: string | null
+	/**
+	 * R2 key of the scenario's full footprint blob (opt-in, OPICE_FOOTPRINT), in
+	 * the shared run-assets bucket. Null when footprint collection was off. The
+	 * RPC layer maps this to a `footprintUrl`.
+	 */
+	footprintKey: string | null
+	/** Counts from the footprint, so a list view needn't fetch the blob. */
+	footprint: FootprintSummary | null
 	status: ScenarioDisplayStatus
 	durationMs: number | null
 	/**

@@ -1,4 +1,4 @@
-import type { CapabilityKind, CapabilityRecord, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
+import type { CapabilityKind, CapabilityRecord, FootprintEdge, FootprintEdgeKind, FootprintSummary, ImpactedScenario, ImpactReason, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
 // carrying one of these (and no hard failure / no pending step) reads as
@@ -100,6 +100,8 @@ interface ScenarioRow {
 	skipped_at: number | null
 	skip_reason: string | null
 	video_r2_key: string | null
+	footprint_r2_key: string | null
+	footprint_summary: string | null
 	// Computed per read: 1 when the scenario carries a tolerated fixme step /
 	// a pending step. Absent on `SELECT *` reads where the state doesn't matter.
 	has_warning?: number
@@ -198,6 +200,21 @@ const parseStringArray = (json: string | null): string[] => {
 	}
 }
 
+/**
+ * The stored summary is written by this worker from a validated footprint, so a
+ * parse failure means a corrupt row rather than untrusted input — either way the
+ * scenario reads fine without it, so it degrades to null instead of throwing.
+ */
+const parseFootprintSummary = (json: string | null): FootprintSummary | null => {
+	if (!json) return null
+	try {
+		const parsed = JSON.parse(json) as FootprintSummary
+		return typeof parsed === 'object' && parsed !== null ? parsed : null
+	} catch {
+		return null
+	}
+}
+
 const toScenario = (r: ScenarioRow): Scenario => ({
 	id: r.id,
 	runId: r.run_id,
@@ -211,6 +228,8 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	tier: r.tier,
 	skipReason: r.skip_reason,
 	videoKey: r.video_r2_key,
+	footprintKey: r.footprint_r2_key,
+	footprint: parseFootprintSummary(r.footprint_summary),
 	// Display status: a skipped scenario (tier filter) wins — it never ran, so no
 	// step overlay applies. Otherwise overlay a passed scenario, in priority
 	// order: a pending step → 'incomplete'; else a tolerated fixme step → 'warning'.
@@ -224,6 +243,78 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	startedAt: r.started_at,
 	finishedAt: r.finished_at,
 })
+
+interface FootprintEdgeRow {
+	project_id: number
+	scenario_key: string
+	test_file: string | null
+	scenario_name: string
+	kind: FootprintEdgeKind
+	value: string
+	weight: number | null
+	writes: number
+	run_id: string | null
+	branch: string | null
+	updated_at: number
+}
+
+const toFootprintEdge = (r: FootprintEdgeRow): FootprintEdge => ({
+	scenarioKey: r.scenario_key,
+	testFile: r.test_file,
+	scenarioName: r.scenario_name,
+	kind: r.kind,
+	value: r.value,
+	weight: r.weight,
+	writes: r.writes !== 0,
+	runId: r.run_id,
+	branch: r.branch,
+	updatedAt: r.updated_at,
+})
+
+/** `\` → `/`, drop a leading `./`, trim a trailing slash. Mirrors the harness's select-path shape. */
+const normalizePath = (p: string): string => {
+	let s = p.trim().replace(/\\/g, '/')
+	while (s.startsWith('./')) s = s.slice(2)
+	if (s.length > 1) s = s.replace(/\/+$/, '')
+	return s
+}
+
+/** `apps/web/src/InvoiceForm.tsx` → `InvoiceForm`. Empty for a dotfile or a bare directory. */
+const basenameWithoutExtension = (p: string): string => {
+	const base = p.slice(p.lastIndexOf('/') + 1)
+	const dot = base.lastIndexOf('.')
+	return dot > 0 ? base.slice(0, dot) : base
+}
+
+/**
+ * Does a changed path reach this edge? Returns the path that matched (so the
+ * caller can explain the selection), or null.
+ *
+ * File edges match on the path, in either direction — a footprint's
+ * `src/App.tsx` and a diff's `apps/web/src/App.tsx` are the same file seen from
+ * two roots. Component and model edges match on the changed file's base name,
+ * case-insensitively, which is what catches a component whose file moved.
+ */
+const matchEdge = (
+	row: FootprintEdgeRow,
+	paths: readonly string[],
+	names: ReadonlyMap<string, string>,
+	models: ReadonlyMap<string, string>,
+): string | null => {
+	if (row.kind === 'file') {
+		const value = normalizePath(row.value)
+		for (const path of paths) {
+			if (value === path || value.endsWith('/' + path) || path.endsWith('/' + value)) return path
+		}
+		return null
+	}
+	if (row.kind === 'component' || row.kind === 'model') {
+		const explicit = models.get(row.value.toLowerCase())
+		if (row.kind === 'model' && explicit !== undefined) return explicit
+		return names.get(row.value.toLowerCase()) ?? null
+	}
+	return null
+}
 
 const toStep = (r: StepRow): Step => ({
 	id: r.id,
@@ -661,6 +752,161 @@ export class Db {
 			.prepare('UPDATE scenarios SET video_r2_key = ? WHERE id = ?')
 			.bind(key, scenarioId)
 			.run()
+	}
+
+	/**
+	 * Point a scenario at its uploaded footprint blob and store its counts. See
+	 * ingest `uploadFootprint`.
+	 */
+	async attachFootprint(scenarioId: string, key: string, summary: FootprintSummary): Promise<void> {
+		await this.d1
+			.prepare('UPDATE scenarios SET footprint_r2_key = ?, footprint_summary = ? WHERE id = ?')
+			.bind(key, JSON.stringify(summary), scenarioId)
+			.run()
+	}
+
+	/**
+	 * Replace a scenario's edges in the change-tracking index.
+	 *
+	 * Replace, not merge: the index answers "what does this scenario touch NOW",
+	 * so a file the scenario stopped touching has to disappear. Merging would let
+	 * the index accumulate every file the scenario ever loaded, and `--impacted`
+	 * would slowly converge on "run everything".
+	 *
+	 * Delete + insert run in one `batch()`, which D1 wraps in a transaction — a
+	 * half-applied replacement would leave the scenario partly indexed, which is
+	 * worse than either state.
+	 */
+	async replaceFootprintEdges(input: {
+		projectId: number
+		scenarioKey: string
+		testFile: string | null
+		scenarioName: string
+		runId: string
+		branch: string | null
+		edges: { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean }[]
+	}): Promise<void> {
+		const now = Date.now()
+		const statements: D1PreparedStatement[] = [
+			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ? AND scenario_key = ?').bind(input.projectId, input.scenarioKey),
+		]
+		const insert = this.d1.prepare(
+			`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, weight, writes, run_id, branch, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
+					weight = excluded.weight, writes = excluded.writes, run_id = excluded.run_id,
+					branch = excluded.branch, updated_at = excluded.updated_at`,
+		)
+		for (const edge of input.edges) {
+			statements.push(insert.bind(
+				input.projectId,
+				input.scenarioKey,
+				input.testFile,
+				input.scenarioName,
+				edge.kind,
+				edge.value,
+				edge.weight ?? null,
+				edge.writes ? 1 : 0,
+				input.runId,
+				input.branch,
+				now,
+			))
+		}
+		await this.d1.batch(statements)
+	}
+
+	/** Every edge recorded for a scenario key — the dashboard's "what does this touch" view. */
+	async listFootprintEdges(projectId: number, scenarioKey: string): Promise<FootprintEdge[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM footprint_edges WHERE project_id = ? AND scenario_key = ? ORDER BY kind, value')
+			.bind(projectId, scenarioKey)
+			.all<FootprintEdgeRow>()
+		return results.map(toFootprintEdge)
+	}
+
+	/** The inverse view: which scenarios touch this thing? */
+	async listScenariosTouching(projectId: number, kind: FootprintEdgeKind, value: string): Promise<FootprintEdge[]> {
+		const { results } = await this.d1
+			.prepare('SELECT * FROM footprint_edges WHERE project_id = ? AND kind = ? AND value = ? ORDER BY scenario_name')
+			.bind(projectId, kind, value)
+			.all<FootprintEdgeRow>()
+		return results.map(toFootprintEdge)
+	}
+
+	/**
+	 * The impact query: given the paths a change touches, which scenarios reach
+	 * them?
+	 *
+	 * Matching is deliberately generous in two directions, because both are cheap
+	 * and a missed scenario is the expensive kind of wrong:
+	 *
+	 *  - **Path shape.** A footprint records the path as the browser saw it
+	 *    (`src/App.tsx`), a diff gives the path as the repo sees it
+	 *    (`apps/web/src/App.tsx`). Either may be a suffix of the other, so both
+	 *    directions are tried — the same tolerance `select.ts` applies to test files.
+	 *  - **Name.** A changed `InvoiceForm.tsx` also matches a *component* edge
+	 *    named `InvoiceForm` and a *model* edge named `Invoice`-ish, which is how
+	 *    a component that moved file is still found.
+	 *
+	 * Returns one entry per scenario with every reason it matched, so the CLI can
+	 * explain the selection rather than presenting it as an oracle.
+	 */
+	async findImpactedScenarios(input: {
+		projectId: number
+		/** Repo-relative paths from a diff. */
+		paths: string[]
+		/** Explicit model names to match, for a change the paths can't express (a schema edit). */
+		models?: string[]
+	}): Promise<ImpactedScenario[]> {
+		const paths = [...new Set(input.paths.map(normalizePath).filter(Boolean))]
+		const models = [...new Set((input.models ?? []).filter(Boolean))]
+		if (paths.length === 0 && models.length === 0) return []
+		// One scan of the project's index, matched in memory. The index is bounded
+		// by scenarios x touched-things (thousands of rows, refreshed rather than
+		// appended), and expressing suffix-matching against a few hundred changed
+		// paths as SQL would mean either a LIKE per path or shipping the paths into
+		// a temp table — both worse than one indexed read.
+		const { results } = await this.d1
+			.prepare(`SELECT * FROM footprint_edges WHERE project_id = ? AND kind IN ('file', 'component', 'model')`)
+			.bind(input.projectId)
+			.all<FootprintEdgeRow>()
+
+		const byScenario = new Map<string, ImpactedScenario>()
+		const names = new Map<string, string>() // lower-cased basename → the path it came from
+		for (const path of paths) {
+			const base = basenameWithoutExtension(path)
+			if (base) names.set(base.toLowerCase(), path)
+		}
+		const modelSet = new Map<string, string>(models.map((m) => [m.toLowerCase(), m]))
+
+		for (const row of results) {
+			const matched = matchEdge(row, paths, names, modelSet)
+			if (!matched) continue
+			const existing = byScenario.get(row.scenario_key)
+			const reason: ImpactReason = { kind: row.kind, value: row.value, matched }
+			if (existing) {
+				existing.reasons.push(reason)
+				existing.updatedAt = Math.max(existing.updatedAt, row.updated_at)
+			} else {
+				byScenario.set(row.scenario_key, {
+					scenarioKey: row.scenario_key,
+					testFile: row.test_file,
+					scenarioName: row.scenario_name,
+					reasons: [reason],
+					updatedAt: row.updated_at,
+				})
+			}
+		}
+		return [...byScenario.values()].sort((a, b) => a.scenarioName.localeCompare(b.scenarioName))
+	}
+
+	/** How many edges the project has indexed, and when it was last refreshed. */
+	async footprintIndexStatus(projectId: number): Promise<{ edges: number; scenarios: number; updatedAt: number | null }> {
+		const row = await this.d1
+			.prepare('SELECT COUNT(*) AS edges, COUNT(DISTINCT scenario_key) AS scenarios, MAX(updated_at) AS updated_at FROM footprint_edges WHERE project_id = ?')
+			.bind(projectId)
+			.first<{ edges: number; scenarios: number; updated_at: number | null }>()
+		return { edges: row?.edges ?? 0, scenarios: row?.scenarios ?? 0, updatedAt: row?.updated_at ?? null }
 	}
 
 	/**

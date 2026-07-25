@@ -1,8 +1,9 @@
 import { withVideoUrl } from '../asset-url'
+import { normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
-import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
+import type { Project, Run, ScenarioStatus, StepKind, StepStatus } from '../types'
 
 // Steps accept the tolerated fixme markers + 'pending' (a phase-1 stub); scenario
 // finish does not (a scenario is only ever passed/failed — fixme/pending surface
@@ -32,6 +33,18 @@ export async function handleApi(request: Request, services: Services, segments: 
 	const project = await services.db.getProjectBySlug(slug)
 	if (!project) {
 		return unauthorized()
+	}
+
+	// Impact is a READ that needs a request body: `opice test --impacted` sends the
+	// changed-path list from a diff, which is far too long for a query string. It
+	// is therefore the one POST gated on `report.read` rather than `report.write` —
+	// asking for the write DSN just to *ask a question* would hand every CI job
+	// that wants smart selection the ability to forge run data.
+	if (request.method === 'POST' && path[0] === 'impact' && path.length === 1) {
+		if (!machineCanReadReports(auth, slug)) {
+			return unauthorized()
+		}
+		return impact(request, services, project)
 	}
 
 	if (request.method === 'GET') {
@@ -77,6 +90,9 @@ async function handleWrite(request: Request, services: Services, project: Projec
 		}
 		if (request.method === 'PUT' && path[2] === 'scenarios' && path[3] && path[4] === 'video' && path.length === 5) {
 			return uploadVideo(request, services, project, runId, path[3])
+		}
+		if (request.method === 'PUT' && path[2] === 'scenarios' && path[3] && path[4] === 'footprint' && path.length === 5) {
+			return uploadFootprint(request, services, project, run, path[3])
 		}
 		if (request.method === 'POST' && path[2] === 'finish' && path.length === 3) {
 			await services.db.finishRun(runId)
@@ -328,6 +344,119 @@ async function uploadVideo(
 		return json({ videoFailed: true })
 	}
 	return json({ ok: true, videoKey: key })
+}
+
+/** Most changed paths one impact query will consider. A diff past this is a rewrite, not a change. */
+const MAX_IMPACT_PATHS = 2000
+
+/**
+ * Which scenarios does a change reach?
+ *
+ * Answers with the matched scenarios AND with the state of the index itself
+ * (`indexed`, `updatedAt`), because those are what tell an empty answer apart
+ * from a meaningless one. "No scenario touches these files" and "no footprint
+ * has ever been recorded" both produce zero scenarios, and a caller that can't
+ * distinguish them will either skip tests it needed or run everything forever.
+ * The CLI prints the difference and fails open on the second.
+ */
+async function impact(request: Request, services: Services, project: Project): Promise<Response> {
+	const body = (await readJson<{ paths?: unknown; models?: unknown }>(request)) ?? {}
+	const paths = toStringArray(body.paths) ?? []
+	const models = toStringArray(body.models) ?? []
+	if (paths.length > MAX_IMPACT_PATHS) {
+		return badRequest(`too many paths (${paths.length} > ${MAX_IMPACT_PATHS})`)
+	}
+	const [scenarios, index] = await Promise.all([
+		services.db.findImpactedScenarios({ projectId: project.id, paths, models }),
+		services.db.footprintIndexStatus(project.id),
+	])
+	return json({ scenarios, index })
+}
+
+/**
+ * Largest footprint we'll accept. The harness already caps what it collects
+ * (2000 requests, 5000 files) and reports when it truncated, so anything past
+ * this is a client that isn't ours.
+ */
+const MAX_FOOTPRINT_BYTES = 8 * 1024 * 1024
+
+/**
+ * Receive a scenario's footprint (opt-in, `OPICE_FOOTPRINT`) and do two things
+ * with it.
+ *
+ * The **blob** goes to R2 beside the run's screenshots and video, so the
+ * dashboard can show what that particular run's scenario touched. Best-effort,
+ * like the other two: a storage failure answers 200 with `{ footprintFailed:
+ * true }` rather than 500-ing, because the reporter's strict mode would
+ * otherwise fail a CI run over dropped telemetry.
+ *
+ * The **edges** go to the change-tracking index — but only for CI runs. A local
+ * run happens against whatever half-built state is on someone's laptop, and
+ * letting it rewrite the shared index is the one way `--impacted` could start
+ * quietly selecting the wrong tests for everybody. The blob is still stored for
+ * a local run; only the index is protected.
+ */
+async function uploadFootprint(
+	request: Request,
+	services: Services,
+	project: Project,
+	run: Run,
+	scenarioId: string,
+): Promise<Response> {
+	const scenario = await services.db.getScenario(scenarioId)
+	if (!scenario || scenario.runId !== run.id) {
+		return notFound('scenario not found')
+	}
+	const declared = Number(request.headers.get('content-length') ?? '')
+	if (Number.isFinite(declared) && declared > MAX_FOOTPRINT_BYTES) {
+		return badRequest(`footprint too large (${declared} bytes > ${MAX_FOOTPRINT_BYTES})`)
+	}
+	const text = await request.text()
+	if (text.length === 0) {
+		return badRequest('empty footprint body')
+	}
+	if (text.length > MAX_FOOTPRINT_BYTES) {
+		return badRequest(`footprint too large (${text.length} bytes > ${MAX_FOOTPRINT_BYTES})`)
+	}
+	let footprint: ScenarioFootprint
+	try {
+		footprint = normalizeFootprint(JSON.parse(text) as unknown)
+	} catch (err) {
+		return badRequest(`invalid footprint: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
+	const key = `${project.slug}/${run.id}/footprint-${scenarioId}.json`
+	let footprintFailed = false
+	try {
+		await putWithRetry(services.runAssets, key, new TextEncoder().encode(text), {
+			httpMetadata: { contentType: 'application/json' },
+		})
+		await services.db.attachFootprint(scenarioId, key, summarize(footprint))
+	} catch (err) {
+		footprintFailed = true
+		console.error(`footprint upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
+	let indexed = false
+	if (run.source === 'ci') {
+		try {
+			await services.db.replaceFootprintEdges({
+				projectId: project.id,
+				scenarioKey: scenarioKeyOf(scenario.testFile, scenario.name),
+				testFile: scenario.testFile,
+				scenarioName: scenario.name,
+				runId: run.id,
+				branch: run.branch,
+				edges: toEdges(footprint),
+			})
+			indexed = true
+		} catch (err) {
+			// The index is a derived convenience; the blob above is the record. A
+			// failure here degrades `--impacted`, it doesn't lose data.
+			console.error(`footprint indexing failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+		}
+	}
+	return json({ ok: !footprintFailed, footprintFailed, indexed })
 }
 
 /**
