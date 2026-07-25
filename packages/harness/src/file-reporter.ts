@@ -25,7 +25,7 @@
  */
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { Reporter, ScenarioFinish, ScenarioSkip, ScenarioStart, StepEvent, VideoUpload } from './reporter.js'
+import type { FootprintUpload, Reporter, ScenarioFinish, ScenarioSkip, ScenarioStart, StepEvent, VideoUpload } from './reporter.js'
 
 type StepRecord = {
 	sequence: number
@@ -164,6 +164,14 @@ export class FileReporter implements Reporter {
 	 * for the dashboard's player.
 	 */
 	async uploadVideo(_input: VideoUpload): Promise<void> {}
+
+	/**
+	 * No-op for the same reason as {@link uploadVideo}: the harness already writes
+	 * every collected footprint to `OPICE_FOOTPRINT_DIR` as JSON, so a local run
+	 * has the artifact whether or not it also has a report. Only the platform
+	 * reporter ships a copy onward.
+	 */
+	async uploadFootprint(_input: FootprintUpload): Promise<void> {}
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {
 		const scenario = this.scenarios.get(input.scenarioId)

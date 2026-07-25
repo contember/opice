@@ -79,6 +79,17 @@ export async function testCommand(args: string[]): Promise<number> {
 	const afterVideo = videoFlag.rest
 	const videoEnabled = videoFlag.present || isTruthy(process.env['OPICE_VIDEO'])
 	const videoDir = videoFlag.value ?? process.env['OPICE_VIDEO_DIR']
+
+	// `--footprint[=network|full]` → record what each scenario touches (files,
+	// components, endpoints, GraphQL models). A bare `--footprint` means `full`.
+	// Like `--video`, the bare form never consumes the next token — a mode name is
+	// indistinguishable from a bun test-file arg, so use `--footprint=network`.
+	// CLI flag wins over OPICE_FOOTPRINT, which wins over opice.config.json.
+	const footprintFlag = extractOptionalValueFlag(afterVideo, 'footprint')
+	const afterFootprint = footprintFlag.rest
+	const footprint = footprintFlag.present
+		? (footprintFlag.value ?? 'full')
+		: (process.env['OPICE_FOOTPRINT'] ?? config?.footprint)
 	// `bun test` runs one process per file; give them a fresh shared dir to
 	// aggregate into so a multi-file run yields one complete report (the harness
 	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
@@ -109,12 +120,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
 		...(videoEnabled ? { OPICE_VIDEO: '1' } : {}),
 		...(videoDir ? { OPICE_VIDEO_DIR: videoDir } : {}),
+		...(footprint ? { OPICE_FOOTPRINT: footprint } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterVideo)
+	const { retries, rest } = extractRetries(afterFootprint)
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.

@@ -1,0 +1,98 @@
+import { describe, expect, test } from 'bun:test'
+import { aggregateEndpoints, aggregateModels } from './collector.js'
+import { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
+import { summarize } from './index.js'
+import type { FootprintRequest, ScenarioFootprint } from './types.js'
+
+const APP = 'http://localhost:15180'
+
+describe('moduleUrlToSourcePath', () => {
+	test('reads a dev-server module URL as its source path', () => {
+		expect(moduleUrlToSourcePath(`${APP}/src/components/InvoiceForm.tsx`)).toEqual({
+			path: 'src/components/InvoiceForm.tsx',
+			bundled: false,
+		})
+	})
+
+	test('ignores the version query a dev server appends', () => {
+		expect(moduleUrlToSourcePath(`${APP}/src/App.tsx?t=1718000000000`).path).toBe('src/App.tsx')
+	})
+
+	test('keeps stylesheets — a changed stylesheet is a real change', () => {
+		expect(moduleUrlToSourcePath(`${APP}/src/styles.css`).path).toBe('src/styles.css')
+	})
+
+	test('drops tooling and vendor code', () => {
+		expect(moduleUrlToSourcePath(`${APP}/@vite/client`).path).toBeNull()
+		expect(moduleUrlToSourcePath(`${APP}/node_modules/.vite/deps/react.js`).path).toBeNull()
+		expect(moduleUrlToSourcePath(`${APP}/@react-refresh`).path).toBeNull()
+	})
+
+	test('flags a hashed production chunk instead of reporting it as a file', () => {
+		expect(moduleUrlToSourcePath(`${APP}/assets/index-a1b2c3d4.js`)).toEqual({ path: null, bundled: true })
+	})
+
+	test('applies sourceRoot for a dev server rooted below the repo root', () => {
+		expect(moduleUrlToSourcePath(`${APP}/src/App.tsx`, 'apps/web').path).toBe('apps/web/src/App.tsx')
+	})
+
+	test('relativizes a /@fs/ monorepo sibling against the working directory', () => {
+		const absolute = `${process.cwd()}/packages/ui/src/Button.tsx`
+		expect(moduleUrlToSourcePath(`${APP}/@fs${absolute}`).path).toBe('packages/ui/src/Button.tsx')
+	})
+})
+
+describe('normalizeSourceMapPath', () => {
+	test('strips bundler scheme prefixes', () => {
+		expect(normalizeSourceMapPath('webpack://app/./src/App.tsx')).toBe('src/App.tsx')
+		expect(normalizeSourceMapPath('vite:///src/main.ts')).toBe('src/main.ts')
+	})
+
+	test('drops vendor sources', () => {
+		expect(normalizeSourceMapPath('../node_modules/react/index.js')).toBeNull()
+	})
+})
+
+describe('aggregation', () => {
+	const requests: FootprintRequest[] = [
+		{ step: 0, method: 'POST', route: '/graphql', status: 200, resourceType: 'fetch', durationMs: 12,
+			operations: [{ type: 'query', name: 'List', rootFields: ['listInvoice'], models: [{ name: 'Invoice', write: false }] }] },
+		{ step: 1, method: 'POST', route: '/graphql', status: 200, resourceType: 'fetch', durationMs: 30,
+			operations: [{ type: 'mutation', name: 'Pay', rootFields: ['updateInvoice'], models: [{ name: 'Invoice', write: true }] }] },
+		{ step: 1, method: 'GET', route: '/api/users/:id', status: 200, resourceType: 'xhr', durationMs: 5 },
+	]
+
+	test('groups requests into endpoints with merged methods', () => {
+		expect(aggregateEndpoints(requests)).toEqual([
+			{ route: '/api/users/:id', methods: ['GET'], count: 1 },
+			{ route: '/graphql', methods: ['POST'], count: 2 },
+		])
+	})
+
+	test('a model read once and written once is reported as written', () => {
+		expect(aggregateModels(requests)).toEqual([{ name: 'Invoice', write: true }])
+	})
+})
+
+describe('summarize', () => {
+	test('counts each dimension and puts written models first', () => {
+		const footprint: ScenarioFootprint = {
+			scenario: 'Invoicing',
+			collected: ['network', 'graphql'],
+			files: [{ path: 'src/App.tsx', source: 'module' }],
+			components: ['InvoiceForm', 'DataGrid'],
+			requests: [],
+			endpoints: [{ route: '/graphql', methods: ['POST'], count: 3 }],
+			models: [{ name: 'Article', write: false }, { name: 'Invoice', write: true }],
+		}
+		expect(summarize(footprint)).toEqual({
+			files: 1,
+			components: 2,
+			endpoints: 1,
+			models: 2,
+			requests: 0,
+			topModels: ['Invoice', 'Article'],
+			warnings: 0,
+		})
+	})
+})

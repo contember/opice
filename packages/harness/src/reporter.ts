@@ -21,6 +21,7 @@ import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
 import { isTruthy } from './env.js'
 import { FileReporter } from './file-reporter.js'
+import type { ScenarioFootprint } from './footprint/types.js'
 import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
@@ -146,6 +147,12 @@ export interface VideoUpload {
 	filePath: string
 }
 
+export interface FootprintUpload {
+	scenarioId: string
+	/** What the scenario touched (opt-in, OPICE_FOOTPRINT). */
+	footprint: ScenarioFootprint
+}
+
 export interface ScenarioFinish {
 	scenarioId: string
 	status: 'passed' | 'failed'
@@ -169,6 +176,14 @@ export interface Reporter {
 	 * platform.
 	 */
 	uploadVideo(input: VideoUpload): Promise<void>
+	/**
+	 * Ship a scenario's footprint (opt-in, OPICE_FOOTPRINT) to the platform.
+	 * Best-effort exactly like {@link uploadVideo}: it is evidence, not a result,
+	 * so a failure is logged, never counted toward {@link hadFailures}, and never
+	 * reds the run. The local JSON artifact is written by the harness regardless,
+	 * so nothing is lost when there's no platform.
+	 */
+	uploadFootprint(input: FootprintUpload): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
 	/**
@@ -186,6 +201,7 @@ class NoopReporter implements Reporter {
 	async skipScenario(_input: ScenarioSkip): Promise<void> {}
 	async recordStep(_event: StepEvent): Promise<void> {}
 	async uploadVideo(_input: VideoUpload): Promise<void> {}
+	async uploadFootprint(_input: FootprintUpload): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
 	hadFailures(): boolean {
@@ -375,6 +391,41 @@ class HttpReporter implements Reporter {
 			}
 		} catch (err) {
 			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the video was NOT uploaded.`)
+		}
+	}
+
+	/**
+	 * PUT a scenario's footprint as JSON. Unlike a step record this is not
+	 * retried through {@link fetch} — it is bulky, entirely optional telemetry,
+	 * and a retry storm at teardown would cost more than the data is worth. Every
+	 * failure path logs and returns: the footprint is already on disk locally, so
+	 * a dropped upload costs a dashboard panel, not the information.
+	 */
+	async uploadFootprint(input: FootprintUpload): Promise<void> {
+		const runId = await this.ensureRun().catch(() => undefined)
+		if (!runId) return
+		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/footprint`
+		try {
+			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/footprint`, {
+				method: 'PUT',
+				headers: {
+					'cf-access-client-id': this.config.clientId,
+					'cf-access-client-secret': this.config.clientSecret,
+					'content-type': 'application/json',
+				},
+				body: JSON.stringify(input.footprint),
+				redirect: 'manual',
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+			})
+			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the footprint was NOT uploaded (service token rejected at the edge).`)
+				return
+			}
+			if (!response.ok) {
+				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the footprint was NOT uploaded.`)
+			}
+		} catch (err) {
+			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the footprint was NOT uploaded.`)
 		}
 	}
 

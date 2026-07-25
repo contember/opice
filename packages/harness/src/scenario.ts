@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
+import { closePage, getContext, getFootprintCollector, launchPage, recordVideoStep, type ClosedScenario } from './context.js'
 import { screenshot } from './element.js'
+import { writeFootprintFile } from './footprint/file.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { decideScenarioRun, parseSelectList } from './select.js'
 import { loadUserSetup } from './setup.js'
@@ -306,7 +307,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				if (meta.setup) await meta.setup()
 				// Body form opens the browser per attempt (in the test wrapper);
 				// the legacy registrar shares one browser, launched here once.
-				if (!isBody) await openScenario(meta)
+				if (!isBody) await openScenario(meta, testFile)
 			} catch (e) {
 				// Setup failed before any step ran. bun:test does NOT run afterAll
 				// when beforeAll throws, so the scenario started above would otherwise
@@ -331,9 +332,9 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		}, 30_000)
 
 		afterAll(async () => {
-			let videoPath: string | undefined
+			let closed: ClosedScenario = {}
 			try {
-				videoPath = await closePage()
+				closed = await closePage()
 			} catch {
 				// ignore close errors
 			}
@@ -343,9 +344,20 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// rather than run back-to-back. It's awaited together with flush() below
 			// (still before the process can exit). Best-effort: uploadVideo swallows
 			// its own failures, so this promise never rejects.
-			const videoUpload = videoPath && currentScenarioId
-				? reporter.uploadVideo({ scenarioId: currentScenarioId, filePath: videoPath })
+			const videoUpload = closed.video && currentScenarioId
+				? reporter.uploadVideo({ scenarioId: currentScenarioId, filePath: closed.video })
 				: Promise.resolve()
+			// The footprint (opt-in, OPICE_FOOTPRINT) is always written to disk when
+			// collected — with or without a platform — so a local run yields a usable
+			// artifact on its own. The upload is the platform's copy, kicked off here
+			// and awaited with the rest below. Both are best-effort.
+			let footprintUpload: Promise<unknown> = Promise.resolve()
+			if (closed.footprint) {
+				await writeFootprintFile(closed.footprint)
+				if (currentScenarioId) {
+					footprintUpload = reporter.uploadFootprint({ scenarioId: currentScenarioId, footprint: closed.footprint })
+				}
+			}
 			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the
 			// browser is closed; a failure is logged but never reds an otherwise-green
 			// run (cleanup is hygiene, not an assertion).
@@ -375,12 +387,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			}
 			if (currentScenarioId) {
 				// Drain pending step records (incl. their screenshot uploads) AND the
-				// scenario's video upload before marking the scenario done. step() fires
-				// recordStep fire-and-forget and the video PUT was kicked off above; the
-				// test process would otherwise exit while those requests were still in
-				// flight. Both run concurrently — they share no ordering dependency.
+				// scenario's video + footprint uploads before marking the scenario done.
+				// step() fires recordStep fire-and-forget and the two uploads were kicked
+				// off above; the test process would otherwise exit while those requests
+				// were still in flight. All run concurrently — they share no ordering
+				// dependency.
 				try {
-					await Promise.all([reporter.flush(), videoUpload])
+					await Promise.all([reporter.flush(), videoUpload, footprintUpload])
 				} catch {
 					// best-effort
 				}
@@ -432,7 +445,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
 				try {
-					await openScenario(meta)
+					await openScenario(meta, testFile)
 				} catch (e) {
 					// Setup failed: record it (afterAll finishes the scenario) and fail
 					// the attempt so bun retries or, once spent, leaves the run red.
@@ -486,14 +499,17 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
  * scenario URL. `launchPage()` closes any previous context first, so calling
  * this again (a retry attempt) tears down the failed attempt's page cleanly.
  */
-async function openScenario(meta: BrowserTestMeta): Promise<void> {
+async function openScenario(meta: BrowserTestMeta, testFile?: string): Promise<void> {
 	// Pass the scenario name so an opt-in video recording is saved under a
 	// readable, scenario-named file (see OPICE_VIDEO in context.ts). The roles
 	// drive which stored session (if any) seeds the context, so the scenario can
 	// open already authenticated instead of signing in by hand; baseUrl scopes
-	// that session cache per environment.
+	// that session cache per environment — and, for an opt-in footprint, marks
+	// which origin counts as "the app". `testFile` rides along so a footprint can
+	// name the file its scenario lives in (that pair is the key the platform's
+	// impact index is built on).
 	const base = meta.url ?? PLAYGROUND_URL
-	const page = await launchPage(meta.name, { roles: meta.roles, baseUrl: base })
+	const page = await launchPage(meta.name, { roles: meta.roles, baseUrl: base, ...(testFile ? { testFile } : {}) })
 	// Repo-level context setup (browser-setup.ts) runs before the first
 	// navigation, so an addInitScript it registers fires before the app's own
 	// scripts on first paint.
@@ -585,6 +601,11 @@ async function runUnit(unit: RunUnit): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
+	// Point the footprint observer (when collecting) at this step, so every
+	// request the step triggers is attributed to it. Set for pending stubs too:
+	// they don't run, but leaving the previous step active would credit the next
+	// step's traffic to the wrong place.
+	getFootprintCollector()?.setActiveStep(sequence)
 	// A reason *with* a body is a .fixme (tolerated failure). A reason *without*
 	// a body is .blocked (a pending stub that can't be authored yet).
 	const fixme = unit.reason !== undefined && unit.fn !== undefined
