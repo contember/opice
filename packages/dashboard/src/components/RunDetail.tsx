@@ -42,10 +42,13 @@ export interface Scenario {
 	attempts: number
 	/** URL of the scenario's walkthrough video (opt-in OPICE_VIDEO), or null. */
 	videoUrl: string | null
+	/** Footprint counts (opt-in OPICE_FOOTPRINT), or null when not collected. */
+	footprint: FootprintSummary | null
 }
 
 export interface Step {
 	id: number
+	sequence: number
 	kind: 'step' | 'invariant'
 	name: string
 	status: 'passed' | 'failed' | 'fixme' | 'fixmepass' | 'pending'
@@ -59,8 +62,43 @@ export interface Step {
 	screenshotFailed: boolean
 }
 
+/** Counts carried on every scenario read — enough to decide whether to offer the panel. */
+export interface FootprintSummary {
+	files: number
+	components: number
+	endpoints: number
+	models: number
+	requests: number
+	topModels: string[]
+	warnings: number
+}
+
+export interface FootprintRequest {
+	/** Sequence of the step that was active when the request started; null = outside any step. */
+	step: number | null
+	method: string
+	route: string
+	status: number | null
+	durationMs: number | null
+	operations?: { type: string; name?: string; rootFields: string[]; models: { name: string; write: boolean }[] }[]
+}
+
+/** The full footprint blob, fetched on demand when the panel is opened. */
+export interface FootprintDetail {
+	collected: string[]
+	files: { path: string; source: string; executed?: number }[]
+	components: string[]
+	requests: FootprintRequest[]
+	endpoints: { route: string; methods: string[]; count: number }[]
+	models: { name: string; write: boolean }[]
+	warnings?: string[]
+}
+
 /** Fetch the steps of one scenario. The caller binds the right RPC client. */
 export type LoadSteps = (scenarioId: string) => Promise<Step[]>
+
+/** Fetch one scenario's footprint. Null when it wasn't collected or is unreadable. */
+export type LoadFootprint = (scenarioId: string) => Promise<FootprintDetail | null>
 
 // A passed scenario that needed more than one attempt is flaky — it failed at
 // least once before passing within the retry budget.
@@ -102,11 +140,13 @@ export function RunDetail({
 	scenarios,
 	scenariosLoading,
 	loadSteps,
+	loadFootprint,
 }: {
 	run: RunSummary
 	scenarios: Scenario[] | undefined
 	scenariosLoading: boolean
 	loadSteps: LoadSteps
+	loadFootprint: LoadFootprint
 }) {
 	return (
 		<>
@@ -148,7 +188,7 @@ export function RunDetail({
 					<div className="empty-title">No scenarios reported</div>
 				</div>
 			) : (
-				<Workbench scenarios={scenarios} loadSteps={loadSteps} />
+				<Workbench scenarios={scenarios} loadSteps={loadSteps} loadFootprint={loadFootprint} />
 			)}
 		</>
 	)
@@ -161,7 +201,15 @@ export function RunDetail({
  * scenario only — the list stands on the scenario-level status the run already
  * carries, so opening a run doesn't fan out one steps query per scenario.
  */
-function Workbench({ scenarios, loadSteps }: { scenarios: Scenario[]; loadSteps: LoadSteps }) {
+function Workbench({
+	scenarios,
+	loadSteps,
+	loadFootprint,
+}: {
+	scenarios: Scenario[]
+	loadSteps: LoadSteps
+	loadFootprint: LoadFootprint
+}) {
 	const [filter, setFilter] = useState<ScenarioStatus | 'all'>('all')
 	const [query, setQuery] = useState('')
 	const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -295,7 +343,7 @@ function Workbench({ scenarios, loadSteps }: { scenarios: Scenario[]; loadSteps:
 
 				<div className="wb-detail">
 					{selected ? (
-						<ScenarioDetail scenario={selected} loadSteps={loadSteps} />
+						<ScenarioDetail scenario={selected} loadSteps={loadSteps} loadFootprint={loadFootprint} />
 					) : (
 						<div className="wb-detail-empty">Select a scenario.</div>
 					)}
@@ -336,7 +384,15 @@ function ScenarioRow({
 	)
 }
 
-function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSteps: LoadSteps }) {
+function ScenarioDetail({
+	scenario: s,
+	loadSteps,
+	loadFootprint,
+}: {
+	scenario: Scenario
+	loadSteps: LoadSteps
+	loadFootprint: LoadFootprint
+}) {
 	const skipped = s.status === 'skipped'
 	const steps = useQuery({
 		queryKey: ['scenarios.steps', s.id],
@@ -344,6 +400,28 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 		// A skipped scenario never ran, so it has no steps — don't fetch.
 		enabled: !skipped,
 	})
+	// The blob is fetched only when the scenario actually has one — the summary on
+	// the row is what tells us, so browsing a run of footprint-less scenarios
+	// costs no requests at all.
+	const footprint = useQuery({
+		queryKey: ['scenarios.footprint', s.id],
+		queryFn: () => loadFootprint(s.id),
+		enabled: !skipped && !!s.footprint,
+	})
+
+	// Requests, bucketed by the step that was active when they started. Built
+	// once here rather than filtered per step, so a scenario with hundreds of
+	// requests doesn't turn the step list into a quadratic scan.
+	const requestsByStep = useMemo(() => {
+		const map = new Map<number, FootprintRequest[]>()
+		for (const request of footprint.data?.requests ?? []) {
+			if (request.step === null) continue
+			const list = map.get(request.step)
+			if (list) list.push(request)
+			else map.set(request.step, [request])
+		}
+		return map
+	}, [footprint.data])
 
 	// Tier is only worth a chip when it diverges from the default 'standard' —
 	// otherwise every scenario would carry a redundant 'standard' tag.
@@ -376,6 +454,10 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 				</div>
 			)}
 
+			{!skipped && s.footprint && (
+				<FootprintPanel summary={s.footprint} detail={footprint.data ?? null} loading={footprint.isLoading} />
+			)}
+
 			{!skipped && s.videoUrl && (
 				<div className="s-video">
 					{/* Walkthrough recording (opt-in OPICE_VIDEO) — great for tutorials. */}
@@ -393,7 +475,7 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 				<div className="muted" style={{ padding: '12px 0', fontSize: 12.5 }}>No steps recorded.</div>
 			) : (
 				<div className="steps">
-					{steps.data.map(st => <StepRow key={st.id} step={st} />)}
+					{steps.data.map(st => <StepRow key={st.id} step={st} requests={requestsByStep.get(st.sequence)} />)}
 				</div>
 			)}
 
@@ -406,7 +488,131 @@ function ScenarioDetail({ scenario: s, loadSteps }: { scenario: Scenario; loadSt
 	)
 }
 
-function StepRow({ step: st }: { step: Step }) {
+/**
+ * What the scenario touched (opt-in OPICE_FOOTPRINT).
+ *
+ * The counts come free with the scenario row, so the header renders instantly;
+ * each dimension's detail lives in a blob fetched on demand. Models lead,
+ * because "this scenario writes Invoice" is the fact that changes what you do
+ * next — a written model is the strongest claim in here, and it's marked as such.
+ */
+function FootprintPanel({
+	summary,
+	detail,
+	loading,
+}: {
+	summary: FootprintSummary
+	detail: FootprintDetail | null
+	loading: boolean
+}) {
+	const written = detail?.models.filter(m => m.write) ?? []
+	const read = detail?.models.filter(m => !m.write) ?? []
+	return (
+		<div className="s-footprint">
+			<div className="s-footprint-head">
+				<span className="s-footprint-title">Touches</span>
+				{summary.models > 0 && <span className="fp-count">{summary.models} models</span>}
+				{summary.endpoints > 0 && <span className="fp-count">{summary.endpoints} endpoints</span>}
+				{summary.files > 0 && <span className="fp-count">{summary.files} files</span>}
+				{summary.components > 0 && <span className="fp-count">{summary.components} components</span>}
+				{loading && <span className="fp-count muted">loading…</span>}
+			</div>
+
+			{detail && (
+				<>
+					{detail.models.length > 0 && (
+						<div className="fp-row">
+							{written.map(m => (
+								<span key={`w-${m.name}`} className="fp-chip model write" title="Written — reached through a mutation">{m.name}</span>
+							))}
+							{read.map(m => (
+								<span key={`r-${m.name}`} className="fp-chip model" title="Read only">{m.name}</span>
+							))}
+						</div>
+					)}
+
+					{detail.endpoints.length > 0 && (
+						<FootprintList label={`Endpoints (${detail.endpoints.length})`}>
+							{detail.endpoints.map(e => (
+								<div className="fp-line" key={e.route}>
+									<span className="fp-method">{e.methods.join('/')}</span>
+									<code>{e.route}</code>
+									{e.count > 1 && <span className="fp-times">×{e.count}</span>}
+								</div>
+							))}
+						</FootprintList>
+					)}
+
+					{detail.components.length > 0 && (
+						<FootprintList label={`Components (${detail.components.length})`}>
+							<div className="fp-row">
+								{detail.components.map(c => <span key={c} className="fp-chip">{c}</span>)}
+							</div>
+						</FootprintList>
+					)}
+
+					{detail.files.length > 0 && (
+						<FootprintList label={`Files (${detail.files.length})`}>
+							{detail.files.map(f => (
+								<div className="fp-line" key={f.path}>
+									<code>{f.path}</code>
+									{typeof f.executed === 'number' && (
+										<span className="fp-times" title="Share of the file V8 saw execute">{Math.round(f.executed * 100)}%</span>
+									)}
+								</div>
+							))}
+						</FootprintList>
+					)}
+
+					{detail.warnings && detail.warnings.length > 0 && (
+						<div className="fp-warnings">
+							{/* A thin footprint should look thin, not quietly wrong. */}
+							{detail.warnings.map(w => <div className="fp-warning" key={w}>{w}</div>)}
+						</div>
+					)}
+				</>
+			)}
+		</div>
+	)
+}
+
+/** A collapsed dimension of the footprint. Native `<details>` — no state, no JS. */
+function FootprintList({ label, children }: { label: string; children: React.ReactNode }) {
+	return (
+		<details className="fp-details">
+			<summary>{label}</summary>
+			<div className="fp-details-body">{children}</div>
+		</details>
+	)
+}
+
+/** The API calls one step made, listed under it. */
+function StepRequests({ requests }: { requests: FootprintRequest[] }) {
+	return (
+		<div className="step-requests">
+			{requests.map((r, i) => {
+				const operations = r.operations ?? []
+				return (
+					<div className="step-request" key={`${r.method}-${r.route}-${i}`}>
+						<span className="fp-method">{r.method}</span>
+						<code>{r.route}</code>
+						{operations.length > 0 && (
+							<span className="step-request-ops">
+								{operations.map(o => o.name ?? o.rootFields.join(', ')).join(' · ')}
+							</span>
+						)}
+						{r.status !== null && (
+							<span className={`step-request-status${r.status >= 400 ? ' bad' : ''}`}>{r.status}</span>
+						)}
+						{r.durationMs !== null && <span className="duration tabular">{fmtDuration(r.durationMs)}</span>}
+					</div>
+				)
+			})}
+		</div>
+	)
+}
+
+function StepRow({ step: st, requests }: { step: Step; requests?: FootprintRequest[] }) {
 	// A pending step with a reason is 'blocked' (feature not built); without, a
 	// plain todo awaiting authoring.
 	const blocked = st.status === 'pending' && !!st.reason
@@ -419,9 +625,10 @@ function StepRow({ step: st }: { step: Step }) {
 				{st.name}
 			</span>
 			<span className="duration">{st.status === 'pending' ? (blocked ? 'blocked' : 'not authored') : fmtDuration(st.durationMs)}</span>
-			{(st.intent || st.error || st.reason || st.screenshotUrl || st.screenshotFailed) && (
+			{(st.intent || st.error || st.reason || st.screenshotUrl || st.screenshotFailed || requests?.length) && (
 				<div className="step-detail">
 					{st.intent && <div className="step-intent">{st.intent}</div>}
+					{requests && requests.length > 0 && <StepRequests requests={requests} />}
 					{st.reason && (
 						<div className="step-reason">
 							{blocked ? 'Blocked' : st.status === 'fixmepass' ? 'Marked fixme but passed' : 'Known failure'} — {st.reason}

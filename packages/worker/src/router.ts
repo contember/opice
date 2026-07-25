@@ -86,24 +86,44 @@ export const FootprintSummarySchema = z.object({
 	warnings: z.number(),
 })
 
+const FootprintOperationSchema = z.object({
+	type: z.string(),
+	name: z.string().optional(),
+	rootFields: z.array(z.string()),
+	models: z.array(z.object({ name: z.string(), write: z.boolean() })),
+})
+
 /**
- * The full footprint blob, as stored in R2. Deliberately loose about
- * `requests`: the harness owns that shape and will grow it, and a strict schema
- * here would mean an older worker silently dropping fields a newer harness
- * sends. The parts the platform reasons about — files, models, endpoints — are
- * validated at ingest, which is where it matters.
+ * One recorded request. Everything but the method and route has a default, and
+ * unknown keys pass through: the harness owns this shape and will grow it, and a
+ * schema that rejected a field it hadn't heard of would turn a *newer* client
+ * into an unreadable footprint.
  */
+const FootprintRequestSchema = z.object({
+	step: z.number().nullable().default(null),
+	method: z.string(),
+	route: z.string(),
+	params: z.array(z.string()).optional(),
+	status: z.number().nullable().default(null),
+	resourceType: z.string().default('other'),
+	durationMs: z.number().nullable().default(null),
+	operations: z.array(FootprintOperationSchema).optional(),
+}).passthrough()
+
+/** The full footprint blob, as stored in R2. */
 export const ScenarioFootprintSchema = z.object({
 	scenario: z.string(),
 	testFile: z.string().optional(),
 	collected: z.array(z.string()),
 	files: z.array(z.object({ path: z.string(), source: z.string(), executed: z.number().optional() })),
 	components: z.array(z.string()),
-	requests: z.array(z.unknown()),
+	requests: z.array(FootprintRequestSchema),
 	endpoints: z.array(z.object({ route: z.string(), methods: z.array(z.string()), count: z.number() })),
 	models: z.array(z.object({ name: z.string(), write: z.boolean() })),
 	warnings: z.array(z.string()).optional(),
 })
+
+export type ScenarioFootprintDto = z.infer<typeof ScenarioFootprintSchema>
 
 export const ScenarioSchema = z.object({
 	id: z.string(),
@@ -440,12 +460,20 @@ function mapSteps(rows: Awaited<ReturnType<Services['db']['listStepsForScenario'
  * telemetry that may have failed to store. A 500 here would break a run page
  * over a panel that was always optional.
  */
-export async function readFootprintBlob(services: Services, key: string | null): Promise<unknown> {
+export async function readFootprintBlob(services: Services, key: string | null): Promise<ScenarioFootprintDto | null> {
 	if (!key) return null
 	try {
 		const object = await services.runAssets.get(key)
 		if (!object) return null
-		return JSON.parse(await object.text()) as unknown
+		// Parse rather than cast. The blob was written by this worker, but a stored
+		// object outlives the code that wrote it — this is where a footprint from
+		// six months and three harness versions ago arrives.
+		const parsed = ScenarioFootprintSchema.safeParse(JSON.parse(await object.text()))
+		if (!parsed.success) {
+			console.error(`footprint blob has an unexpected shape (${key}): ${parsed.error.message}`)
+			return null
+		}
+		return parsed.data
 	} catch (err) {
 		console.error(`footprint blob unreadable (${key}): ${err instanceof Error ? err.message : String(err)}`)
 		return null
