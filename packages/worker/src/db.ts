@@ -1,3 +1,4 @@
+import type { FootprintEdgeInput } from './footprint'
 import type { CapabilityKind, CapabilityRecord, FootprintEdge, FootprintEdgeKind, FootprintSummary, ImpactedScenario, ImpactReason, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
@@ -23,6 +24,10 @@ const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id A
 // before the reaper runs (so local/lopata, where cron may not fire, is correct
 // too). Generous — a slow scenario + screenshot upload must not trip it.
 export const STALE_RUN_MS = 10 * 60 * 1000
+
+// Rows per footprint-edge INSERT. D1 allows 100 bound parameters per query and
+// an edge binds 11, so 9 rows is the most that fits.
+const EDGES_PER_INSERT = 9
 
 // Internal D1 row shapes — snake_case as the migration defines.
 interface ProjectRow {
@@ -136,13 +141,9 @@ const toProject = (r: ProjectRow): Project => ({
 })
 
 /**
- * May a run on `branch` rewrite the project's change-tracking index?
- *
- * A feature branch is by definition a state nobody else is on, so letting it
- * write would hand every other developer an answer computed from someone's
- * half-built work. The default branch is the one state that is true for
- * everybody. With no branch recorded at all we refuse — an unattributable run
- * is exactly the one we can't reason about.
+ * May a run on `branch` rewrite the project's change-tracking index? See
+ * migration 0012 for why only the default branch may. A run with no branch
+ * recorded is refused — an unattributable run is the one we can't reason about.
  */
 export const isDefaultBranch = (project: Project, branch: string | null): boolean => {
 	if (!branch) return false
@@ -261,18 +262,14 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	finishedAt: r.finished_at,
 })
 
+/** The columns `listImpactEdges` selects — deliberately not the whole table. */
 interface FootprintEdgeRow {
-	project_id: number
 	scenario_key: string
 	test_file: string | null
 	scenario_name: string
 	kind: FootprintEdgeKind
 	value: string
-	weight: number | null
-	writes: number
 	exercised: number
-	run_id: string | null
-	branch: string | null
 	updated_at: number
 }
 
@@ -282,61 +279,9 @@ const toFootprintEdge = (r: FootprintEdgeRow): FootprintEdge => ({
 	scenarioName: r.scenario_name,
 	kind: r.kind,
 	value: r.value,
-	weight: r.weight,
-	writes: r.writes !== 0,
-	runId: r.run_id,
-	branch: r.branch,
+	exercised: r.exercised !== 0,
 	updatedAt: r.updated_at,
 })
-
-/** `\` → `/`, drop a leading `./`, trim a trailing slash. Mirrors the harness's select-path shape. */
-const normalizePath = (p: string): string => {
-	let s = p.trim().replace(/\\/g, '/')
-	while (s.startsWith('./')) s = s.slice(2)
-	if (s.length > 1) s = s.replace(/\/+$/, '')
-	return s
-}
-
-/** `apps/web/src/InvoiceForm.tsx` → `InvoiceForm`. Empty for a dotfile or a bare directory. */
-const basenameWithoutExtension = (p: string): string => {
-	const base = p.slice(p.lastIndexOf('/') + 1)
-	const dot = base.lastIndexOf('.')
-	return dot > 0 ? base.slice(0, dot) : base
-}
-
-/**
- * Does a changed path reach this edge? Returns the path that matched (so the
- * caller can explain the selection), or null.
- *
- * File edges match on the path, in either direction — a footprint's
- * `src/App.tsx` and a diff's `apps/web/src/App.tsx` are the same file seen from
- * two roots. Component and model edges match on the changed file's base name,
- * case-insensitively, which is what catches a component whose file moved.
- */
-const matchEdge = (
-	row: FootprintEdgeRow,
-	paths: readonly string[],
-	names: ReadonlyMap<string, string>,
-	models: ReadonlyMap<string, string>,
-	includeLoaded: boolean,
-): string | null => {
-	if (row.kind === 'file') {
-		// A merely-loaded file is a true but nearly useless signal (see `exercised`
-		// in migration 0012) — skipped unless the caller asks to widen.
-		if (!includeLoaded && row.exercised === 0) return null
-		const value = normalizePath(row.value)
-		for (const path of paths) {
-			if (value === path || value.endsWith('/' + path) || path.endsWith('/' + value)) return path
-		}
-		return null
-	}
-	if (row.kind === 'component' || row.kind === 'model') {
-		const explicit = models.get(row.value.toLowerCase())
-		if (row.kind === 'model' && explicit !== undefined) return explicit
-		return names.get(row.value.toLowerCase()) ?? null
-	}
-	return null
-}
 
 const toStep = (r: StepRow): Step => ({
 	id: r.id,
@@ -369,6 +314,8 @@ export class Db {
 			id: Number(result.meta.last_row_id),
 			slug: input.slug,
 			name: input.name,
+			// A fresh project has no explicit trunk name; NULL means main-or-master.
+			defaultBranch: null,
 			createdAt,
 		}
 	}
@@ -806,130 +753,72 @@ export class Db {
 		scenarioName: string
 		runId: string
 		branch: string | null
-		edges: { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean; exercised?: boolean }[]
+		edges: FootprintEdgeInput[]
 	}): Promise<void> {
 		const now = Date.now()
 		const statements: D1PreparedStatement[] = [
 			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ? AND scenario_key = ?').bind(input.projectId, input.scenarioKey),
 		]
-		const insert = this.d1.prepare(
-			`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, weight, writes, exercised, run_id, branch, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
-					weight = excluded.weight, writes = excluded.writes, exercised = excluded.exercised,
-					run_id = excluded.run_id, branch = excluded.branch, updated_at = excluded.updated_at`,
-		)
-		for (const edge of input.edges) {
-			statements.push(insert.bind(
+		// Multi-row inserts, not one statement per edge: a single scenario indexes
+		// well over a thousand edges, and a nightly run does that for every scenario.
+		// D1 caps a query at 100 bound parameters, and seven of the eleven columns
+		// are the same on every row of a scenario, so batching by EDGES_PER_INSERT
+		// cuts the statement count by that factor.
+		for (let i = 0; i < input.edges.length; i += EDGES_PER_INSERT) {
+			const chunk = input.edges.slice(i, i + EDGES_PER_INSERT)
+			const values = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
+			const bindings = chunk.flatMap((edge) => [
 				input.projectId,
 				input.scenarioKey,
 				input.testFile,
 				input.scenarioName,
 				edge.kind,
 				edge.value,
-				edge.weight ?? null,
 				edge.writes ? 1 : 0,
 				edge.exercised === false ? 0 : 1,
 				input.runId,
 				input.branch,
 				now,
-			))
+			])
+			statements.push(
+				this.d1
+					.prepare(
+						`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, writes, exercised, run_id, branch, updated_at)
+							VALUES ${values}
+							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
+								writes = excluded.writes, exercised = excluded.exercised,
+								run_id = excluded.run_id, branch = excluded.branch, updated_at = excluded.updated_at`,
+					)
+					.bind(...bindings),
+			)
 		}
 		await this.d1.batch(statements)
 	}
 
-	/** Every edge recorded for a scenario key — the dashboard's "what does this touch" view. */
-	async listFootprintEdges(projectId: number, scenarioKey: string): Promise<FootprintEdge[]> {
-		const { results } = await this.d1
-			.prepare('SELECT * FROM footprint_edges WHERE project_id = ? AND scenario_key = ? ORDER BY kind, value')
-			.bind(projectId, scenarioKey)
-			.all<FootprintEdgeRow>()
-		return results.map(toFootprintEdge)
-	}
-
-	/** The inverse view: which scenarios touch this thing? */
-	async listScenariosTouching(projectId: number, kind: FootprintEdgeKind, value: string): Promise<FootprintEdge[]> {
-		const { results } = await this.d1
-			.prepare('SELECT * FROM footprint_edges WHERE project_id = ? AND kind = ? AND value = ? ORDER BY scenario_name')
-			.bind(projectId, kind, value)
-			.all<FootprintEdgeRow>()
-		return results.map(toFootprintEdge)
-	}
-
 	/**
-	 * The impact query: given the paths a change touches, which scenarios reach
-	 * them?
+	 * The project's change-tracking edges, for {@link matchImpact} to match a diff
+	 * against. One indexed read: the index is bounded by scenarios x
+	 * touched-things (refreshed rather than appended), and expressing
+	 * suffix-matching against a few hundred changed paths as SQL would mean a LIKE
+	 * per path or a temp table — both worse than reading it once.
 	 *
-	 * Matching is deliberately generous in two directions, because both are cheap
-	 * and a missed scenario is the expensive kind of wrong:
-	 *
-	 *  - **Path shape.** A footprint records the path as the browser saw it
-	 *    (`src/App.tsx`), a diff gives the path as the repo sees it
-	 *    (`apps/web/src/App.tsx`). Either may be a suffix of the other, so both
-	 *    directions are tried — the same tolerance `select.ts` applies to test files.
-	 *  - **Name.** A changed `InvoiceForm.tsx` also matches a *component* edge
-	 *    named `InvoiceForm` and a *model* edge named `Invoice`-ish, which is how
-	 *    a component that moved file is still found.
-	 *
-	 * Returns one entry per scenario with every reason it matched, so the CLI can
-	 * explain the selection rather than presenting it as an oracle.
+	 * `includeLoaded` filters here rather than in the matcher because it decides
+	 * ~85% of the file rows: a scenario indexes far more loaded files than called
+	 * ones (see `exercised` in migration 0012), and there is no point shipping
+	 * them out of D1 only to drop them. Non-file edges are always stored
+	 * `exercised = 1`, so the predicate leaves them alone.
 	 */
-	async findImpactedScenarios(input: {
-		projectId: number
-		/** Repo-relative paths from a diff. */
-		paths: string[]
-		/** Explicit model names to match, for a change the paths can't express (a schema edit). */
-		models?: string[]
-		/**
-		 * Also match files the scenario only *loaded* (imported without calling
-		 * into). Off by default because on a real app that dimension saturates —
-		 * an admin that evaluates its schema and component library on import
-		 * "touches" well over a thousand files per scenario, so matching them all
-		 * would select every scenario for every change. Turn it on to widen a
-		 * search that came back suspiciously empty.
-		 */
-		includeLoaded?: boolean
-	}): Promise<ImpactedScenario[]> {
-		const paths = [...new Set(input.paths.map(normalizePath).filter(Boolean))]
-		const models = [...new Set((input.models ?? []).filter(Boolean))]
-		if (paths.length === 0 && models.length === 0) return []
-		// One scan of the project's index, matched in memory. The index is bounded
-		// by scenarios x touched-things (thousands of rows, refreshed rather than
-		// appended), and expressing suffix-matching against a few hundred changed
-		// paths as SQL would mean either a LIKE per path or shipping the paths into
-		// a temp table — both worse than one indexed read.
+	async listImpactEdges(projectId: number, includeLoaded = false): Promise<FootprintEdge[]> {
+		const exercisedOnly = includeLoaded ? '' : ' AND (kind != \'file\' OR exercised = 1)'
 		const { results } = await this.d1
-			.prepare(`SELECT * FROM footprint_edges WHERE project_id = ? AND kind IN ('file', 'component', 'model')`)
-			.bind(input.projectId)
+			.prepare(
+				`SELECT scenario_key, test_file, scenario_name, kind, value, exercised, updated_at
+					FROM footprint_edges
+					WHERE project_id = ? AND kind IN ('file', 'component', 'model')${exercisedOnly}`,
+			)
+			.bind(projectId)
 			.all<FootprintEdgeRow>()
-
-		const byScenario = new Map<string, ImpactedScenario>()
-		const names = new Map<string, string>() // lower-cased basename → the path it came from
-		for (const path of paths) {
-			const base = basenameWithoutExtension(path)
-			if (base) names.set(base.toLowerCase(), path)
-		}
-		const modelSet = new Map<string, string>(models.map((m) => [m.toLowerCase(), m]))
-
-		for (const row of results) {
-			const matched = matchEdge(row, paths, names, modelSet, input.includeLoaded === true)
-			if (!matched) continue
-			const existing = byScenario.get(row.scenario_key)
-			const reason: ImpactReason = { kind: row.kind, value: row.value, matched }
-			if (existing) {
-				existing.reasons.push(reason)
-				existing.updatedAt = Math.max(existing.updatedAt, row.updated_at)
-			} else {
-				byScenario.set(row.scenario_key, {
-					scenarioKey: row.scenario_key,
-					testFile: row.test_file,
-					scenarioName: row.scenario_name,
-					reasons: [reason],
-					updatedAt: row.updated_at,
-				})
-			}
-		}
-		return [...byScenario.values()].sort((a, b) => a.scenarioName.localeCompare(b.scenarioName))
+		return results.map(toFootprintEdge)
 	}
 
 	/** How many edges the project has indexed, and when it was last refreshed. */

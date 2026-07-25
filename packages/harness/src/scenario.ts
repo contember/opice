@@ -353,9 +353,12 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// and awaited with the rest below. Both are best-effort.
 			let footprintUpload: Promise<unknown> = Promise.resolve()
 			if (closed.footprint) {
-				await writeFootprintFile(closed.footprint)
+				// Written once and uploaded from the same string — at the collector's
+				// caps this document runs to megabytes, so serializing it twice would
+				// be a real cost in the teardown budget.
+				const json = await writeFootprintFile(closed.footprint)
 				if (currentScenarioId) {
-					footprintUpload = reporter.uploadFootprint({ scenarioId: currentScenarioId, footprint: closed.footprint })
+					footprintUpload = reporter.uploadFootprint({ scenarioId: currentScenarioId, body: json })
 				}
 			}
 			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the

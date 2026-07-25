@@ -1,10 +1,10 @@
 import { withVideoUrl } from '../asset-url'
 import { isDefaultBranch } from '../db'
-import { normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
+import { matchImpact, normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
-import type { Project, Run, ScenarioStatus, StepKind, StepStatus } from '../types'
+import type { Project, Run, Scenario, ScenarioStatus, StepKind, StepStatus } from '../types'
 
 // Steps accept the tolerated fixme markers + 'pending' (a phase-1 stub); scenario
 // finish does not (a scenario is only ever passed/failed — fixme/pending surface
@@ -307,14 +307,49 @@ async function createStep(
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 /**
- * Receive a scenario's walkthrough video (opt-in, `OPICE_VIDEO`) as a binary PUT
- * and store it in the shared run-assets bucket under `<slug>/<runId>/...`. The
- * video is non-essential telemetry, exactly like a step screenshot: the scenario
- * row already exists, so a *storage* failure is logged and reported as
- * `{ videoFailed: true }` (HTTP 200) rather than 500-ing — which, under the
- * reporter's strict mode, would fail the CI run over a dropped video. A malformed
- * request (empty or over-size body) is a genuine 400, not a storage failure; the
- * reporter treats any non-2xx as best-effort and never reds the run either way.
+ * Read a per-scenario asset body (a video, a footprint), rejecting the
+ * malformed cases the same way for both.
+ *
+ * Screenshots, videos and footprints are one asset family on this worker — one
+ * bucket, one `<slug>/<runId>/…` namespace, one set of scope checks — so their
+ * intake behaves identically too: the scenario must belong to the run, the body
+ * must be non-empty, and an over-size body is refused up front from the declared
+ * `content-length` before it is ever buffered. Returns the body together with
+ * the scenario it belongs to (both callers need it), or the `Response` to send
+ * instead.
+ */
+async function readScenarioAssetBody(
+	request: Request,
+	services: Services,
+	runId: string,
+	scenarioId: string,
+	limits: { maxBytes: number; label: string },
+): Promise<{ body: ArrayBuffer; scenario: Scenario } | { response: Response }> {
+	const scenario = await services.db.getScenario(scenarioId)
+	if (!scenario || scenario.runId !== runId) {
+		return { response: notFound('scenario not found') }
+	}
+	const declared = Number(request.headers.get('content-length') ?? '')
+	if (Number.isFinite(declared) && declared > limits.maxBytes) {
+		return { response: badRequest(`${limits.label} too large (${declared} bytes > ${limits.maxBytes})`) }
+	}
+	const body = await request.arrayBuffer()
+	if (body.byteLength === 0) {
+		return { response: badRequest(`empty ${limits.label} body`) }
+	}
+	if (body.byteLength > limits.maxBytes) {
+		return { response: badRequest(`${limits.label} too large (${body.byteLength} bytes > ${limits.maxBytes})`) }
+	}
+	return { body, scenario }
+}
+
+/**
+ * Receive a scenario's walkthrough video (opt-in, `OPICE_VIDEO`) and store it in
+ * the shared run-assets bucket. The video is non-essential telemetry, exactly
+ * like a step screenshot: the scenario row already exists, so a *storage*
+ * failure is reported as `{ videoFailed: true }` (HTTP 200) rather than 500-ing
+ * — which, under the reporter's strict mode, would fail the CI run over a
+ * dropped video.
  */
 async function uploadVideo(
 	request: Request,
@@ -323,25 +358,11 @@ async function uploadVideo(
 	runId: string,
 	scenarioId: string,
 ): Promise<Response> {
-	const scenario = await services.db.getScenario(scenarioId)
-	if (!scenario || scenario.runId !== runId) {
-		return notFound('scenario not found')
-	}
-	// Reject an over-size body up front when the length is declared, before buffering.
-	const declared = Number(request.headers.get('content-length') ?? '')
-	if (Number.isFinite(declared) && declared > MAX_VIDEO_BYTES) {
-		return badRequest(`video too large (${declared} bytes > ${MAX_VIDEO_BYTES})`)
-	}
-	const buffer = await request.arrayBuffer()
-	if (buffer.byteLength === 0) {
-		return badRequest('empty video body')
-	}
-	if (buffer.byteLength > MAX_VIDEO_BYTES) {
-		return badRequest(`video too large (${buffer.byteLength} bytes > ${MAX_VIDEO_BYTES})`)
-	}
+	const read = await readScenarioAssetBody(request, services, runId, scenarioId, { maxBytes: MAX_VIDEO_BYTES, label: 'video' })
+	if ('response' in read) return read.response
 	const key = `${project.slug}/${runId}/video-${scenarioId}.webm`
 	try {
-		await putWithRetry(services.runAssets, key, new Uint8Array(buffer), { httpMetadata: { contentType: 'video/webm' } })
+		await putWithRetry(services.runAssets, key, new Uint8Array(read.body), { httpMetadata: { contentType: 'video/webm' } })
 		await services.db.attachVideo(scenarioId, key)
 	} catch (err) {
 		console.error(`video upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
@@ -370,10 +391,12 @@ async function impact(request: Request, services: Services, project: Project): P
 	if (paths.length > MAX_IMPACT_PATHS) {
 		return badRequest(`too many paths (${paths.length} > ${MAX_IMPACT_PATHS})`)
 	}
-	const [scenarios, index] = await Promise.all([
-		services.db.findImpactedScenarios({ projectId: project.id, paths, models, includeLoaded: body.includeLoaded === true }),
+	const includeLoaded = body.includeLoaded === true
+	const [edges, index] = await Promise.all([
+		services.db.listImpactEdges(project.id, includeLoaded),
 		services.db.footprintIndexStatus(project.id),
 	])
+	const scenarios = matchImpact(edges, { paths, models, includeLoaded })
 	return json({ scenarios, index })
 }
 
@@ -407,44 +430,30 @@ async function uploadFootprint(
 	run: Run,
 	scenarioId: string,
 ): Promise<Response> {
-	const scenario = await services.db.getScenario(scenarioId)
-	if (!scenario || scenario.runId !== run.id) {
-		return notFound('scenario not found')
-	}
-	const declared = Number(request.headers.get('content-length') ?? '')
-	if (Number.isFinite(declared) && declared > MAX_FOOTPRINT_BYTES) {
-		return badRequest(`footprint too large (${declared} bytes > ${MAX_FOOTPRINT_BYTES})`)
-	}
-	const text = await request.text()
-	if (text.length === 0) {
-		return badRequest('empty footprint body')
-	}
-	if (text.length > MAX_FOOTPRINT_BYTES) {
-		return badRequest(`footprint too large (${text.length} bytes > ${MAX_FOOTPRINT_BYTES})`)
-	}
+	const read = await readScenarioAssetBody(request, services, run.id, scenarioId, { maxBytes: MAX_FOOTPRINT_BYTES, label: 'footprint' })
+	if ('response' in read) return read.response
+	const bytes = new Uint8Array(read.body)
 	let footprint: ScenarioFootprint
 	try {
-		footprint = normalizeFootprint(JSON.parse(text) as unknown)
+		footprint = normalizeFootprint(JSON.parse(new TextDecoder().decode(bytes)) as unknown)
 	} catch (err) {
 		return badRequest(`invalid footprint: ${err instanceof Error ? err.message : String(err)}`)
 	}
+	const scenario = read.scenario
 
 	const key = `${project.slug}/${run.id}/footprint-${scenarioId}.json`
 	let footprintFailed = false
 	try {
-		await putWithRetry(services.runAssets, key, new TextEncoder().encode(text), {
-			httpMetadata: { contentType: 'application/json' },
-		})
+		await putWithRetry(services.runAssets, key, bytes, { httpMetadata: { contentType: 'application/json' } })
 		await services.db.attachFootprint(scenarioId, key, summarize(footprint))
 	} catch (err) {
 		footprintFailed = true
 		console.error(`footprint upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 	}
 
-	// Two gates before this footprint may rewrite the shared index (migration
-	// 0012): it must come from CI, and from the default branch. Everything else
-	// still gets its blob stored — only the *index*, which decides what CI runs
-	// for everyone, is restricted to the one state that is true for everybody.
+	// Two gates before this footprint may rewrite the shared index — it must come
+	// from CI, and from the default branch (see migration 0012 for why). The blob
+	// above is stored either way; only the index is restricted.
 	let indexed = false
 	if (run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {

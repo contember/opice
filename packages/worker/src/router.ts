@@ -82,7 +82,6 @@ export const FootprintSummarySchema = z.object({
 	endpoints: z.number(),
 	models: z.number(),
 	requests: z.number(),
-	topModels: z.array(z.string()),
 	warnings: z.number(),
 })
 
@@ -359,40 +358,7 @@ const scenarios = rpc.router({
 			const slug = await projectSlugForRun(ctx.services, run.projectId)
 			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
 			return readFootprintBlob(ctx.services, scenario.footprintKey)
-		}),
-
-	/**
-	 * The inverse question: which scenarios touch this file / component /
-	 * endpoint / model? Answered from the change-tracking index, so it spans
-	 * every scenario the project has ever indexed — not just the run you're
-	 * looking at.
-	 */
-	touching: rpc.procedure
-		.input(z.object({
-			projectId: z.number(),
-			kind: z.enum(['file', 'component', 'endpoint', 'model']),
-			value: z.string(),
-		}))
-		.output(z.array(z.object({
-			scenarioKey: z.string(),
-			testFile: z.string().nullable(),
-			scenarioName: z.string(),
-			writes: z.boolean(),
-			updatedAt: z.number(),
-		})))
-		.handler(async ({ ctx, input }) => {
-			const project = await ctx.services.db.getProjectById(input.projectId)
-			if (!project) notFound(`Project not found: ${input.projectId}`)
-			assertAccess(opCanReadReports(ctx.auth, project.slug))
-			const edges = await ctx.services.db.listScenariosTouching(project.id, input.kind, input.value)
-			return edges.map((e) => ({
-				scenarioKey: e.scenarioKey,
-				testFile: e.testFile,
-				scenarioName: e.scenarioName,
-				writes: e.writes,
-				updatedAt: e.updatedAt,
-			}))
-		}),
+		})
 })
 
 // Run-scoped, read-only share links — propustka capability tokens. Any operator with

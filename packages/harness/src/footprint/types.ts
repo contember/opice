@@ -26,7 +26,7 @@ export type FootprintEdgeKind = 'file' | 'component' | 'endpoint' | 'model'
  * the difference matters a lot to `--impacted`, where the first is a fact and
  * the second would silently select nothing.
  */
-export type FootprintCollector = 'network' | 'graphql' | 'modules' | 'coverage' | 'components'
+export type FootprintCollectorKind = 'network' | 'graphql' | 'modules' | 'coverage' | 'components'
 
 /** A data model (entity) the scenario touched, and whether it wrote to it. */
 export interface FootprintModel {
@@ -98,7 +98,7 @@ export interface ScenarioFootprint {
 	scenario: string
 	testFile?: string
 	/** Collectors that ran. Absence of a kind here means "not collected", not "none found". */
-	collected: FootprintCollector[]
+	collected: FootprintCollectorKind[]
 	files: FootprintFile[]
 	components: string[]
 	requests: FootprintRequest[]
@@ -112,16 +112,4 @@ export interface ScenarioFootprint {
 	 * visibly thin rather than quietly wrong.
 	 */
 	warnings?: string[]
-}
-
-/** Compact counts + top entries, stored in D1 so a list view needn't fetch the blob. */
-export interface FootprintSummary {
-	files: number
-	components: number
-	endpoints: number
-	models: number
-	requests: number
-	/** Model names (write ones first), capped — enough for a badge row. */
-	topModels: string[]
-	warnings: number
 }

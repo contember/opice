@@ -37,26 +37,18 @@ export type {
 export { FileReporter } from './file-reporter.js'
 
 // Footprint — what a scenario touched in the browser (opt-in, OPICE_FOOTPRINT).
-// The platform imports these types to validate ingest and build its impact index.
-export {
-	isEmptyFootprint,
-	loadFootprintConfig,
-	resolveMode,
-	summarize,
-	toRouteTemplate,
-	deriveModels,
-	parseOperations,
-} from './footprint/index.js'
+// Types only: a repo writes a `browser-footprint.ts` against `FootprintConfig`
+// (and reads `ParsedOperation` in its `mapOperation`), but nothing outside the
+// harness calls the collector — the platform mirrors the wire shape and
+// validates on arrival rather than importing it.
 export type {
 	FootprintConfig,
-	FootprintEdgeKind,
 	FootprintEndpoint,
 	FootprintFile,
 	FootprintMode,
 	FootprintModel,
 	FootprintOperation,
 	FootprintRequest,
-	FootprintSummary,
 	ParsedOperation,
 	ScenarioFootprint,
 } from './footprint/index.js'

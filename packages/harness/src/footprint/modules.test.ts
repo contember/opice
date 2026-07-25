@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { aggregateEndpoints, aggregateModels } from './collector.js'
 import { resolveSourcePath } from './coverage.js'
 import { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
-import { summarize } from './index.js'
-import type { FootprintRequest, ScenarioFootprint } from './types.js'
+import type { FootprintRequest } from './types.js'
 
 const APP = 'http://localhost:15180'
 
@@ -100,28 +99,5 @@ describe('aggregation', () => {
 
 	test('a model read once and written once is reported as written', () => {
 		expect(aggregateModels(requests)).toEqual([{ name: 'Invoice', write: true }])
-	})
-})
-
-describe('summarize', () => {
-	test('counts each dimension and puts written models first', () => {
-		const footprint: ScenarioFootprint = {
-			scenario: 'Invoicing',
-			collected: ['network', 'graphql'],
-			files: [{ path: 'src/App.tsx', source: 'module' }],
-			components: ['InvoiceForm', 'DataGrid'],
-			requests: [],
-			endpoints: [{ route: '/graphql', methods: ['POST'], count: 3 }],
-			models: [{ name: 'Article', write: false }, { name: 'Invoice', write: true }],
-		}
-		expect(summarize(footprint)).toEqual({
-			files: 1,
-			components: 2,
-			endpoints: 1,
-			models: 2,
-			requests: 0,
-			topModels: ['Invoice', 'Article'],
-			warnings: 0,
-		})
 	})
 })

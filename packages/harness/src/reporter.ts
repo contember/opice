@@ -21,7 +21,6 @@ import path from 'node:path'
 import { parseOpiceDsn } from './dsn.js'
 import { isTruthy } from './env.js'
 import { FileReporter } from './file-reporter.js'
-import type { ScenarioFootprint } from './footprint/types.js'
 import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
@@ -149,8 +148,12 @@ export interface VideoUpload {
 
 export interface FootprintUpload {
 	scenarioId: string
-	/** What the scenario touched (opt-in, OPICE_FOOTPRINT). */
-	footprint: ScenarioFootprint
+	/**
+	 * The serialized footprint. The harness already writes the same JSON to disk,
+	 * so it hands the string over rather than making this re-serialize a document
+	 * that runs to megabytes at the collector's caps.
+	 */
+	body: string
 }
 
 export interface ScenarioFinish {
@@ -229,6 +232,8 @@ class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
 	private warnedUnreachable = false
+	/** One "not indexed" notice per process — it's the same fact for every scenario. */
+	private warnedNotIndexed = false
 	/** Count of failed reports (network error or non-2xx). Drives strict mode. */
 	private failures = 0
 
@@ -339,21 +344,63 @@ class HttpReporter implements Reporter {
 	}
 
 	/**
-	 * Stream a scenario's walkthrough video to the platform as a binary PUT (it
-	 * doesn't fit the JSON-body shape `fetch` uses for every other call). Awaited
-	 * inline by the harness before the scenario finishes — there's at most one per
-	 * scenario, and a fire-and-forget upload could be cut off when the test process
-	 * exits. Best-effort: any failure (missing file, R2 hiccup, auth) is logged and
-	 * swallowed — a dropped video must never fail the run, so it does NOT touch the
-	 * strict-mode failure count.
+	 * PUT one per-scenario asset (a walkthrough video, a footprint) as a raw body
+	 * — neither fits the JSON-envelope shape {@link fetch} uses for every other
+	 * call. Awaited inline by the harness before the scenario finishes: there's at
+	 * most one of each per scenario, and a fire-and-forget upload could be cut off
+	 * when the test process exits.
+	 *
+	 * Deliberately NOT retried like a step record: these are bulky and entirely
+	 * optional, and a retry storm at teardown would cost more than the data is
+	 * worth. Every failure path logs and returns — a dropped asset must never fail
+	 * the run, so none of this touches the strict-mode failure count.
+	 *
+	 * Returns the platform's JSON reply so a caller can act on the parts specific
+	 * to its asset, or null if there wasn't one.
 	 */
-	async uploadVideo(input: VideoUpload): Promise<void> {
-		// Resolve the run id first (cheap — it's memoized once the first scenario
-		// started) so we don't hold the whole video buffer in memory across the
-		// run-start round-trip. A rejected run-start is swallowed: no run ⇒ nothing
-		// to attach the video to, but it must never throw out of this best-effort path.
+	private async putScenarioAsset(input: {
+		scenarioId: string
+		/** Path segment + the noun used in log lines. */
+		kind: 'video' | 'footprint'
+		body: BodyInit
+		contentType: string
+		timeoutMs: number
+	}): Promise<Record<string, unknown> | null> {
+		// Resolve the run id first (cheap — memoized once the first scenario
+		// started). A rejected run-start is swallowed: no run ⇒ nothing to attach
+		// to, but it must never throw out of this best-effort path.
 		const runId = await this.ensureRun().catch(() => undefined)
-		if (!runId) return
+		if (!runId) return null
+		const path = `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/${input.kind}`
+		const call = `PUT ${path}`
+		try {
+			const response = await fetch(this.config.endpoint + path, {
+				method: 'PUT',
+				headers: {
+					'cf-access-client-id': this.config.clientId,
+					'cf-access-client-secret': this.config.clientSecret,
+					'content-type': input.contentType,
+				},
+				body: input.body,
+				redirect: 'manual',
+				signal: AbortSignal.timeout(input.timeoutMs),
+			})
+			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the ${input.kind} was NOT uploaded (service token rejected at the edge).`)
+				return null
+			}
+			if (!response.ok) {
+				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the ${input.kind} was NOT uploaded.`)
+				return null
+			}
+			return (await response.json().catch(() => null)) as Record<string, unknown> | null
+		} catch (err) {
+			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the ${input.kind} was NOT uploaded.`)
+			return null
+		}
+	}
+
+	async uploadVideo(input: VideoUpload): Promise<void> {
 		let body: Blob
 		try {
 			// `fs.readFile` returns a Node Buffer, which Blob accepts directly — no
@@ -364,68 +411,40 @@ class HttpReporter implements Reporter {
 			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath} (${err instanceof Error ? err.message : String(err)})`)
 			return
 		}
-		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`
-		try {
-			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`, {
-				method: 'PUT',
-				headers: {
-					'cf-access-client-id': this.config.clientId,
-					'cf-access-client-secret': this.config.clientSecret,
-					'content-type': 'video/webm',
-				},
-				body,
-				redirect: 'manual',
-				signal: AbortSignal.timeout(VIDEO_REQUEST_TIMEOUT_MS),
-			})
-			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the video was NOT uploaded (service token rejected at the edge).`)
-				return
-			}
-			if (!response.ok) {
-				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the video was NOT uploaded.`)
-				return
-			}
-			const data = (await response.json().catch(() => null)) as { videoFailed?: boolean } | null
-			if (data?.videoFailed) {
-				console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
-			}
-		} catch (err) {
-			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the video was NOT uploaded.`)
+		const result = await this.putScenarioAsset({
+			scenarioId: input.scenarioId,
+			kind: 'video',
+			body,
+			contentType: 'video/webm',
+			timeoutMs: VIDEO_REQUEST_TIMEOUT_MS,
+		})
+		if (result?.['videoFailed'] === true) {
+			console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
 		}
 	}
 
-	/**
-	 * PUT a scenario's footprint as JSON. Unlike a step record this is not
-	 * retried through {@link fetch} — it is bulky, entirely optional telemetry,
-	 * and a retry storm at teardown would cost more than the data is worth. Every
-	 * failure path logs and returns: the footprint is already on disk locally, so
-	 * a dropped upload costs a dashboard panel, not the information.
-	 */
 	async uploadFootprint(input: FootprintUpload): Promise<void> {
-		const runId = await this.ensureRun().catch(() => undefined)
-		if (!runId) return
-		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/footprint`
-		try {
-			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/footprint`, {
-				method: 'PUT',
-				headers: {
-					'cf-access-client-id': this.config.clientId,
-					'cf-access-client-secret': this.config.clientSecret,
-					'content-type': 'application/json',
-				},
-				body: JSON.stringify(input.footprint),
-				redirect: 'manual',
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-			})
-			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the footprint was NOT uploaded (service token rejected at the edge).`)
-				return
-			}
-			if (!response.ok) {
-				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the footprint was NOT uploaded.`)
-			}
-		} catch (err) {
-			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the footprint was NOT uploaded.`)
+		const result = await this.putScenarioAsset({
+			scenarioId: input.scenarioId,
+			kind: 'footprint',
+			body: input.body,
+			contentType: 'application/json',
+			timeoutMs: REQUEST_TIMEOUT_MS,
+		})
+		if (!result) return
+		if (result['footprintFailed'] === true) {
+			console.error(`[opice] footprint upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
+		}
+		// The footprint was stored, but the platform did NOT fold it into the
+		// change-tracking index — it only accepts CI runs of the default branch.
+		// Say so once: a team collecting footprints on a feature branch would
+		// otherwise watch `--impacted` report an empty index forever with no clue why.
+		if (result['indexed'] === false && !this.warnedNotIndexed) {
+			this.warnedNotIndexed = true
+			console.error(
+				'[opice] footprints are being stored but NOT indexed for change tracking — only a CI run of the '
+				+ 'default branch (main/master) may write the index, so `opice test --impacted` will not see them.',
+			)
 		}
 	}
 

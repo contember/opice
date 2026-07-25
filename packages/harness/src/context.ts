@@ -5,7 +5,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { resolveStorageState } from './auth.js'
 import { isTruthy } from './env.js'
 import { FootprintCollector, loadFootprintConfig, resolveMode, type ScenarioFootprint } from './footprint/index.js'
-import { slugify } from './slug.js'
+import { slugify, uniqueStem } from './slug.js'
 
 /**
  * The live Playwright page for the running scenario.
@@ -152,26 +152,12 @@ function parseSize(raw: string | undefined): { width: number; height: number } |
 	return width > 0 && height > 0 ? { width, height } : undefined
 }
 
-// Video filename stems already saved this process. Two scenarios whose names
-// slug to the same stem (e.g. "Login" and "Login!", or two emoji-only names that
-// both fall back to "scenario") would otherwise overwrite each other's on-disk
-// recording. We disambiguate the second and later with a `-2`, `-3`, … suffix so
-// every scenario keeps its footage (the R2 key is already unique — it carries
-// the scenario id — so this only protects the local OPICE_VIDEO_DIR files).
+// Video filename stems already saved this process — see `uniqueStem`, which
+// keeps two scenarios that slug alike from overwriting each other's recording.
+// (The R2 key is already unique — it carries the scenario id — so this only
+// protects the local OPICE_VIDEO_DIR files.)
 const usedVideoStems = new Set<string>()
-function uniqueVideoStem(stem: string): string {
-	let candidate = stem
-	for (let n = 2; usedVideoStems.has(candidate); n++) {
-		candidate = `${stem}-${n}`
-	}
-	usedVideoStems.add(candidate)
-	return candidate
-}
 
-// Playwright writes recordings under `recordVideo.dir` with auto-generated hash
-// names *as the context runs*; we point that at a scratch dir and `saveAs` the
-// finished file under a scenario-named path, so the raw hashes never litter the
-// user's output folder.
 const VIDEO_RAW_DIR = path.join(tmpdir(), 'opice-videos-raw')
 
 /** The active page, or throw if called outside a `browserTest` scenario. */
@@ -345,7 +331,7 @@ export async function closePage(): Promise<ClosedScenario> {
 	if (!video || !label) return closed
 	const cfg = videoConfig()
 	const dir = cfg?.dir ?? 'opice-videos'
-	const target = path.join(dir, `${uniqueVideoStem(label)}.webm`)
+	const target = path.join(dir, `${uniqueStem(label, usedVideoStems)}.webm`)
 	// Saving the .webm is the part that matters — it's what gets uploaded to R2.
 	let saved = false
 	try {

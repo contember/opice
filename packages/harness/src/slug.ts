@@ -17,3 +17,19 @@ export function slugify(name: string, fallback = 'item'): string {
 		.replace(/^-+|-+$/g, '')
 	return slug || fallback
 }
+
+/**
+ * Disambiguate a filename stem against the ones already used, appending `-2`,
+ * `-3`, … A scenario names its artifacts after itself, and two scenarios can
+ * slug to the same stem ("Login" and "Login!", or two emoji-only names that both
+ * fall back to "scenario") — without this the second would overwrite the first's
+ * file. Callers pass their own `used` set: a scenario legitimately writes both a
+ * `.webm` and a `.json` under the same stem, and one shared set would suffix the
+ * second for no reason.
+ */
+export function uniqueStem(stem: string, used: Set<string>): string {
+	let candidate = stem
+	for (let n = 2; used.has(candidate); n++) candidate = `${stem}-${n}`
+	used.add(candidate)
+	return candidate
+}

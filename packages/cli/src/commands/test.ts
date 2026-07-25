@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConfig } from '../config'
 import { parseOpiceDsn } from '../dsn'
+import { extractBoolean, extractInteger, extractList, extractOptionalValueFlag, extractValue } from '../args'
 import { detectGitMeta } from '../git'
-import { changedPaths, defaultBase, explainSelection, impactedTestFiles, queryImpact, resolveImpactCredentials } from '../impact'
+import { resolveImpact } from '../impact'
 
 const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
@@ -41,7 +42,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	// CLI flag wins over OPICE_TIER, which wins over opice.config.json's `tier`.
 	// The harness reads OPICE_TIER and skips (and reports as `skipped`) any
 	// scenario above the selected tier.
-	const { tier, rest: afterTier } = extractTier(args)
+	const { value: tier, rest: afterTier } = extractValue(args, 'tier')
 	const resolvedTier = tier ?? process.env['OPICE_TIER'] ?? config?.tier
 
 	// `--fail-on-report-error` turns a swallowed reporting failure into a non-zero
@@ -49,7 +50,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	// OPICE_REPORT_STRICT, which wins over opice.config.json's `failOnReportError`.
 	// We propagate it to the harness via OPICE_REPORT_STRICT (it fails the run from
 	// a scenario's afterAll) AND honour it here for the POST /finish finalize.
-	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
+	const { present: strictFlag, rest: afterStrict } = extractBoolean(afterTier, 'fail-on-report-error')
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
 	// `--select FILE[,FILE...]` (repeatable) → run these scenarios IN ADDITION to
@@ -57,8 +58,8 @@ export async function testCommand(args: string[]): Promise<number> {
 	// run twice). The harness reads OPICE_SELECT; CLI flag wins over the env var.
 	// Canonical use: a PR runs `--tier critical --select <changed test files>` so a
 	// touched standard/extended scenario runs without the whole suite.
-	const { select: selectFlag, rest: afterSelect } = extractSelect(afterStrict)
-	const explicitSelect = selectFlag ?? process.env['OPICE_SELECT']
+	const { values: selectValues, rest: afterSelect } = extractList(afterStrict, 'select')
+	const explicitSelect = (selectValues.join(',') || undefined) ?? process.env['OPICE_SELECT']
 
 	// `--impacted [BASE]` → ask the platform which scenarios the working tree's
 	// changes reach (from their recorded footprints) and fold those test files
@@ -68,9 +69,19 @@ export async function testCommand(args: string[]): Promise<number> {
 	// leaves the tier exactly as it was.
 	const impactedFlag = extractOptionalValueFlag(afterSelect, 'impacted', looksLikeGitRef)
 	const afterImpacted = impactedFlag.rest
-	const impactedFiles = impactedFlag.present
-		? await resolveImpacted(impactedFlag.value, { ...(project ? { project } : {}), ...(endpoint ? { endpoint } : {}) })
-		: []
+	const impacted = impactedFlag.present
+		? await resolveImpact(
+			{ ...(project ? { project } : {}), ...(endpoint ? { endpoint } : {}) },
+			{ ...(impactedFlag.value ? { base: impactedFlag.value } : {}), label: '--impacted' },
+		)
+		: null
+	// Fails open by construction: when the query can't be answered (no
+	// credentials, no index, an unreachable platform — each already warned about
+	// by resolveImpact) the selection is simply empty and the tier runs alone.
+	// That is a correct, if less targeted, run; a dashboard outage must never be
+	// able to shrink what CI covers.
+	if (impactedFlag.present && !impacted) warn('--impacted added nothing — running the tier alone.')
+	const impactedFiles = impacted?.files ?? []
 	const select = [explicitSelect, impactedFiles.join(',')].filter(Boolean).join(',') || undefined
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
@@ -140,7 +151,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterFootprint)
+	const { value: retries, rest } = extractInteger(afterFootprint, 'retries')
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -204,183 +215,6 @@ function looksLikeReportPath(s: string): boolean {
  */
 function looksLikeGitRef(s: string): boolean {
 	return !s.includes('.') && !s.includes('*') && /^[\w./~^-]+$/.test(s)
-}
-
-/**
- * Resolve the impacted test files, or an empty list if anything at all is
- * missing. Every branch here is a *warning*, never an error: `--impacted` only
- * ever ADDS scenarios to the tier, so when it can't answer, the run is simply
- * the tier — which is a correct, if less targeted, run. Turning that into a
- * failure would mean a dashboard outage could block every PR.
- */
-async function resolveImpacted(base: string | undefined, config: { project?: string; endpoint?: string }): Promise<string[]> {
-	const credentials = resolveImpactCredentials(config)
-	if (!credentials) {
-		warn('--impacted needs a platform credential (OPICE_READ_DSN or OPICE_DSN) — running the tier alone.')
-		return []
-	}
-	const resolvedBase = base ?? defaultBase()
-	const paths = changedPaths(resolvedBase)
-	if (paths.length === 0) {
-		console.error(`[opice] --impacted: no changes against ${resolvedBase} — running the tier alone.`)
-		return []
-	}
-	const result = await queryImpact(credentials, { paths })
-	if (!result) {
-		warn('--impacted could not reach the platform — running the tier alone.')
-		return []
-	}
-	const files = impactedTestFiles(result.scenarios)
-	if (result.index.scenarios === 0) {
-		warn(
-			'--impacted: the footprint index is empty, so no scenario could be matched. Build it with '
-			+ '`opice test --footprint` on a CI run of the default branch (only main/master writes the index).',
-		)
-		return []
-	}
-	console.error(`[opice] --impacted: ${paths.length} changed path(s) against ${resolvedBase} → ${files.length} test file(s).`)
-	for (const scenario of result.scenarios) console.error(`[opice]   ${explainSelection(scenario)}`)
-	return files
-}
-
-/**
- * Pull an opice optional-value flag (`--name` / `--name=value`) out of the arg
- * list — these aren't bun flags, so they must be stripped before the remainder
- * passes to `bun test`. Returns whether the flag was present, its value (if any),
- * and the remaining args.
- *
- * The `--name=value` form always sets the value. The bare `--name value` form
- * only consumes the following token when `isValue(token)` says it's a value and
- * not a passthrough (a leading `-`, or a bun test-file/name arg). Omit `isValue`
- * to make bare `--name` NEVER consume the next token — the safe default when a
- * value is indistinguishable from a bun positional (use the `=` form for those).
- */
-function extractOptionalValueFlag(
-	args: string[],
-	name: string,
-	isValue?: (token: string) => boolean,
-): { present: boolean; value: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	const eq = `--${name}=`
-	let present = false
-	let value: string | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith(eq)) {
-			present = true
-			value = arg.slice(eq.length) || undefined
-		} else if (arg === `--${name}`) {
-			present = true
-			const next = args[i + 1]
-			if (isValue && next !== undefined && !next.startsWith('-') && isValue(next)) {
-				value = next
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { present, value, rest }
-}
-
-function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {
-	const rest: string[] = []
-	let retries: number | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--retries=')) {
-			const n = Number(arg.slice('--retries='.length))
-			if (Number.isInteger(n) && n >= 0) retries = n
-		} else if (arg === '--retries') {
-			const n = Number(args[i + 1])
-			if (Number.isInteger(n) && n >= 0) {
-				retries = n
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { retries, rest }
-}
-
-/**
- * Pull opice's `--tier=NAME` / `--tier NAME` out of the arg list (it's an opice
- * concept, not a bun flag) and return the selected tier plus the remaining args.
- * The value is passed straight through to the harness via OPICE_TIER, which
- * validates it — so an unrecognized value isn't rejected here.
- */
-function extractTier(args: string[]): { tier: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	let tier: string | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--tier=')) {
-			tier = arg.slice('--tier='.length)
-		} else if (arg === '--tier') {
-			const next = args[i + 1]
-			if (next !== undefined) {
-				tier = next
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { tier, rest }
-}
-
-/**
- * Pull opice's `--select=FILE[,FILE...]` / `--select FILE[,FILE...]` out of the
- * arg list (it's an opice concept, not a bun flag — passing the files straight to
- * `bun test` would run ONLY them and lose the tier's always-on core). The flag is
- * repeatable and each occurrence may carry a comma list; all entries accumulate
- * into one comma-joined value passed to the harness via OPICE_SELECT. Returns the
- * joined selection (or undefined when absent) and the remaining args.
- */
-function extractSelect(args: string[]): { select: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	const entries: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--select=')) {
-			entries.push(arg.slice('--select='.length))
-		} else if (arg === '--select') {
-			const next = args[i + 1]
-			if (next !== undefined && !next.startsWith('-')) {
-				entries.push(next)
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	const joined = entries
-		.flatMap((e) => e.split(','))
-		.map((e) => e.trim())
-		.filter(Boolean)
-		.join(',')
-	return { select: joined || undefined, rest }
-}
-
-/** Returns true if finalizing any run failed (so strict mode can escalate). */
-/**
- * Pull opice's `--fail-on-report-error` boolean flag out of the arg list (it's
- * an opice concept, not a bun flag) and return whether it was present plus the
- * remaining args.
- */
-function extractStrict(args: string[]): { strict: boolean; rest: string[] } {
-	const rest: string[] = []
-	let strict = false
-	for (const arg of args) {
-		if (arg === '--fail-on-report-error') strict = true
-		else rest.push(arg)
-	}
-	return { strict, rest }
 }
 
 function isTruthy(value: string | undefined): boolean {

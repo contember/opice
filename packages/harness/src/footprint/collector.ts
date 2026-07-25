@@ -26,7 +26,7 @@ import { collectJsCoverage, startJsCoverage } from './coverage.js'
 import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, toFootprintOperation } from './graphql.js'
 import { moduleUrlToSourcePath } from './modules.js'
 import type {
-	FootprintCollector as CollectorKind,
+	FootprintCollectorKind,
 	FootprintEndpoint,
 	FootprintFile,
 	FootprintModel,
@@ -69,7 +69,7 @@ export class FootprintCollector {
 	private readonly components = new Set<string>()
 	private readonly warnings = new Set<string>()
 	private readonly origins: Set<string>
-	private readonly collectors = new Set<CollectorKind>()
+	private readonly collectors = new Set<FootprintCollectorKind>()
 	private activeStep: number | null = null
 	private coverageStarted = false
 	private truncatedRequests = 0

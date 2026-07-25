@@ -118,11 +118,6 @@ export async function loadFootprintConfig(from?: string): Promise<FootprintConfi
 	return cached.config
 }
 
-/** Test seam — drop the memoized config. */
-export function resetFootprintConfig(): void {
-	cached = null
-}
-
 /** Does `path` match any ignore rule? */
 export function isIgnored(path: string, ignore: FootprintConfig['ignore']): boolean {
 	if (!ignore) return false

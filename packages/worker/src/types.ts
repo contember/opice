@@ -47,7 +47,6 @@ export interface FootprintSummary {
 	endpoints: number
 	models: number
 	requests: number
-	topModels: string[]
 	warnings: number
 }
 
@@ -58,12 +57,8 @@ export interface FootprintEdge {
 	scenarioName: string
 	kind: FootprintEdgeKind
 	value: string
-	/** Executed fraction x1000 (files only). */
-	weight: number | null
-	/** Model edges: reached through a mutation. */
-	writes: boolean
-	runId: string | null
-	branch: string | null
+	/** File edges: was code in the file called, or was it only loaded? */
+	exercised: boolean
 	updatedAt: number
 }
 
@@ -80,7 +75,9 @@ export interface ImpactedScenario {
 	scenarioKey: string
 	testFile: string | null
 	scenarioName: string
+	/** The first few reasons it matched; `reasonCount` is how many there were. */
 	reasons: ImpactReason[]
+	reasonCount: number
 	/** When this scenario's footprint was last refreshed. */
 	updatedAt: number
 }

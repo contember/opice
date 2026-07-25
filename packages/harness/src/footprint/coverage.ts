@@ -19,6 +19,7 @@ import { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
 import {
 	decodeInlineSourceMap,
 	decodeMappings,
+	isIndexSourceMap,
 	executedBytesBySource,
 	flattenRanges,
 	lineStartOffsets,
@@ -34,6 +35,13 @@ import type { FootprintFile } from './types.js'
 const SOURCE_MAP_TIMEOUT_MS = 5_000
 /** Don't parse absurd maps — a multi-hundred-MB map is a pathology, not a build. */
 const MAX_SOURCE_MAP_BYTES = 64 * 1024 * 1024
+
+/**
+ * Source maps skipped this run because they are index maps (`sections`), which
+ * this decoder doesn't handle. Collected per collection pass and reported as a
+ * warning — an unattributed bundle must not read as "touches no files".
+ */
+const indexMaps = new Set<string>()
 
 /**
  * Start collecting. `resetOnNavigation: false` is the whole point — the default
@@ -66,6 +74,7 @@ export interface CoverageResult {
  */
 export async function collectJsCoverage(page: Page, context: BrowserContext, config: FootprintConfig): Promise<CoverageResult> {
 	const warnings: string[] = []
+	indexMaps.clear()
 	let entries: Awaited<ReturnType<Page['coverage']['stopJSCoverage']>>
 	try {
 		entries = await page.coverage.stopJSCoverage()
@@ -76,6 +85,11 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 	const byPath = new Map<string, { executed: number; exercised: boolean }>()
 	let unmappedBundles = 0
 	const mapCache = new Map<string, RawSourceMap | null>()
+	// Fetch every external source map up front, concurrently. A production build
+	// has 20-40 chunks, and resolving them inside the decode loop below would pay
+	// that many sequential round trips (each with its own timeout) inside the
+	// scenario's teardown budget.
+	await prefetchSourceMaps(entries, context, mapCache)
 
 	for (const entry of entries) {
 		if (!entry.url) continue
@@ -126,6 +140,12 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		record(byPath, mapped.path, total > 0 ? Math.min(1, coveredBytes / total) : 1, exercised.length > 0)
 	}
 
+	if (indexMaps.size > 0) {
+		warnings.push(
+			`${indexMaps.size} source map(s) are index maps (\`sections\`), which opice cannot decode — `
+			+ 'the files behind those bundles are not in this footprint.',
+		)
+	}
 	if (unmappedBundles > 0) {
 		warnings.push(
 			`${unmappedBundles} bundled script(s) had no source map — their source files are not in this footprint. `
@@ -235,9 +255,33 @@ export function resolveSourcePath(
 }
 
 /**
+ * Warm {@link mapCache} with every external source map the coverage entries
+ * reference, fetched concurrently. Failures are cached as null by the fetch
+ * itself, so the decode loop that follows never blocks on the network.
+ */
+async function prefetchSourceMaps(
+	entries: readonly { url: string; source?: string }[],
+	context: BrowserContext,
+	cache: Map<string, RawSourceMap | null>,
+): Promise<void> {
+	const urls = new Set<string>()
+	for (const entry of entries) {
+		if (!entry.source || !entry.url) continue
+		const reference = readSourceMappingUrl(entry.source)
+		if (!reference || reference.startsWith('data:')) continue
+		try {
+			urls.add(new URL(reference, entry.url).href)
+		} catch {
+			// Unresolvable reference — the decode loop will simply find no map.
+		}
+	}
+	await Promise.all([...urls].map((url) => fetchSourceMap(url, context, cache)))
+}
+
+/**
  * Find a script's source map: inline `data:` URI first (what dev servers emit),
- * otherwise fetch the `.map` alongside the script. Results are cached per run —
- * a bundle's map is fetched once no matter how many entries reference it.
+ * otherwise the `.map` alongside the script, which {@link prefetchSourceMaps}
+ * has normally already cached.
  */
 async function resolveSourceMap(
 	scriptUrl: string,
@@ -254,20 +298,33 @@ async function resolveSourceMap(
 	} catch {
 		return null
 	}
-	const cached = cache.get(absolute)
+	return fetchSourceMap(absolute, context, cache)
+}
+
+/** Fetch + parse one source map, memoized (including the failure) in `cache`. */
+async function fetchSourceMap(
+	url: string,
+	context: BrowserContext,
+	cache: Map<string, RawSourceMap | null>,
+): Promise<RawSourceMap | null> {
+	const cached = cache.get(url)
 	if (cached !== undefined) return cached
 	let map: RawSourceMap | null = null
 	try {
-		const response = await context.request.get(absolute, { timeout: SOURCE_MAP_TIMEOUT_MS, failOnStatusCode: false })
+		const response = await context.request.get(url, { timeout: SOURCE_MAP_TIMEOUT_MS, failOnStatusCode: false })
 		if (response.ok()) {
 			const body = await response.body()
-			map = body.byteLength > MAX_SOURCE_MAP_BYTES ? null : parseSourceMap(body.toString('utf-8'))
+			if (body.byteLength <= MAX_SOURCE_MAP_BYTES) {
+				const text = body.toString('utf-8')
+				map = parseSourceMap(text)
+				if (!map && isIndexSourceMap(text)) indexMaps.add(url)
+			}
 		}
 	} catch {
 		// A map that can't be fetched is simply a bundle we can't attribute.
 		map = null
 	}
-	cache.set(absolute, map)
+	cache.set(url, map)
 	return map
 }
 

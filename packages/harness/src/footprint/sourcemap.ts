@@ -14,7 +14,17 @@
  */
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-const BASE64_LOOKUP = new Map<string, number>([...BASE64_ALPHABET].map((c, i) => [c, i]))
+/**
+ * char code → base64 digit, or -1. A bundle's `mappings` field runs to
+ * megabytes, so this is decoded a character at a time — an array indexed by
+ * `charCodeAt` avoids allocating a one-character string and hashing it for each
+ * of those millions of reads.
+ */
+const BASE64_LOOKUP = (() => {
+	const table = new Int8Array(128).fill(-1)
+	for (let i = 0; i < BASE64_ALPHABET.length; i++) table[BASE64_ALPHABET.charCodeAt(i)] = i
+	return table
+})()
 
 /** The fields of a source map we need. */
 export interface RawSourceMap {
@@ -22,6 +32,7 @@ export interface RawSourceMap {
 	sources: string[]
 	sourceRoot?: string
 	mappings: string
+	/** Index-map sections; unsupported — see {@link parseSourceMap}. */
 	sections?: unknown
 }
 
@@ -45,10 +56,10 @@ function decodeSegment(text: string, start: number): { values: number[]; next: n
 		let shift = 0
 		let continuation = true
 		while (continuation) {
-			const char = text[i]
-			if (char === undefined) break
-			const digit = BASE64_LOOKUP.get(char)
-			if (digit === undefined) {
+			if (i >= text.length) break
+			const code = text.charCodeAt(i)
+			const digit = code < 128 ? (BASE64_LOOKUP[code] as number) : -1
+			if (digit < 0) {
 				// Not a VLQ character — abandon this segment.
 				return { values, next: i + 1 }
 			}
@@ -67,8 +78,8 @@ function decodeSegment(text: string, start: number): { values: number[]; next: n
 /** Byte offset at which each line of `source` starts. */
 export function lineStartOffsets(source: string): number[] {
 	const starts = [0]
-	for (let i = 0; i < source.length; i++) {
-		if (source[i] === '\n') starts.push(i + 1)
+	for (let i = source.indexOf('\n'); i !== -1; i = source.indexOf('\n', i + 1)) {
+		starts.push(i + 1)
 	}
 	return starts
 }
@@ -232,13 +243,30 @@ export function decodeInlineSourceMap(url: string): RawSourceMap | null {
 	}
 }
 
-/** Parse a source map, returning null unless it has the fields we need. */
+/**
+ * Parse a source map, returning null unless it has the fields we need.
+ *
+ * An **index map** (`sections`, emitted by esbuild/webpack for some multi-chunk
+ * builds) is not supported and reads as null. That's a real gap rather than a
+ * malformed file, so it's reported separately — a silently unattributed bundle
+ * would look like "this scenario touches no files".
+ */
 export function parseSourceMap(text: string): RawSourceMap | null {
 	try {
 		const parsed = JSON.parse(text) as Partial<RawSourceMap>
+		if (Array.isArray(parsed.sections)) return null
 		if (!Array.isArray(parsed.sources) || typeof parsed.mappings !== 'string') return null
 		return { sources: parsed.sources, mappings: parsed.mappings, ...(parsed.sourceRoot ? { sourceRoot: parsed.sourceRoot } : {}) }
 	} catch {
 		return null
+	}
+}
+
+/** Is this an index map (`sections`) — supported by bundlers, not by us? */
+export function isIndexSourceMap(text: string): boolean {
+	try {
+		return Array.isArray((JSON.parse(text) as { sections?: unknown }).sections)
+	} catch {
+		return false
 	}
 }

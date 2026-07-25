@@ -14,8 +14,8 @@
  * one can only ever add.
  */
 
-import { execSync } from 'node:child_process'
 import { parseOpiceDsn } from './dsn'
+import { changedPaths, defaultBase } from './git'
 
 /** How the platform describes its own index, so an empty answer can be explained. */
 export interface ImpactIndexStatus {
@@ -34,7 +34,9 @@ export interface ImpactedScenario {
 	scenarioKey: string
 	testFile: string | null
 	scenarioName: string
+	/** The first few reasons it matched; `reasonCount` is how many there were. */
 	reasons: ImpactReason[]
+	reasonCount: number
 	updatedAt: number
 }
 
@@ -65,42 +67,6 @@ export function resolveImpactCredentials(config: { project?: string; endpoint?: 
 	const clientSecret = dsn?.clientSecret ?? process.env['OPICE_CLIENT_SECRET']
 	if (!endpoint || !project || !clientId || !clientSecret) return null
 	return { endpoint, project, clientId, clientSecret }
-}
-
-/**
- * The paths a branch changed, relative to `base`.
- *
- * Uses the three-dot form (`base...HEAD`), i.e. everything since the merge base
- * — the same set a PR shows. Uncommitted work is folded in too, so running this
- * locally mid-change selects the tests for what you're actually editing rather
- * than for your last commit.
- */
-export function changedPaths(base: string): string[] {
-	const paths = new Set<string>()
-	for (const command of [
-		`git diff --name-only ${shellQuote(base)}...HEAD`,
-		'git diff --name-only HEAD',
-		'git ls-files --others --exclude-standard',
-	]) {
-		for (const line of tryGit(command)) paths.add(line)
-	}
-	return [...paths]
-}
-
-/** The default base to diff against — the first of these refs that exists. */
-export function defaultBase(): string {
-	const candidates = [
-		process.env['OPICE_IMPACT_BASE'],
-		process.env['GITHUB_BASE_REF'] ? `origin/${process.env['GITHUB_BASE_REF']}` : undefined,
-		'origin/main',
-		'origin/master',
-		'main',
-		'master',
-	].filter((c): c is string => !!c)
-	for (const candidate of candidates) {
-		if (tryGit(`git rev-parse --verify --quiet ${shellQuote(candidate)}`).length > 0) return candidate
-	}
-	return 'HEAD~1'
 }
 
 /** Ask the platform which scenarios a change reaches. Returns null when it can't be asked. */
@@ -151,23 +117,67 @@ export function impactedTestFiles(scenarios: readonly ImpactedScenario[]): strin
  * set of tests this is what settles the argument.
  */
 export function explainSelection(scenario: ImpactedScenario): string {
-	const reasons = scenario.reasons.slice(0, 3).map((r) => `${r.kind} ${r.value}`)
-	const extra = scenario.reasons.length > reasons.length ? ` (+${scenario.reasons.length - reasons.length} more)` : ''
+	const shown = scenario.reasons.slice(0, 3)
+	const reasons = shown.map((r) => `${r.kind} ${r.value}`)
+	const extra = scenario.reasonCount > shown.length ? ` (+${scenario.reasonCount - shown.length} more)` : ''
 	return `${scenario.scenarioName} — ${reasons.join(', ')}${extra}`
 }
 
-function tryGit(command: string): string[] {
-	try {
-		return execSync(command, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
-			.split('\n')
-			.map((line) => line.trim())
-			.filter(Boolean)
-	} catch {
-		return []
-	}
+export interface ResolvedImpact {
+	base: string
+	paths: string[]
+	/** Test files of the impacted scenarios — what feeds `--select`. */
+	files: string[]
+	result: ImpactResult
 }
 
-/** Single-quote a ref for the shell. Refs can contain `/` and `-`, never a quote we'd need to escape. */
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'\\''`)}'`
+/**
+ * Run the whole impact question — credentials, diff, query — and narrate it on
+ * stderr, so `opice impact` and `opice test --impacted` explain the same query
+ * the same way instead of each wording it themselves.
+ *
+ * Returns null when it cannot answer. Every such branch is a *warning*, never an
+ * error: `--impacted` only ever ADDS scenarios to the tier, so a run that can't
+ * be narrowed is simply the tier — correct, if less targeted. Turning that into
+ * a failure would let a dashboard outage block every PR.
+ */
+export async function resolveImpact(
+	config: { project?: string; endpoint?: string },
+	options: { base?: string; models?: string[]; includeLoaded?: boolean; label?: string } = {},
+): Promise<ResolvedImpact | null> {
+	const label = options.label ?? 'impact'
+	const credentials = resolveImpactCredentials(config)
+	if (!credentials) {
+		warn(`${label} needs a platform credential — set OPICE_READ_DSN (preferred) or OPICE_DSN.`)
+		return null
+	}
+	const base = options.base ?? defaultBase()
+	const paths = changedPaths(base)
+	const models = options.models ?? []
+	if (paths.length === 0 && models.length === 0) {
+		console.error(`[opice] ${label}: no changes against ${base}.`)
+		return null
+	}
+	const queryOptions = { paths, models, ...(options.includeLoaded ? { includeLoaded: true } : {}) }
+	const result = await queryImpact(credentials, queryOptions)
+	if (!result) {
+		warn(`${label} could not reach the platform.`)
+		return null
+	}
+	if (result.index.scenarios === 0) {
+		warn(
+			`${label}: the footprint index is EMPTY, so this answer means "unknown", not "nothing". Build it with `
+			+ '`opice test --footprint` on a CI run of the default branch — only main/master writes the index, so a '
+			+ 'feature branch cannot hand everyone else a view of its half-built state.',
+		)
+		return null
+	}
+	const files = impactedTestFiles(result.scenarios)
+	console.error(`[opice] ${label}: ${paths.length} changed path(s) against ${base} → ${result.scenarios.length} scenario(s) in ${files.length} file(s).`)
+	for (const scenario of result.scenarios) console.error(`[opice]   ${explainSelection(scenario)}`)
+	return { base, paths, files, result }
+}
+
+function warn(message: string): void {
+	console.error(`[opice] warning: ${message}`)
 }

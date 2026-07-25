@@ -13,37 +13,29 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { footprintDir } from './config.js'
-import { slugify } from '../slug.js'
+import { slugify, uniqueStem } from '../slug.js'
 import type { ScenarioFootprint } from './types.js'
 
 /** Stems already written this process, so two similarly-named scenarios don't collide. */
 const usedStems = new Set<string>()
 
-function uniqueStem(stem: string): string {
-	let candidate = stem
-	for (let n = 2; usedStems.has(candidate); n++) candidate = `${stem}-${n}`
-	usedStems.add(candidate)
-	return candidate
-}
-
 /**
- * Write a scenario's footprint under the footprint directory
- * (`.opice/footprint` by default). Returns the path written, or undefined when
- * it couldn't be.
+ * Serialize a scenario's footprint and write it under the footprint directory
+ * (`.opice/footprint` by default).
+ *
+ * Returns the JSON, which the caller also uploads — at the collector's caps a
+ * footprint runs to megabytes, so it is serialized once here rather than again
+ * in the reporter. A failed write still returns the JSON: the upload doesn't
+ * depend on the file.
  */
-export async function writeFootprintFile(footprint: ScenarioFootprint, dir = footprintDir()): Promise<string | undefined> {
-	const target = path.join(dir, `${uniqueStem(slugify(footprint.scenario, 'scenario'))}.json`)
+export async function writeFootprintFile(footprint: ScenarioFootprint, dir = footprintDir()): Promise<string> {
+	const json = JSON.stringify(footprint, null, 2)
+	const target = path.join(dir, `${uniqueStem(slugify(footprint.scenario, 'scenario'), usedStems)}.json`)
 	try {
 		await fs.mkdir(dir, { recursive: true })
-		await fs.writeFile(target, `${JSON.stringify(footprint, null, 2)}\n`)
-		return target
+		await fs.writeFile(target, `${json}\n`)
 	} catch (err) {
 		console.warn(`[opice] failed to write footprint for "${footprint.scenario}" (ignored): ${err instanceof Error ? err.message : String(err)}`)
-		return undefined
 	}
-}
-
-/** Test seam — forget which stems have been used. */
-export function resetFootprintFiles(): void {
-	usedStems.clear()
+	return json
 }

@@ -35,8 +35,12 @@ export const COMPONENT_SCRIPT = `(() => {
   try {
     if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) return;
     var seen = new Set();
+    // Types already named, so a re-walk skips the derivation (and the memo/
+    // forwardRef recursion) for every node it has seen before.
+    var namedTypes = new WeakSet();
     var pending = [];
     var lastWalk = 0;
+    var scheduled = false;
     var THROTTLE_MS = 250;
     var MAX_NODES = 20000;
     var flush = function () {
@@ -62,8 +66,12 @@ export const COMPONENT_SCRIPT = `(() => {
       // inside the app's commit.
       while (node && count < MAX_NODES) {
         count++;
-        var name = nameOf(node.elementType || node.type);
-        if (name && !seen.has(name)) { seen.add(name); pending.push(name); }
+        var type = node.elementType || node.type;
+        if (type && typeof type !== 'string' && !namedTypes.has(type)) {
+          namedTypes.add(type);
+          var name = nameOf(type);
+          if (name && !seen.has(name)) { seen.add(name); pending.push(name); }
+        }
         if (node.child) { node = node.child; continue; }
         while (node && !node.sibling && node !== fiber) node = node.return;
         if (!node || node === fiber) break;
@@ -82,11 +90,18 @@ export const COMPONENT_SCRIPT = `(() => {
         return id;
       },
       onCommitFiberRoot: function (id, root) {
+        // Never walk inside the commit: the app under test would pay a full tree
+        // traversal on its own main thread, several times a second, for the whole
+        // scenario. Defer to a macrotask so the commit costs only this compare.
         try {
           var now = Date.now();
-          if (now - lastWalk < THROTTLE_MS) return;
-          lastWalk = now;
-          if (root && root.current) walk(root.current);
+          if (scheduled || now - lastWalk < THROTTLE_MS) return;
+          scheduled = true;
+          setTimeout(function () {
+            scheduled = false;
+            lastWalk = Date.now();
+            try { if (root && root.current) walk(root.current); } catch (e) {}
+          }, 0);
         } catch (e) {}
       },
       onCommitFiberUnmount: function (id, fiber) {

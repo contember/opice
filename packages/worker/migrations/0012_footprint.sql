@@ -47,8 +47,6 @@ CREATE TABLE footprint_edges (
 	scenario_name TEXT NOT NULL,
 	kind          TEXT NOT NULL CHECK (kind IN ('file', 'component', 'endpoint', 'model')),
 	value         TEXT NOT NULL,
-	-- Fraction of the file V8 saw execute, x1000 (files only); NULL otherwise.
-	weight        INTEGER,
 	-- File edges: 1 when the scenario CALLED code in the file, 0 when it merely
 	-- loaded it. Without this the file dimension saturates and stops selecting
 	-- anything: measured on a real Contember admin, one navigation scenario

@@ -69,7 +69,6 @@ export interface FootprintSummary {
 	endpoints: number
 	models: number
 	requests: number
-	topModels: string[]
 	warnings: number
 }
 
@@ -533,7 +532,7 @@ function FootprintPanel({
 
 					{detail.endpoints.length > 0 && (
 						<FootprintList label={`Endpoints (${detail.endpoints.length})`}>
-							{detail.endpoints.map(e => (
+							{() => detail.endpoints.map(e => (
 								<div className="fp-line" key={e.route}>
 									<span className="fp-method">{e.methods.join('/')}</span>
 									<code>{e.route}</code>
@@ -545,15 +544,17 @@ function FootprintPanel({
 
 					{detail.components.length > 0 && (
 						<FootprintList label={`Components (${detail.components.length})`}>
-							<div className="fp-row">
-								{detail.components.map(c => <span key={c} className="fp-chip">{c}</span>)}
-							</div>
+							{() => (
+								<div className="fp-row">
+									{detail.components.map(c => <span key={c} className="fp-chip">{c}</span>)}
+								</div>
+							)}
 						</FootprintList>
 					)}
 
 					{detail.files.length > 0 && (
 						<FootprintList label={`Files (${detail.files.length})`}>
-							{detail.files.map(f => (
+							{() => detail.files.map(f => (
 								<div className="fp-line" key={f.path}>
 									<code>{f.path}</code>
 									{typeof f.executed === 'number' && (
@@ -576,12 +577,18 @@ function FootprintPanel({
 	)
 }
 
-/** A collapsed dimension of the footprint. Native `<details>` — no state, no JS. */
-function FootprintList({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * A collapsed dimension of the footprint. `children` is a thunk so a closed
+ * section costs nothing: a scenario can carry thousands of files, and mounting
+ * every row to show a summary line would build tens of thousands of DOM nodes
+ * inside a 260px scroll box nobody has opened.
+ */
+function FootprintList({ label, children }: { label: string; children: () => React.ReactNode }) {
+	const [open, setOpen] = useState(false)
 	return (
-		<details className="fp-details">
+		<details className="fp-details" onToggle={e => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
 			<summary>{label}</summary>
-			<div className="fp-details-body">{children}</div>
+			{open && <div className="fp-details-body">{children()}</div>}
 		</details>
 	)
 }
