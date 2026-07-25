@@ -37,6 +37,15 @@ CREATE TABLE footprint_edges (
 	value         TEXT NOT NULL,
 	-- Fraction of the file V8 saw execute, x1000 (files only); NULL otherwise.
 	weight        INTEGER,
+	-- File edges: 1 when the scenario CALLED code in the file, 0 when it merely
+	-- loaded it. Without this the file dimension saturates and stops selecting
+	-- anything: measured on a real Contember admin, one navigation scenario
+	-- "executed" ~1300 files at >50% of their bytes, because the app evaluates its
+	-- schema and component library on import. Counting only what was called cuts
+	-- that to ~200 and makes two scenarios distinguishable again. A footprint
+	-- collected WITHOUT coverage has no way to tell the two apart, so its file
+	-- edges are all recorded as exercised — the strongest claim its data supports.
+	exercised     INTEGER NOT NULL DEFAULT 1,
 	-- Model edges: 1 when reached through a mutation. A write is a far stronger
 	-- impact signal than a read, and worth seeing on the dashboard as such.
 	writes        INTEGER NOT NULL DEFAULT 0,

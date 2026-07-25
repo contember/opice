@@ -106,7 +106,7 @@ export function defaultBase(): string {
 /** Ask the platform which scenarios a change reaches. Returns null when it can't be asked. */
 export async function queryImpact(
 	credentials: ImpactCredentials,
-	input: { paths: string[]; models?: string[] },
+	input: { paths: string[]; models?: string[]; includeLoaded?: boolean },
 ): Promise<ImpactResult | null> {
 	const url = `${credentials.endpoint}/api/v1/${credentials.project}/impact`
 	try {
@@ -117,7 +117,11 @@ export async function queryImpact(
 				'cf-access-client-secret': credentials.clientSecret,
 				'content-type': 'application/json',
 			},
-			body: JSON.stringify({ paths: input.paths, models: input.models ?? [] }),
+			body: JSON.stringify({
+				paths: input.paths,
+				models: input.models ?? [],
+				...(input.includeLoaded ? { includeLoaded: true } : {}),
+			}),
 			redirect: 'manual',
 			signal: AbortSignal.timeout(15_000),
 		})

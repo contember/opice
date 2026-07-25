@@ -74,13 +74,17 @@ Commands:
       Read token comes from the URL's ?token=, OPICE_READ_TOKEN, or
       OPICE_READ_DSN (a read-only project credential).
 
-  impact [--base=REF] [--model=NAME] [--json]
+  impact [--base=REF] [--model=NAME] [--include-loaded] [--json]
       Print the test files your changes reach, one per line — a git diff
       matched against what each scenario touched the last time it ran.
       Pipe it into --select, or use 'opice test --impacted' to do both
       in one step. --model=NAME adds a data model the diff can't express
       (a schema edit). --json prints the full reasoning: which file,
       component or model matched, and how fresh the index is.
+      By default a file matches only if the scenario CALLED code in it.
+      --include-loaded widens to files it merely imported — a true but
+      near-useless signal on an app that evaluates its whole schema and
+      component library on load, which is why it's off by default.
       Requires a footprint-collecting run to have happened first
       ('opice test --footprint'); with an empty index it says so rather
       than reporting "nothing is affected".

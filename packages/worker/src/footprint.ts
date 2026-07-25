@@ -96,12 +96,18 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 }
 
 /** Flatten a footprint into the change-tracking index's edge rows. */
-export function toEdges(footprint: ScenarioFootprint): { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean }[] {
-	const edges: { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean }[] = []
+export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
+	const edges: FootprintEdgeInput[] = []
+	// Without the coverage collector there is no way to tell a file the scenario
+	// CALLED from one it merely loaded — so every file edge carries the strongest
+	// claim the data supports rather than being silently downgraded to "loaded",
+	// which would make impact selection match nothing at all in `network` mode.
+	const canTellExercised = footprint.collected.includes('coverage')
 	for (const file of footprint.files) {
 		edges.push({
 			kind: 'file',
 			value: file.path,
+			exercised: !canTellExercised || file.source === 'coverage',
 			...(typeof file.executed === 'number' ? { weight: Math.round(file.executed * 1000) } : {}),
 		})
 	}
@@ -109,6 +115,16 @@ export function toEdges(footprint: ScenarioFootprint): { kind: FootprintEdgeKind
 	for (const endpoint of footprint.endpoints) edges.push({ kind: 'endpoint', value: endpoint.route })
 	for (const model of footprint.models) edges.push({ kind: 'model', value: model.name, writes: model.write })
 	return edges
+}
+
+/** One row destined for `footprint_edges`. */
+export interface FootprintEdgeInput {
+	kind: FootprintEdgeKind
+	value: string
+	weight?: number
+	writes?: boolean
+	/** File edges: was code in the file actually called, or was it only loaded? */
+	exercised?: boolean
 }
 
 /** A scenario's identity ACROSS runs — the key the impact index is built on. */

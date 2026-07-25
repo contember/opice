@@ -72,8 +72,8 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 	} catch (err) {
 		return { files: [], warnings: [`JS coverage could not be read: ${message(err)}`] }
 	}
-	/** path → executed ratio; the highest ratio seen wins if a file appears twice. */
-	const byPath = new Map<string, number>()
+	/** path → what we learned about it; the strongest claim wins if a file appears twice. */
+	const byPath = new Map<string, { executed: number; exercised: boolean }>()
 	let unmappedBundles = 0
 	const mapCache = new Map<string, RawSourceMap | null>()
 
@@ -88,6 +88,10 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		if (ranges.length === 0) continue
 		const covered = flattenRanges(ranges).filter((r) => r.count > 0)
 		if (covered.length === 0) continue
+		// Bytes that ran INSIDE a named function, as opposed to a module's top
+		// level. See {@link exercisedRanges} — this is what keeps "the app imported
+		// this module" from reading the same as "this scenario used it".
+		const exercised = flattenRanges(exercisedRanges(entry.functions)).filter((r) => r.count > 0)
 		const source = entry.source
 		const sourceMap = source ? await resolveSourceMap(entry.url, source, context, mapCache) : null
 
@@ -95,6 +99,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 			const lineStarts = lineStartOffsets(source)
 			const mappings = decodeMappings(sourceMap.mappings, lineStarts)
 			const executed = executedBytesBySource(mappings, covered)
+			const exercisedBySource = executedBytesBySource(mappings, exercised)
 			const totals = totalBytesBySource(mappings, source.length)
 			for (const [index, bytes] of executed) {
 				const raw = sourceMap.sources[index]
@@ -102,7 +107,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 				const resolved = resolveSourcePath(raw, sourceMap.sourceRoot, entry.url, config)
 				if (!resolved || isIgnored(resolved, config.ignore)) continue
 				const total = totals.get(index) ?? bytes
-				record(byPath, resolved, total > 0 ? Math.min(1, bytes / total) : 1)
+				record(byPath, resolved, total > 0 ? Math.min(1, bytes / total) : 1, (exercisedBySource.get(index) ?? 0) > 0)
 			}
 			continue
 		}
@@ -118,7 +123,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		if (!mapped.path || isIgnored(mapped.path, config.ignore)) continue
 		const coveredBytes = covered.reduce((sum, r) => sum + (r.end - r.start), 0)
 		const total = source?.length ?? 0
-		record(byPath, mapped.path, total > 0 ? Math.min(1, coveredBytes / total) : 1)
+		record(byPath, mapped.path, total > 0 ? Math.min(1, coveredBytes / total) : 1, exercised.length > 0)
 	}
 
 	if (unmappedBundles > 0) {
@@ -127,14 +132,58 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 			+ 'Run the app under a dev server, or build it with source maps, for file-level coverage.',
 		)
 	}
-	const files: FootprintFile[] = [...byPath].map(([path, executed]) => ({ path, source: 'coverage', executed: round(executed) }))
+	// A file whose module body ran but none of whose functions were called was
+	// LOADED, not used — reported as `module`, the same claim the network
+	// collector makes. Only a file that actually executed code earns `coverage`.
+	const files: FootprintFile[] = [...byPath].map(([path, seen]) => ({
+		path,
+		source: seen.exercised ? 'coverage' : 'module',
+		executed: round(seen.executed),
+	}))
 	files.sort((a, b) => a.path.localeCompare(b.path))
 	return { files, warnings }
 }
 
-function record(byPath: Map<string, number>, path: string, executed: number): void {
+interface FileCoverage {
+	executed: number
+	exercised: boolean
+}
+
+function record(byPath: Map<string, FileCoverage>, path: string, executed: number, exercised: boolean): void {
 	const previous = byPath.get(path)
-	if (previous === undefined || executed > previous) byPath.set(path, executed)
+	if (previous === undefined) {
+		byPath.set(path, { executed, exercised })
+		return
+	}
+	byPath.set(path, {
+		executed: Math.max(previous.executed, executed),
+		exercised: previous.exercised || exercised,
+	})
+}
+
+/**
+ * Ranges belonging to **named functions** — the code a scenario *called*, as
+ * opposed to the module top level, which merely ran because something imported
+ * the file.
+ *
+ * This distinction is what stops file-level footprint from saturating. Measured
+ * on a real Contember admin: a single navigation scenario "executed" ~1300
+ * source files at >50% of their bytes, because the admin evaluates its schema
+ * and component library on load. Every scenario looked like it touched
+ * everything, which would make impact selection useless — a change to any file
+ * would select every test. V8 already knows the difference: the top level is
+ * reported as a function with an empty name, so anything with a name is code
+ * somebody actually called.
+ */
+function exercisedRanges(functions: readonly { functionName: string; ranges: readonly { startOffset: number; endOffset: number; count: number }[] }[]): CoverageRange[] {
+	const ranges: CoverageRange[] = []
+	for (const fn of functions) {
+		if (!fn.functionName) continue
+		for (const range of fn.ranges) {
+			ranges.push({ start: range.startOffset, end: range.endOffset, count: range.count })
+		}
+	}
+	return ranges
 }
 
 function round(value: number): number {

@@ -37,7 +37,12 @@ export async function impactCommand(args: string[]): Promise<number> {
 		return 0
 	}
 
-	const result = await queryImpact(credentials, { paths, models })
+	// `--include-loaded` widens to files a scenario merely imported. Off by
+	// default: on a real app that dimension saturates (an admin evaluating its
+	// schema and component library on import "touches" over a thousand files per
+	// scenario), so it would select everything for every change.
+	const includeLoaded = args.includes('--include-loaded')
+	const result = await queryImpact(credentials, { paths, models, includeLoaded })
 	if (!result) return 1
 
 	const testFiles = impactedTestFiles(result.scenarios)

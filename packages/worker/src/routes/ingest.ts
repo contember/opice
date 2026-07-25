@@ -363,14 +363,14 @@ const MAX_IMPACT_PATHS = 2000
  * The CLI prints the difference and fails open on the second.
  */
 async function impact(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ paths?: unknown; models?: unknown }>(request)) ?? {}
+	const body = (await readJson<{ paths?: unknown; models?: unknown; includeLoaded?: unknown }>(request)) ?? {}
 	const paths = toStringArray(body.paths) ?? []
 	const models = toStringArray(body.models) ?? []
 	if (paths.length > MAX_IMPACT_PATHS) {
 		return badRequest(`too many paths (${paths.length} > ${MAX_IMPACT_PATHS})`)
 	}
 	const [scenarios, index] = await Promise.all([
-		services.db.findImpactedScenarios({ projectId: project.id, paths, models }),
+		services.db.findImpactedScenarios({ projectId: project.id, paths, models, includeLoaded: body.includeLoaded === true }),
 		services.db.footprintIndexStatus(project.id),
 	])
 	return json({ scenarios, index })

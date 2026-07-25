@@ -253,6 +253,7 @@ interface FootprintEdgeRow {
 	value: string
 	weight: number | null
 	writes: number
+	exercised: number
 	run_id: string | null
 	branch: string | null
 	updated_at: number
@@ -300,8 +301,12 @@ const matchEdge = (
 	paths: readonly string[],
 	names: ReadonlyMap<string, string>,
 	models: ReadonlyMap<string, string>,
+	includeLoaded: boolean,
 ): string | null => {
 	if (row.kind === 'file') {
+		// A merely-loaded file is a true but nearly useless signal (see `exercised`
+		// in migration 0012) — skipped unless the caller asks to widen.
+		if (!includeLoaded && row.exercised === 0) return null
 		const value = normalizePath(row.value)
 		for (const path of paths) {
 			if (value === path || value.endsWith('/' + path) || path.endsWith('/' + value)) return path
@@ -784,18 +789,18 @@ export class Db {
 		scenarioName: string
 		runId: string
 		branch: string | null
-		edges: { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean }[]
+		edges: { kind: FootprintEdgeKind; value: string; weight?: number; writes?: boolean; exercised?: boolean }[]
 	}): Promise<void> {
 		const now = Date.now()
 		const statements: D1PreparedStatement[] = [
 			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ? AND scenario_key = ?').bind(input.projectId, input.scenarioKey),
 		]
 		const insert = this.d1.prepare(
-			`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, weight, writes, run_id, branch, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, weight, writes, exercised, run_id, branch, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
-					weight = excluded.weight, writes = excluded.writes, run_id = excluded.run_id,
-					branch = excluded.branch, updated_at = excluded.updated_at`,
+					weight = excluded.weight, writes = excluded.writes, exercised = excluded.exercised,
+					run_id = excluded.run_id, branch = excluded.branch, updated_at = excluded.updated_at`,
 		)
 		for (const edge of input.edges) {
 			statements.push(insert.bind(
@@ -807,6 +812,7 @@ export class Db {
 				edge.value,
 				edge.weight ?? null,
 				edge.writes ? 1 : 0,
+				edge.exercised === false ? 0 : 1,
 				input.runId,
 				input.branch,
 				now,
@@ -857,6 +863,15 @@ export class Db {
 		paths: string[]
 		/** Explicit model names to match, for a change the paths can't express (a schema edit). */
 		models?: string[]
+		/**
+		 * Also match files the scenario only *loaded* (imported without calling
+		 * into). Off by default because on a real app that dimension saturates —
+		 * an admin that evaluates its schema and component library on import
+		 * "touches" well over a thousand files per scenario, so matching them all
+		 * would select every scenario for every change. Turn it on to widen a
+		 * search that came back suspiciously empty.
+		 */
+		includeLoaded?: boolean
 	}): Promise<ImpactedScenario[]> {
 		const paths = [...new Set(input.paths.map(normalizePath).filter(Boolean))]
 		const models = [...new Set((input.models ?? []).filter(Boolean))]
@@ -880,7 +895,7 @@ export class Db {
 		const modelSet = new Map<string, string>(models.map((m) => [m.toLowerCase(), m]))
 
 		for (const row of results) {
-			const matched = matchEdge(row, paths, names, modelSet)
+			const matched = matchEdge(row, paths, names, modelSet, input.includeLoaded === true)
 			if (!matched) continue
 			const existing = byScenario.get(row.scenario_key)
 			const reason: ImpactReason = { kind: row.kind, value: row.value, matched }
