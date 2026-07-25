@@ -358,6 +358,16 @@ const VERB_RE = new RegExp(`^(${[...READ_VERBS, ...WRITE_VERBS].join('|')})([A-Z
 const WRITE_SET = new Set(WRITE_VERBS)
 
 /**
+ * Contember's content API exposes `validateCreateArticle` / `validateUpdateArticle`
+ * on the *Query* root: a dry run that checks an input against the entity's rules
+ * without writing. Read naively that parses as the verb `validate` applied to an
+ * entity called `CreateArticle`, which is not a thing. Stripping the prefix first
+ * recovers the real entity — and it stays a READ, because validating is exactly
+ * the operation that promises not to write.
+ */
+const VALIDATE_RE = /^validate(?:Create|Update|Upsert|Delete)([A-Z][A-Za-z0-9_]*)$/
+
+/**
  * Derive the models an operation touches from its root fields.
  *
  * The built-in heuristic only claims a model when the field follows the
@@ -370,6 +380,14 @@ const WRITE_SET = new Set(WRITE_VERBS)
 export function deriveModels(operation: ParsedOperation): FootprintModel[] {
 	const byName = new Map<string, boolean>()
 	for (const field of operation.rootFields) {
+		const validated = VALIDATE_RE.exec(field)
+		if (validated) {
+			// A validation is never a write, whatever it wraps — but it must not
+			// downgrade an entity a sibling field really does write.
+			const entity = validated[1] as string
+			byName.set(entity, byName.get(entity) ?? false)
+			continue
+		}
 		const match = VERB_RE.exec(field)
 		if (!match) continue
 		const verb = match[1] as string

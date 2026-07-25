@@ -102,6 +102,68 @@ describe('deriveModels', () => {
 	test('claims no model for a field that does not follow the convention', () => {
 		expect(deriveModels({ type: 'query', rootFields: ['me', 'viewer', 'node'] })).toEqual([])
 	})
+
+	// Root-field names below are taken verbatim from a generated Contember content
+	// API schema, not invented — this is the naming the heuristic exists to read.
+	test('reads a real Contember query root', () => {
+		expect(deriveModels({
+			type: 'query',
+			rootFields: ['getContentBlock', 'listContentBlock', 'paginateContentBlock', 'getImage', 'schema', 's'],
+		})).toEqual([
+			{ name: 'ContentBlock', write: false },
+			{ name: 'Image', write: false },
+		])
+	})
+
+	test('reads a real Contember mutation root', () => {
+		expect(deriveModels({
+			type: 'mutation',
+			rootFields: ['createContentBlock', 'upsertLink', 'deleteImage', 'generateUploadUrl'],
+		})).toEqual([
+			{ name: 'ContentBlock', write: true },
+			{ name: 'Link', write: true },
+			{ name: 'Image', write: true },
+		])
+	})
+
+	test('unwraps validateCreate/validateUpdate to the entity, as a read', () => {
+		// Naively this parses as the verb `validate` on an entity `CreateContentBlock`.
+		expect(deriveModels({
+			type: 'query',
+			rootFields: ['validateCreateContentBlock', 'validateUpdateImage'],
+		})).toEqual([
+			{ name: 'ContentBlock', write: false },
+			{ name: 'Image', write: false },
+		])
+	})
+
+	test('a validation alongside a real write still reports the write', () => {
+		expect(deriveModels({ type: 'mutation', rootFields: ['validateCreateImage', 'createImage'] }))
+			.toEqual([{ name: 'Image', write: true }])
+	})
+})
+
+describe('privacy', () => {
+	// A footprint is uploaded to the platform and rendered on a dashboard. The
+	// request body it is parsed from is where the passwords, tokens and personal
+	// data live, so "only names come out of here" is a security property, not a
+	// tidiness preference.
+	test('no literal argument or variable value survives parsing', () => {
+		const document = `
+			mutation Login($password: String!) {
+				transaction {
+					createSession(data: { email: "person@example.com", password: $password, token: "sk-live-abcdef" }) { ok }
+				}
+			}
+		`
+		const serialized = JSON.stringify(parseOperations(document).map((op) => ({ op, models: deriveModels(op) })))
+		expect(serialized).not.toContain('person@example.com')
+		expect(serialized).not.toContain('sk-live-abcdef')
+		expect(serialized).not.toContain('$password')
+		// The names it IS meant to keep are still there.
+		expect(serialized).toContain('createSession')
+		expect(serialized).toContain('Login')
+	})
 })
 
 describe('extractQueries', () => {

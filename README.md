@@ -97,9 +97,25 @@ Set distinct values per GitHub *environment* (`stage` / `prod`) and the workflow
 - [x] Week 3: `opice-author` Claude skill
 - [x] Week 4: `@opice/cli` (init + test) + GH Action template + dogfooded on bindx
 
+## Change tracking
+
+Every scenario can record its **footprint** — what it actually touched in the browser: source files, React components, HTTP endpoints and the GraphQL models behind them. It's opt-in (`opice test --footprint`), collected from request events, a dev server's ES-module URLs, V8 coverage and the React DevTools hook.
+
+Two things read it. The dashboard shows *what a scenario touches* (and which step fired which request). And `opice test --impacted` turns a git diff into a scenario selection:
+
+```bash
+# The always-on core, plus exactly the scenarios your change can reach.
+opice test --tier critical --impacted
+```
+
+It composes with tiers and `--select` as a union and **only ever adds**: with no index, no credentials or an unreachable platform, it warns and runs the tier alone. A selection mechanism that can subtract coverage when it breaks is worse than none.
+
+Footprints never contain request bodies, headers, cookies, GraphQL variables or query values — only shapes: methods, route templates, status codes, operation and field names.
+
 ## Non-goals (v1)
 
 - Visual regression (screenshots are evidence, not asserts)
+- Code coverage as a metric (a footprint is evidence, not a percentage — nothing gates on it)
 - Multi-tenant SaaS (single-org — operators sign in via Cloudflare Access, authorization from the propustka IAM directory; plus per-run capability-token links for read-only sharing)
 - AI in CI loop (authoring is local only)
 - Browser farm in platform (you run your own browser)

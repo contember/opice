@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { aggregateEndpoints, aggregateModels } from './collector.js'
+import { resolveSourcePath } from './coverage.js'
 import { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
 import { summarize } from './index.js'
 import type { FootprintRequest, ScenarioFootprint } from './types.js'
@@ -39,6 +40,34 @@ describe('moduleUrlToSourcePath', () => {
 	test('relativizes a /@fs/ monorepo sibling against the working directory', () => {
 		const absolute = `${process.cwd()}/packages/ui/src/Button.tsx`
 		expect(moduleUrlToSourcePath(`${APP}/@fs${absolute}`).path).toBe('packages/ui/src/Button.tsx')
+	})
+})
+
+describe('resolveSourcePath', () => {
+	// Regression: a Vite dev module carries an inline map whose only source is the
+	// bare file name. Taken literally that yields `EmptyState.tsx` as a separate
+	// file from the `src/components/EmptyState.tsx` the module collector already
+	// recorded — the same file counted twice, under a name no git diff matches.
+	test('resolves a bare source name against the script URL', () => {
+		expect(resolveSourcePath('EmptyState.tsx', undefined, `${APP}/src/components/EmptyState.tsx`, {}))
+			.toBe('src/components/EmptyState.tsx')
+	})
+
+	test('resolves a relative source out of a bundle directory', () => {
+		expect(resolveSourcePath('../../src/App.tsx', undefined, `${APP}/assets/index-a1b2c3d4.js`, {}))
+			.toBe('src/App.tsx')
+	})
+
+	test('applies sourceRoot before resolving', () => {
+		expect(resolveSourcePath('App.tsx', 'src', `${APP}/bundle.js`, {})).toBe('src/App.tsx')
+	})
+
+	test('still handles bundler pseudo-schemes textually', () => {
+		expect(resolveSourcePath('webpack://app/./src/App.tsx', undefined, `${APP}/bundle.js`, {})).toBe('src/App.tsx')
+	})
+
+	test('drops vendor sources however they are expressed', () => {
+		expect(resolveSourcePath('../node_modules/react/index.js', undefined, `${APP}/src/main.tsx`, {})).toBeNull()
 	})
 })
 

@@ -99,7 +99,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 			for (const [index, bytes] of executed) {
 				const raw = sourceMap.sources[index]
 				if (raw === undefined) continue
-				const resolved = normalizeSourceMapPath(joinSourceRoot(sourceMap.sourceRoot, raw), config.sourceRoot)
+				const resolved = resolveSourcePath(raw, sourceMap.sourceRoot, entry.url, config)
 				if (!resolved || isIgnored(resolved, config.ignore)) continue
 				const total = totals.get(index) ?? bytes
 				record(byPath, resolved, total > 0 ? Math.min(1, bytes / total) : 1)
@@ -146,6 +146,43 @@ function joinSourceRoot(sourceRoot: string | undefined, source: string): string 
 	if (!sourceRoot) return source
 	if (source.startsWith('/') || /^[a-z-]+:\/\//i.test(source)) return source
 	return sourceRoot.endsWith('/') ? `${sourceRoot}${source}` : `${sourceRoot}/${source}`
+}
+
+/**
+ * Resolve one `sources` entry to a repo path.
+ *
+ * A relative source is resolved **against the script's URL**, which is what the
+ * source-map spec says and what the observed data demands: a Vite dev module
+ * carries an inline map whose only source is the bare file name
+ * (`EmptyState.tsx`). Taken literally that produces a second, path-less entry
+ * for a file the module collector already recorded as
+ * `src/components/EmptyState.tsx` — the same file counted twice, under two
+ * names, neither of which a `git diff` would match reliably. Resolving against
+ * the script URL collapses them back into one.
+ *
+ * Bundler pseudo-schemes (`webpack://`) and absolute paths don't go through the
+ * URL step; those are handled by {@link normalizeSourceMapPath}.
+ */
+export function resolveSourcePath(
+	raw: string,
+	sourceRoot: string | undefined,
+	scriptUrl: string,
+	config: FootprintConfig,
+): string | null {
+	const withRoot = joinSourceRoot(sourceRoot, raw)
+	if (!/^[a-z-]+:\/\//i.test(withRoot) && !withRoot.startsWith('/')) {
+		try {
+			const absolute = new URL(withRoot, scriptUrl)
+			const mapped = moduleUrlToSourcePath(absolute.href, config.sourceRoot)
+			// `bundled` here means the map pointed at another built artifact rather
+			// than a source — fall through and let the textual normalizer decide.
+			if (mapped.path) return mapped.path
+			if (mapped.bundled) return null
+		} catch {
+			// Not resolvable as a URL — fall through to textual normalization.
+		}
+	}
+	return normalizeSourceMapPath(withRoot, config.sourceRoot)
 }
 
 /**
