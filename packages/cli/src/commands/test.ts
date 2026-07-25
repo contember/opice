@@ -5,6 +5,7 @@ import path from 'node:path'
 import { loadConfig } from '../config'
 import { parseOpiceDsn } from '../dsn'
 import { detectGitMeta } from '../git'
+import { changedPaths, defaultBase, explainSelection, impactedTestFiles, queryImpact, resolveImpactCredentials } from '../impact'
 
 const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
@@ -57,13 +58,26 @@ export async function testCommand(args: string[]): Promise<number> {
 	// Canonical use: a PR runs `--tier critical --select <changed test files>` so a
 	// touched standard/extended scenario runs without the whole suite.
 	const { select: selectFlag, rest: afterSelect } = extractSelect(afterStrict)
-	const select = selectFlag ?? process.env['OPICE_SELECT']
+	const explicitSelect = selectFlag ?? process.env['OPICE_SELECT']
+
+	// `--impacted [BASE]` → ask the platform which scenarios the working tree's
+	// changes reach (from their recorded footprints) and fold those test files
+	// into the selection. Composes with --tier and --select: all three are a
+	// union, so the always-on tier still runs and nothing is ever subtracted.
+	// Fails OPEN — an unreachable platform or an empty index adds nothing and
+	// leaves the tier exactly as it was.
+	const impactedFlag = extractOptionalValueFlag(afterSelect, 'impacted', looksLikeGitRef)
+	const afterImpacted = impactedFlag.rest
+	const impactedFiles = impactedFlag.present
+		? await resolveImpacted(impactedFlag.value, { ...(project ? { project } : {}), ...(endpoint ? { endpoint } : {}) })
+		: []
+	const select = [explicitSelect, impactedFiles.join(',')].filter(Boolean).join(',') || undefined
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
 	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door. A bare
 	// `--report` only consumes a following token when it *looks like* a report
 	// path (ends in .html/.htm) so it never swallows a bun test-file arg.
-	const report = extractOptionalValueFlag(afterSelect, 'report', looksLikeReportPath)
+	const report = extractOptionalValueFlag(afterImpacted, 'report', looksLikeReportPath)
 	const afterReport = report.rest
 	const reportFile = (report.present ? (report.value ?? DEFAULT_REPORT_FILE) : undefined) ?? process.env['OPICE_REPORT_FILE']
 
@@ -181,6 +195,52 @@ export async function testCommand(args: string[]): Promise<number> {
 const DEFAULT_REPORT_FILE = '.opice/report.html'
 function looksLikeReportPath(s: string): boolean {
 	return /\.html?$/i.test(s)
+}
+
+/**
+ * Does this token look like the git ref `--impacted` diffs against? Only a
+ * ref-shaped word is consumed, so `opice test --impacted tests/foo.test.ts`
+ * still passes the file through to bun instead of treating it as a base.
+ */
+function looksLikeGitRef(s: string): boolean {
+	return !s.includes('.') && !s.includes('*') && /^[\w./~^-]+$/.test(s)
+}
+
+/**
+ * Resolve the impacted test files, or an empty list if anything at all is
+ * missing. Every branch here is a *warning*, never an error: `--impacted` only
+ * ever ADDS scenarios to the tier, so when it can't answer, the run is simply
+ * the tier — which is a correct, if less targeted, run. Turning that into a
+ * failure would mean a dashboard outage could block every PR.
+ */
+async function resolveImpacted(base: string | undefined, config: { project?: string; endpoint?: string }): Promise<string[]> {
+	const credentials = resolveImpactCredentials(config)
+	if (!credentials) {
+		warn('--impacted needs a platform credential (OPICE_READ_DSN or OPICE_DSN) — running the tier alone.')
+		return []
+	}
+	const resolvedBase = base ?? defaultBase()
+	const paths = changedPaths(resolvedBase)
+	if (paths.length === 0) {
+		console.error(`[opice] --impacted: no changes against ${resolvedBase} — running the tier alone.`)
+		return []
+	}
+	const result = await queryImpact(credentials, { paths })
+	if (!result) {
+		warn('--impacted could not reach the platform — running the tier alone.')
+		return []
+	}
+	const files = impactedTestFiles(result.scenarios)
+	if (result.index.scenarios === 0) {
+		warn(
+			'--impacted: the footprint index is empty, so no scenario could be matched. '
+			+ 'Run the suite once with `opice test --footprint` on CI to build it.',
+		)
+		return []
+	}
+	console.error(`[opice] --impacted: ${paths.length} changed path(s) against ${resolvedBase} → ${files.length} test file(s).`)
+	for (const scenario of result.scenarios) console.error(`[opice]   ${explainSelection(scenario)}`)
+	return files
 }
 
 /**

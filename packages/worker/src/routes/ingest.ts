@@ -36,12 +36,15 @@ export async function handleApi(request: Request, services: Services, segments: 
 	}
 
 	// Impact is a READ that needs a request body: `opice test --impacted` sends the
-	// changed-path list from a diff, which is far too long for a query string. It
-	// is therefore the one POST gated on `report.read` rather than `report.write` —
-	// asking for the write DSN just to *ask a question* would hand every CI job
-	// that wants smart selection the ability to forge run data.
+	// changed-path list from a diff, which is far too long for a query string. So
+	// it's a POST that doesn't follow the method split below, and it accepts
+	// EITHER report permission. Read is the obvious one. Write is allowed because
+	// the ingest DSN is what a CI job running `--impacted` already holds, and the
+	// answer — scenario names and their test files — is precisely what that token
+	// reports to us in the first place. Requiring a second credential to learn
+	// nothing new would buy no security and cost every project a secret.
 	if (request.method === 'POST' && path[0] === 'impact' && path.length === 1) {
-		if (!machineCanReadReports(auth, slug)) {
+		if (!machineCanReadReports(auth, slug) && !machineCanWriteReports(auth, slug)) {
 			return unauthorized()
 		}
 		return impact(request, services, project)
