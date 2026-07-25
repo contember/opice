@@ -110,6 +110,8 @@ opice test --tier critical --impacted
 
 It composes with tiers and `--select` as a union and **only ever adds**: with no index, no credentials or an unreachable platform, it warns and runs the tier alone. A selection mechanism that can subtract coverage when it breaks is worse than none.
 
+The index is written only by CI runs of the default branch — a feature branch is a state nobody else is on, and since a scenario's edges are replaced wholesale, letting one write would hand every other developer an answer computed from someone's half-built work. So: collect footprints on the nightly trunk run, read them on every PR.
+
 Footprints never contain request bodies, headers, cookies, GraphQL variables or query values — only shapes: methods, route templates, status codes, operation and field names.
 
 ## Non-goals (v1)

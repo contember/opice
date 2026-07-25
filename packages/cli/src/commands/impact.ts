@@ -58,7 +58,9 @@ export async function impactCommand(args: string[]): Promise<number> {
 	if (result.index.scenarios === 0) {
 		console.error(
 			'[opice] the footprint index is EMPTY — no run has reported one yet, so this answer means "unknown", not "nothing".\n'
-			+ '[opice] Run the suite once with `opice test --footprint` on CI to build it.',
+			+ '[opice] Build it with `opice test --footprint` on CI, ON THE DEFAULT BRANCH: only a CI run of\n'
+			+ '[opice] main/master writes the index, so a feature branch cannot hand everyone else a view of\n'
+			+ '[opice] its half-built state.',
 		)
 	}
 	return 0

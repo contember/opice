@@ -233,8 +233,8 @@ async function resolveImpacted(base: string | undefined, config: { project?: str
 	const files = impactedTestFiles(result.scenarios)
 	if (result.index.scenarios === 0) {
 		warn(
-			'--impacted: the footprint index is empty, so no scenario could be matched. '
-			+ 'Run the suite once with `opice test --footprint` on CI to build it.',
+			'--impacted: the footprint index is empty, so no scenario could be matched. Build it with '
+			+ '`opice test --footprint` on a CI run of the default branch (only main/master writes the index).',
 		)
 		return []
 	}

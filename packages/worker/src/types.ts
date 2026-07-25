@@ -29,6 +29,11 @@ export interface Project {
 	id: number
 	slug: string
 	name: string
+	/**
+	 * The branch allowed to rewrite the change-tracking index. Null means "main
+	 * or master" — see {@link isDefaultBranch} and migration 0012.
+	 */
+	defaultBranch: string | null
 	createdAt: number
 }
 

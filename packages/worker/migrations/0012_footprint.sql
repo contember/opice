@@ -18,12 +18,24 @@
 --     a 50-scenario project stays around 10k rows whether it has run ten times
 --     or ten thousand.
 --
--- Only CI runs write edges. A local run happens against a half-built app on
--- someone's laptop, and letting it rewrite the shared index is the one way this
--- table could start selecting the wrong tests for everyone else.
+-- Only CI runs ON THE DEFAULT BRANCH write edges. Two different ways a bad
+-- writer would corrupt everyone else's selection:
+--   * a local run happens against a half-built app on someone's laptop;
+--   * a feature branch is, by definition, a state nobody else is on — a
+--     scenario there may touch a half-built set of files, and since edges are
+--     replaced per scenario, that branch's view would become the answer given
+--     to every other developer asking what their change affects.
+-- The default branch is the one state that is true for everybody, so it is the
+-- only one allowed to write. This also matches the recommended setup, where the
+-- nightly full-tier run on trunk collects footprints and PRs only read them.
 
 ALTER TABLE scenarios ADD COLUMN footprint_r2_key TEXT;   -- R2 key of the full footprint blob; NULL when not collected
 ALTER TABLE scenarios ADD COLUMN footprint_summary TEXT;  -- compact JSON counts (FootprintSummary)
+
+-- Which branch may rewrite the change-tracking index (see below). NULL means
+-- "main or master", which is right for almost every repo; set it explicitly for
+-- a project whose trunk is called something else.
+ALTER TABLE projects ADD COLUMN default_branch TEXT;
 
 CREATE TABLE footprint_edges (
 	project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -29,6 +29,7 @@ interface ProjectRow {
 	id: number
 	slug: string
 	name: string
+	default_branch: string | null
 	created_at: number
 }
 
@@ -130,8 +131,24 @@ const toProject = (r: ProjectRow): Project => ({
 	id: r.id,
 	slug: r.slug,
 	name: r.name,
+	defaultBranch: r.default_branch,
 	createdAt: r.created_at,
 })
+
+/**
+ * May a run on `branch` rewrite the project's change-tracking index?
+ *
+ * A feature branch is by definition a state nobody else is on, so letting it
+ * write would hand every other developer an answer computed from someone's
+ * half-built work. The default branch is the one state that is true for
+ * everybody. With no branch recorded at all we refuse — an unattributable run
+ * is exactly the one we can't reason about.
+ */
+export const isDefaultBranch = (project: Project, branch: string | null): boolean => {
+	if (!branch) return false
+	if (project.defaultBranch) return branch === project.defaultBranch
+	return branch === 'main' || branch === 'master'
+}
 
 interface CapabilityRow {
 	id: string

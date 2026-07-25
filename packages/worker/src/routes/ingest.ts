@@ -1,4 +1,5 @@
 import { withVideoUrl } from '../asset-url'
+import { isDefaultBranch } from '../db'
 import { normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
@@ -440,8 +441,12 @@ async function uploadFootprint(
 		console.error(`footprint upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 	}
 
+	// Two gates before this footprint may rewrite the shared index (migration
+	// 0012): it must come from CI, and from the default branch. Everything else
+	// still gets its blob stored — only the *index*, which decides what CI runs
+	// for everyone, is restricted to the one state that is true for everybody.
 	let indexed = false
-	if (run.source === 'ci') {
+	if (run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
 			await services.db.replaceFootprintEdges({
 				projectId: project.id,
