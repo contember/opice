@@ -38,6 +38,16 @@ const SOURCE_MAP_TIMEOUT_MS = 5_000
 const MAX_SOURCE_MAP_BYTES = 64 * 1024 * 1024
 /** How many source maps are fetched at once — see {@link prefetchSourceMaps}. */
 const SOURCE_MAP_CONCURRENCY = 4
+/**
+ * Total wall-clock budget for fetching source maps, across all of them.
+ *
+ * The per-map timeout bounds one request; it does not bound the queue. A page
+ * referencing dozens of slow or unreachable maps would otherwise spend minutes
+ * here — inside the scenario's own `afterAll` budget, failing a passing test over
+ * telemetry that is documented as unable to do that. Whatever is fetched by the
+ * deadline is used; the rest degrade to "no source map", which is a warning.
+ */
+const SOURCE_MAP_TOTAL_BUDGET_MS = 20_000
 
 /**
  * Source maps skipped this run because they are index maps (`sections`), which
@@ -295,12 +305,19 @@ async function prefetchSourceMaps(
 	// the test process, during teardown, for a feature that must never be able to
 	// fail a run.
 	const pending = [...urls]
+	const deadline = Date.now() + SOURCE_MAP_TOTAL_BUDGET_MS
 	const workers = Array.from({ length: Math.min(SOURCE_MAP_CONCURRENCY, pending.length) }, async () => {
 		for (let url = pending.pop(); url !== undefined; url = pending.pop()) {
+			// Stop SCHEDULING once the budget is spent — the request in flight still
+			// has its own timeout, so the worst case stays bounded.
+			if (Date.now() >= deadline) return
 			await fetchSourceMap(url, context, cache)
 		}
 	})
 	await Promise.all(workers)
+	if (pending.length > 0) {
+		console.warn(`[opice] source-map fetching hit its ${SOURCE_MAP_TOTAL_BUDGET_MS}ms budget — ${pending.length} map(s) skipped.`)
+	}
 }
 
 /**

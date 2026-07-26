@@ -52,7 +52,20 @@ const VENDOR_FRAGMENTS = [
  * through as if it were a source file, putting an unmatchable build artifact in
  * the index instead of reporting that source attribution had failed.
  */
-const HASHED_CHUNK_RE = /[.-][A-Za-z0-9_-]{8,}\.(?:js|mjs|css)$/
+const HASHED_CHUNK_RE = /[.-]([A-Za-z0-9_-]{8,})\.(?:js|mjs|css)$/
+
+/**
+ * Does this suffix actually look like a build hash, rather than a long word?
+ *
+ * Length alone said yes to `admin-dashboard.css`, which cost that stylesheet its
+ * file edge entirely — changing it could then select nothing. A real hash is
+ * either pure hex or mixes digits with both letter cases; an English compound
+ * does neither.
+ */
+function looksHashed(token: string): boolean {
+	if (/^[0-9a-f]{8,}$/i.test(token)) return true
+	return /\d/.test(token) && /[a-z]/.test(token) && /[A-Z]/.test(token)
+}
 
 export interface ModulePathResult {
 	/** The repo-relative-ish source path, or null when this URL isn't project source. */
@@ -78,7 +91,11 @@ export function moduleUrlToSourcePath(rawUrl: string, sourceRoot?: string): Modu
 	} catch {
 		return { path: null, bundled: false }
 	}
-	let pathname = url.pathname
+	// Decoded: a source file with a space or a non-ASCII name arrives
+	// percent-encoded (`/src/My%20Panel.tsx`), while git reports it decoded, so an
+	// encoded path would match nothing. Decoding is per segment so an encoded
+	// separator can't invent a directory level.
+	let pathname = decodePathname(url.pathname)
 	if (VENDOR_FRAGMENTS.some((fragment) => pathname.includes(fragment))) {
 		return { path: null, bundled: false }
 	}
@@ -93,7 +110,8 @@ export function moduleUrlToSourcePath(rawUrl: string, sourceRoot?: string): Modu
 	if (!SOURCE_EXTENSIONS.has(extension)) {
 		return { path: null, bundled: false }
 	}
-	if (HASHED_CHUNK_RE.test(pathname)) {
+	const hashed = HASHED_CHUNK_RE.exec(pathname)
+	if (hashed && looksHashed(hashed[1] as string)) {
 		// A built bundle: its name says nothing about which sources went into it.
 		return { path: null, bundled: true }
 	}
@@ -130,6 +148,20 @@ export function normalizeSourceMapPath(source: string, sourceRoot?: string): str
 	const extension = path.posix.extname(s).toLowerCase()
 	if (extension && !SOURCE_EXTENSIONS.has(extension)) return null
 	return sourceRoot ? toPosix(path.posix.join(sourceRoot, s)) : s
+}
+
+/** Percent-decode each path segment, leaving the separators alone. */
+function decodePathname(pathname: string): string {
+	return pathname
+		.split('/')
+		.map((segment) => {
+			try {
+				return decodeURIComponent(segment).replace(/\//g, '%2F')
+			} catch {
+				return segment
+			}
+		})
+		.join('/')
 }
 
 function toPosix(p: string): string {

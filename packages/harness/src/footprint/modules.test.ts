@@ -36,6 +36,18 @@ describe('moduleUrlToSourcePath', () => {
 		expect(moduleUrlToSourcePath(`${APP}/assets/main-BxT2_9qK.css`)).toEqual({ path: null, bundled: true })
 	})
 
+	test('a long descriptive filename is not a build hash', () => {
+		// Length alone said "hashed", which cost this stylesheet its file edge —
+		// changing it could then select nothing.
+		expect(moduleUrlToSourcePath(`${APP}/src/admin-dashboard.css`).path).toBe('src/admin-dashboard.css')
+		expect(moduleUrlToSourcePath(`${APP}/src/notifications.js`).path).toBe('src/notifications.js')
+	})
+
+	test('decodes percent-encoded source paths', () => {
+		// git reports the path decoded, so an encoded one would match nothing.
+		expect(moduleUrlToSourcePath(`${APP}/src/My%20Panel.tsx`).path).toBe('src/My Panel.tsx')
+	})
+
 	test('applies sourceRoot for a dev server rooted below the repo root', () => {
 		expect(moduleUrlToSourcePath(`${APP}/src/App.tsx`, 'apps/web').path).toBe('apps/web/src/App.tsx')
 	})

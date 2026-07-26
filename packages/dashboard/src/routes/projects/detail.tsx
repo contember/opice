@@ -1,5 +1,5 @@
 import { createPage, Link } from '@buzola/router'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { EmptyState } from '../../components/EmptyState'
 import { InboxIcon } from '../../components/Icon'
@@ -49,6 +49,8 @@ function ProjectPage({ slug }: { slug: string }) {
 					<code>{project.data.slug}</code>
 					<span className="sep">·</span>
 					<span>added {fmtRelative(project.data.createdAt)}</span>
+					<span className="sep">·</span>
+					<DefaultBranch slug={slug} current={project.data.defaultBranch} />
 				</div>
 			</div>
 
@@ -86,5 +88,50 @@ function ProjectPage({ slug }: { slug: string }) {
 				</>
 			)}
 		</>
+	)
+}
+
+/**
+ * The branch allowed to write the change-tracking index.
+ *
+ * Editable here because a project whose trunk isn't main or master cannot build
+ * an index at all until it says so — every footprint upload is refused and
+ * `opice test --impacted` reports an empty index forever. Blank means
+ * "main or master", which covers nearly everyone.
+ */
+function DefaultBranch({ slug, current }: { slug: string; current: string | null }) {
+	const [editing, setEditing] = useState(false)
+	const [value, setValue] = useState(current ?? '')
+	const queryClient = useQueryClient()
+	const save = useMutation({
+		mutationFn: () => rpc.projects.setDefaultBranch({ slug, defaultBranch: value.trim() || null }),
+		onSuccess: () => {
+			setEditing(false)
+			void queryClient.invalidateQueries({ queryKey: ['projects.get', slug] })
+		},
+	})
+
+	if (!editing) {
+		return (
+			<button type="button" className="btn-link" onClick={() => setEditing(true)} title="Only runs of this branch write the change-tracking index">
+				trunk: {current ?? 'main or master'}
+			</button>
+		)
+	}
+	return (
+		<span className="pd-branch-edit">
+			<input
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+				placeholder="main or master"
+				aria-label="Default branch"
+				autoFocus
+			/>
+			<button type="button" className="btn-link" onClick={() => save.mutate()} disabled={save.isPending}>
+				{save.isPending ? 'Saving…' : 'Save'}
+			</button>
+			<button type="button" className="btn-link" onClick={() => { setValue(current ?? ''); setEditing(false) }}>Cancel</button>
+			{save.error && <span className="error-inline">{(save.error as Error).message}</span>}
+		</span>
 	)
 }

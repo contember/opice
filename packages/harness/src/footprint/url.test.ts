@@ -89,6 +89,13 @@ describe('redaction', () => {
 		expect(template).not.toContain('eyJ')
 	})
 
+	test('collapses a lowercase opaque token', () => {
+		// Neither mixed-case nor hex, so `isIdSegment` doesn't recognise it — but a
+		// 16+ character unbroken run is a value, not a route name.
+		expect(route(`${APP}/reset/abc123def456ghi789`)).toBe('/reset/:id')
+		expect(route(`${APP}/s/01h8xgjwbwbaq4z1e3t9k2m5np`)).toBe('/s/:id')
+	})
+
 	test('still keeps ordinary route words', () => {
 		expect(route(`${APP}/api/v1/admin-dashboard-v2/unsubscribe_all`)).toBe('/api/v1/admin-dashboard-v2/unsubscribe_all')
 		expect(route(`${APP}/assets/manifest.json`)).toBe('/assets/manifest.json')

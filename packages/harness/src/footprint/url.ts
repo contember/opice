@@ -75,6 +75,15 @@ export interface RouteTemplate {
 const ROUTE_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,31}$/
 
 /**
+ * A long unbroken run of letters and digits, in any case. Route names are words:
+ * they are short, or they are broken up by `-`, `_` or `.`. A 16+ character
+ * uninterrupted token is a value — a lowercase ULID, a reset token, a session id
+ * — and `isIdSegment` only recognises the ones that also mix case or are pure
+ * hex, which left `/reset/abc123def456ghi789` intact.
+ */
+const OPAQUE_RUN_RE = /^[A-Za-z0-9]{16,}$/
+
+/**
  * Turn a request URL into a route template, relative to the app's own origin.
  * A same-origin URL keeps only its path; anything else keeps its origin too, so
  * a third-party API is visibly third-party on the dashboard.
@@ -91,7 +100,10 @@ export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTempla
 	}
 	if (url.protocol === 'data:' || url.protocol === 'blob:' || url.protocol === 'about:') return null
 	const segments = url.pathname.split('/').filter(Boolean)
-	const templated = segments.map((segment, i) => (isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment))
+	const templated = segments.map((segment, i) => {
+		if (i > 0 && OPAQUE_RUN_RE.test(segment)) return ':id'
+		return isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment
+	})
 	const path = '/' + templated.join('/')
 	const sameOrigin = appOrigin !== undefined && url.origin === appOrigin
 	const route = sameOrigin ? path : `${url.origin}${path}`
