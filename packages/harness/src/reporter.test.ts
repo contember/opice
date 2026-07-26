@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { isTruthyEnv } from './reporter'
+import { ciBranch, isTruthyEnv, usableBranch } from './reporter'
 
 // `source` is derived from this, and only a `ci` run of the default branch may
 // replace the shared change-tracking index — so a misread here hands everyone
@@ -16,5 +16,50 @@ describe('isTruthyEnv', () => {
 	test('ignores surrounding whitespace', () => {
 		expect(isTruthyEnv(' false ')).toBe(false)
 		expect(isTruthyEnv(' true ')).toBe(true)
+	})
+})
+
+// A null branch is not cosmetic: the worker's default-branch gate rejects every
+// footprint from a run it cannot attribute, so on non-GitHub CI the impact index
+// would simply never populate, with nothing saying why.
+describe('ciBranch', () => {
+	test.each([
+		['GITHUB_REF_NAME', 'main'],
+		['CI_COMMIT_BRANCH', 'develop'],
+		['BUILDKITE_BRANCH', 'main'],
+		['CIRCLE_BRANCH', 'trunk'],
+		['BRANCH_NAME', 'main'],
+		['DRONE_BRANCH', 'main'],
+		['BITBUCKET_BRANCH', 'main'],
+		['CF_PAGES_BRANCH', 'production'],
+	])('reads %s', (key, value) => {
+		expect(ciBranch({ [key]: value } as NodeJS.ProcessEnv)).toBe(value)
+	})
+
+	test('prefers GitHub when several are present', () => {
+		expect(ciBranch({ GITHUB_REF_NAME: 'gh', CI_COMMIT_BRANCH: 'gl' } as NodeJS.ProcessEnv)).toBe('gh')
+	})
+
+	test('is undefined with no provider variable', () => {
+		expect(ciBranch({} as NodeJS.ProcessEnv)).toBeUndefined()
+	})
+
+	// A merge-request build is not a default-branch build, so no MR variable is read.
+	test('ignores merge-request variables', () => {
+		expect(ciBranch({ CI_MERGE_REQUEST_SOURCE_BRANCH_NAME: 'feat/x' } as NodeJS.ProcessEnv)).toBeUndefined()
+	})
+})
+
+describe('usableBranch', () => {
+	test('rejects git’s detached-HEAD placeholder', () => {
+		expect(usableBranch('HEAD')).toBeUndefined()
+	})
+
+	test.each(['', '   ', undefined])('rejects %p', (value) => {
+		expect(usableBranch(value)).toBeUndefined()
+	})
+
+	test('trims a real name', () => {
+		expect(usableBranch('  main\n')).toBe('main')
 	})
 })

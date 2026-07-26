@@ -1010,7 +1010,16 @@ export class Db {
 						SELECT id, commit_sha FROM runs
 						WHERE project_id = ?1 AND source = 'ci'
 							AND (CASE WHEN ?3 IS NULL THEN branch IN ('main', 'master') ELSE branch = ?3 END)
-						ORDER BY started_at DESC LIMIT 1
+						-- By REVISION, matching how edge writes are ordered. Sorting by
+						-- started_at lets a re-run of an older workflow become the
+						-- authoritative inventory: it has the newer wall clock but the
+						-- older commit, and edge replacement correctly refuses it. If the
+						-- newer revision added or moved a scenario, the stale inventory
+						-- would not contain it, unindexed would read 0, and an empty
+						-- match would look authoritative. Runs with no commit_time sort
+						-- last — they are never indexed anyway (see routes/ingest.ts).
+						ORDER BY (commit_time IS NULL), commit_time DESC, started_at DESC
+						LIMIT 1
 					), latest AS (
 						SELECT r.id FROM runs r, newest n
 						WHERE r.project_id = ?1 AND r.source = 'ci'

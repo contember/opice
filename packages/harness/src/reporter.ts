@@ -696,6 +696,49 @@ function commitTime(env: NodeJS.ProcessEnv): number | undefined {
 }
 
 /**
+ * The branch this CI provider reports, if any.
+ *
+ * Mirrors the CLI's list, deliberately duplicated: the harness is what a user's
+ * repo installs and it cannot import from `@opice/cli`. Keeping the two in step
+ * matters because a null branch is not a cosmetic gap — the worker's
+ * default-branch gate rejects every footprint from a run it cannot attribute, so
+ * on GitLab the index would simply never populate, with nothing saying why.
+ *
+ * A merge-request variable is deliberately absent: a PR build is not a
+ * default-branch build.
+ */
+export function ciBranch(env: NodeJS.ProcessEnv): string | undefined {
+	return usableBranch(
+		env['GITHUB_REF_NAME'] // GitHub Actions
+		?? env['CI_COMMIT_BRANCH'] // GitLab CI
+		?? env['BUILDKITE_BRANCH'] // Buildkite
+		?? env['CIRCLE_BRANCH'] // CircleCI
+		?? env['BRANCH_NAME'] // Jenkins multibranch
+		?? env['DRONE_BRANCH'] // Drone
+		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
+		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
+	)
+}
+
+/**
+ * The checked-out branch, straight from git. Resolved once, best-effort — the
+ * last resort when neither the CLI nor a CI provider named one.
+ */
+let cachedBranch: string | undefined | null
+function gitBranch(): string | undefined {
+	if (cachedBranch === undefined) {
+		cachedBranch = usableBranch(gitOutput(['rev-parse', '--abbrev-ref', 'HEAD'])) ?? null
+	}
+	return cachedBranch ?? undefined
+}
+
+/** A branch name, or undefined for the empty string and git's detached-HEAD placeholder. */
+export function usableBranch(value: string | undefined): string | undefined {
+	const trimmed = value?.trim()
+	return trimmed && trimmed !== 'HEAD' ? trimmed : undefined
+}
+
+/**
  * The HEAD commit's timestamp, straight from git. Resolved once, best-effort.
  *
  * `opice test` injects OPICE_COMMIT_TIME, but a plain `bun test` in CI is a
@@ -709,20 +752,24 @@ let cachedCommitTime: string | undefined | null
 function gitCommitTime(): string | undefined {
 	if (cachedCommitTime === undefined) {
 		cachedCommitTime = null
-		try {
-			// Required lazily: this module is imported under plain Node by the
-			// authoring daemon, and there is no reason to pay for it until asked.
-			const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
-			const out = execFileSync('git', ['show', '-s', '--format=%ct', 'HEAD'], {
-				encoding: 'utf-8',
-				stdio: ['ignore', 'pipe', 'ignore'],
-			}).trim()
-			if (out) cachedCommitTime = out
-		} catch {
-			// No git, no checkout, no HEAD — all fine, all mean "cannot order this".
-		}
+		cachedCommitTime = gitOutput(['show', '-s', '--format=%ct', 'HEAD']) ?? null
 	}
 	return cachedCommitTime ?? undefined
+}
+
+/**
+ * Run git and return its trimmed output, or undefined for any failure. No git,
+ * no checkout, no HEAD — all fine, all simply mean "cannot answer".
+ */
+function gitOutput(args: string[]): string | undefined {
+	try {
+		// Required lazily: this module is imported under plain Node by the authoring
+		// daemon, and there is no reason to pay for it until asked.
+		const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+		return execFileSync('git', args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined
+	} catch {
+		return undefined
+	}
 }
 
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {
@@ -772,7 +819,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		projectId,
 		clientId,
 		clientSecret,
-		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
+		branch: env['OPICE_BRANCH'] ?? ciBranch(env) ?? gitBranch(),
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
 		...(commitTime(env) !== undefined ? { commitTime: commitTime(env) } : {}),
 		source: isCI ? 'ci' : 'local',
