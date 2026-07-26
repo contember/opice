@@ -763,11 +763,23 @@ export class Db {
 		scenarioName: string
 		runId: string
 		branch: string | null
+		/** When the writing run started — the freshness the guard below compares. */
+		runStartedAt: number
 		edges: FootprintEdgeInput[]
-	}): Promise<void> {
+	}): Promise<{ applied: boolean }> {
 		const now = Date.now()
+		// Both statements are guarded on the incoming run being at least as new as
+		// whatever is indexed, and they run in one D1 batch (a transaction), so a
+		// slow older run that finishes after a newer one cannot delete the newer
+		// edges and then fail to replace them — it simply does nothing.
+		const notOlder = `NOT EXISTS (
+			SELECT 1 FROM footprint_edges
+			WHERE project_id = ?1 AND scenario_key = ?2 AND run_started_at > ?3
+		)`
 		const statements: D1PreparedStatement[] = [
-			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ? AND scenario_key = ?').bind(input.projectId, input.scenarioKey),
+			this.d1
+				.prepare(`DELETE FROM footprint_edges WHERE project_id = ?1 AND scenario_key = ?2 AND ${notOlder}`)
+				.bind(input.projectId, input.scenarioKey, input.runStartedAt),
 		]
 		// The edges travel as ONE json array parameter per statement, expanded by
 		// `json_each`, rather than as a row of placeholders each. A scenario indexes
@@ -785,21 +797,27 @@ export class Db {
 			statements.push(
 				this.d1
 					.prepare(
-						`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, writes, exercised, run_id, branch, updated_at)
-							SELECT ?, ?, ?, ?,
+						`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, writes, exercised, run_id, branch, run_started_at, updated_at)
+							SELECT ?1, ?2, ?4, ?5,
 								json_extract(e.value, '$.k'), json_extract(e.value, '$.v'),
 								json_extract(e.value, '$.w'), json_extract(e.value, '$.x'),
-								?, ?, ?
-							FROM json_each(?) AS e
-							WHERE true
+								?6, ?7, ?3, ?8
+							FROM json_each(?9) AS e
+							WHERE ${notOlder}
 							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
 								writes = excluded.writes, exercised = excluded.exercised,
-								run_id = excluded.run_id, branch = excluded.branch, updated_at = excluded.updated_at`,
+								run_id = excluded.run_id, branch = excluded.branch,
+								run_started_at = excluded.run_started_at, updated_at = excluded.updated_at`,
 					)
-					.bind(input.projectId, input.scenarioKey, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
 			)
 		}
-		await this.d1.batch(statements)
+		const results = await this.d1.batch(statements)
+		// The guard makes this a no-op for a run older than what's indexed, and the
+		// caller reports whether the index was actually written — saying "indexed"
+		// when a stale upload changed nothing would be a lie a CI log can't check.
+		const written = results.slice(1).reduce((sum, r) => sum + (r.meta.changes ?? 0), 0)
+		return { applied: input.edges.length === 0 || written > 0 }
 	}
 
 	/**
@@ -848,12 +866,39 @@ export class Db {
 	}
 
 	/** How many edges the project has indexed, and when it was last refreshed. */
-	async footprintIndexStatus(projectId: number): Promise<{ edges: number; scenarios: number; updatedAt: number | null }> {
-		const row = await this.d1
-			.prepare('SELECT COUNT(*) AS edges, COUNT(DISTINCT scenario_key) AS scenarios, MAX(updated_at) AS updated_at FROM footprint_edges WHERE project_id = ?')
-			.bind(projectId)
-			.first<{ edges: number; scenarios: number; updated_at: number | null }>()
-		return { edges: row?.edges ?? 0, scenarios: row?.scenarios ?? 0, updatedAt: row?.updated_at ?? null }
+	async footprintIndexStatus(projectId: number): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
+		const [indexed, missing] = await this.d1.batch<{ edges?: number; scenarios?: number; updated_at?: number | null; unindexed?: number }>([
+			this.d1
+				.prepare('SELECT COUNT(*) AS edges, COUNT(DISTINCT scenario_key) AS scenarios, MAX(updated_at) AS updated_at FROM footprint_edges WHERE project_id = ?')
+				.bind(projectId),
+			// Scenarios the project has REPORTED but which carry no edges. A count
+			// of indexed scenarios alone can't tell a complete index from a partial
+			// one, and the difference decides how much an empty match is worth: with
+			// everything indexed it means "nothing is affected", with a gap it means
+			// "possibly unknown". Runs report every scenario including skipped ones,
+			// so the newest authoritative run is a full inventory.
+			this.d1
+				.prepare(`WITH latest AS (
+						SELECT id FROM runs
+						WHERE project_id = ?1 AND source = 'ci'
+						ORDER BY started_at DESC LIMIT 1
+					)
+					SELECT COUNT(*) AS unindexed FROM scenarios s
+					WHERE s.run_id IN (SELECT id FROM latest)
+						AND NOT EXISTS (
+							SELECT 1 FROM footprint_edges e
+							WHERE e.project_id = ?1
+								AND e.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
+						)`)
+				.bind(projectId),
+		])
+		const counts = indexed?.results?.[0]
+		return {
+			edges: counts?.edges ?? 0,
+			scenarios: counts?.scenarios ?? 0,
+			updatedAt: counts?.updated_at ?? null,
+			unindexed: missing?.results?.[0]?.unindexed ?? 0,
+		}
 	}
 
 	/**

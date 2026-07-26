@@ -219,8 +219,12 @@ export class FootprintCollector {
 			return []
 		}
 		if (body && body.length > MAX_BODY_BYTES) return []
-		if (!looksLikeGraphql(pathname, body)) return []
-		const extracted = extractQueries(body, request.headers()['content-type'])
+		// The content type is half the detection: a raw `application/graphql` body
+		// carries neither a /graphql path nor a JSON "query" key, so without it such
+		// a request records no operations at all.
+		const contentType = request.headers()['content-type']
+		if (!looksLikeGraphql(pathname, body, contentType)) return []
+		const extracted = extractQueries(body, contentType)
 		this.persistedQueries += extracted.persisted
 		const operations: FootprintOperation[] = []
 		for (const document of extracted.documents) {

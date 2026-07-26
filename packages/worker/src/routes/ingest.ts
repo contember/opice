@@ -461,16 +461,19 @@ async function uploadFootprint(
 	let indexed = false
 	if (complete && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
-			await services.db.replaceFootprintEdges({
+			const replaced = await services.db.replaceFootprintEdges({
 				projectId: project.id,
 				scenarioKey: scenarioKeyOf(scenario.testFile, scenario.name),
 				testFile: scenario.testFile,
 				scenarioName: scenario.name,
 				runId: run.id,
 				branch: run.branch,
+				runStartedAt: run.startedAt,
 				edges: toEdges(footprint),
 			})
-			indexed = true
+			// False when a NEWER run already indexed this scenario — the write was
+			// correctly refused rather than having failed.
+			indexed = replaced.applied
 		} catch (err) {
 			// The index is a derived convenience; the blob above is the record. A
 			// failure here degrades `--impacted`, it doesn't lose data.

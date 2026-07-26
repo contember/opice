@@ -202,6 +202,23 @@ function noteSelected(name: string): void {
 	})
 }
 
+/**
+ * The legacy registrar form can't prove its walkthrough finished, so its
+ * footprints are never indexed for change tracking. Said once per process rather
+ * than per scenario — it's a property of the form, not of any one test.
+ */
+let warnedLegacyFootprint = false
+function warnLegacyFootprint(): void {
+	if (warnedLegacyFootprint) return
+	warnedLegacyFootprint = true
+	console.warn(
+		'[opice] footprints from the legacy (sync registrar) browserTest form are stored but NOT indexed for '
+		+ 'change tracking: nothing here observes whether its own test() blocks passed, and indexing a '
+		+ 'walkthrough that died part-way would replace a scenario\'s valid edges with a prefix. '
+		+ 'Convert the scenario to the async body form to have it indexed.',
+	)
+}
+
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
@@ -222,6 +239,19 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
+// Did the walkthrough body run to completion this attempt?
+//
+// `currentScenarioFailures` is NOT a substitute: it only counts failures raised
+// inside `step`/`invariant` and setup, so a bare `await expect(...)` in the body
+// — or any helper that throws outside a step — leaves it at zero while the
+// walkthrough is very much unfinished. That matters because completeness decides
+// whether the platform may replace this scenario's change-tracking edges with
+// what was collected, and a prefix would delete the valid ones.
+//
+// It starts false and is set only by the body form after `body()` returns. The
+// legacy registrar form registers its own `test()` blocks, whose outcome nothing
+// here observes, so it never claims completeness — see `warnLegacyFootprint`.
+let currentWalkthroughCompleted = false
 
 /**
  * Register a top-level browser test scenario. Two forms, picked automatically:
@@ -364,10 +394,12 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// scenario's edges wholesale — indexing a prefix would delete the
 					// valid ones and quietly stop selecting this scenario for the files
 					// it never reached. The blob is stored either way.
+					const complete = currentWalkthroughCompleted && currentScenarioFailures === 0
+					if (!complete && !isBody) warnLegacyFootprint()
 					footprintUpload = reporter.uploadFootprint({
 						scenarioId: currentScenarioId,
 						body: json,
-						complete: currentScenarioFailures === 0,
+						complete,
 					})
 				}
 			}
@@ -457,6 +489,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
+				currentWalkthroughCompleted = false
 				try {
 					await openScenario(meta, testFile)
 				} catch (e) {
@@ -466,6 +499,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					throw e
 				}
 				await body()
+				// Reached only when the whole body resolved — anything that throws,
+				// inside a step or not, skips this line and leaves the footprint
+				// marked incomplete.
+				currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared

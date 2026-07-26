@@ -90,6 +90,15 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 	}
 }
 
+/**
+ * Extensions V8 coverage can attribute. A stylesheet is executed by the browser's
+ * CSS engine, never by V8, so it can only ever be observed by the module
+ * collector — marking it "loaded, not called" would be a statement about our
+ * instrumentation rather than about the scenario, and would quietly drop every
+ * stylesheet out of impact selection.
+ */
+const V8_MEASURABLE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i
+
 /** Flatten a footprint into the change-tracking index's edge rows. */
 export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
 	const edges: FootprintEdgeInput[] = []
@@ -99,10 +108,11 @@ export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
 	// which would make impact selection match nothing at all in `network` mode.
 	const canTellExercised = footprint.collected.includes('coverage')
 	for (const file of footprint.files) {
+		const measurable = V8_MEASURABLE.test(file.path)
 		edges.push({
 			kind: 'file',
 			value: file.path,
-			exercised: !canTellExercised || file.source === 'coverage',
+			exercised: !canTellExercised || !measurable || file.source === 'coverage',
 		})
 	}
 	for (const component of footprint.components) edges.push({ kind: 'component', value: component })

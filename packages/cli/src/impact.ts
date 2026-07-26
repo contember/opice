@@ -23,6 +23,8 @@ export interface ImpactIndexStatus {
 	edges: number
 	scenarios: number
 	updatedAt: number | null
+	/** Scenarios the project has reported that carry no edges — see {@link resolveImpact}. */
+	unindexed: number
 }
 
 export interface ImpactReason {
@@ -185,6 +187,18 @@ export async function resolveImpact(
 	const files = impactedTestFiles(result.scenarios)
 	console.error(`[opice] ${label}: ${paths.length} changed path(s) against ${base} → ${result.scenarios.length} scenario(s) in ${files.length} file(s).`)
 	for (const scenario of result.scenarios) console.error(`[opice]   ${explainSelection(scenario)}`)
+	// A populated index is not necessarily a COMPLETE one: a scenario that has
+	// never finished a footprint run has no edges, so a change touching only that
+	// scenario matches nothing and looks exactly like "nothing is affected". Say
+	// which it is — the selection still only adds, so this is a warning, not a
+	// refusal, but an empty answer from a partial index shouldn't read as certain.
+	if (result.index.unindexed > 0 && result.scenarios.length === 0) {
+		warn(
+			`${label}: ${result.index.unindexed} known scenario(s) have no footprint yet, so this empty answer `
+			+ 'may mean "unknown" rather than "nothing is affected". Re-run the suite with `opice test --footprint` '
+			+ 'on the default branch to close the gap.',
+		)
+	}
 	return { base, paths, files, result }
 }
 

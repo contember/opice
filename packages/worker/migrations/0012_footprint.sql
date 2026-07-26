@@ -61,6 +61,11 @@ CREATE TABLE footprint_edges (
 	writes        INTEGER NOT NULL DEFAULT 0,
 	run_id        TEXT,
 	branch        TEXT,
+	-- When the run that wrote this edge STARTED. Two default-branch workflows can
+	-- overlap (or an old one be re-run), and edges are replaced wholesale, so
+	-- without this whichever upload merely arrived last would win — letting an
+	-- older commit revert the index to stale paths. The replace is guarded on it.
+	run_started_at INTEGER NOT NULL DEFAULT 0,
 	updated_at    INTEGER NOT NULL,
 	PRIMARY KEY (project_id, scenario_key, kind, value)
 );
