@@ -46,6 +46,8 @@ export const ProjectSchema = z.object({
 	id: z.number(),
 	slug: z.string(),
 	name: z.string(),
+	/** Branch allowed to write the impact index; null = main or master. */
+	defaultBranch: z.string().nullable(),
 	createdAt: z.number(),
 })
 
@@ -227,16 +229,44 @@ const projects = rpc.router({
 		.input(z.object({
 			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
 			name: z.string().trim().min(1).max(120),
+			/** Trunk name, when it isn't main or master — the branch allowed to write the impact index. */
+			defaultBranch: z.string().trim().min(1).max(255).optional(),
 		}))
 		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string(), readApiKey: z.string() }))
 		.handler(async ({ ctx, input }) => {
 			assertAccess(opCanWriteProject(ctx.auth))
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
-			const project = await ctx.services.db.createProject({ slug: input.slug, name: input.name })
+			const project = await ctx.services.db.createProject({
+				slug: input.slug,
+				name: input.name,
+				...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
+			})
 			const apiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'ingest')
 			const readApiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'read')
 			await ctx.auth.audit({ action: 'project.create', resourceType: 'project', resourceId: project.slug, metadata: { name: project.name } })
 			return { slug: project.slug, name: project.name, apiKey, readApiKey }
+		}),
+
+	/**
+	 * Set the branch allowed to write the change-tracking index. Null restores the
+	 * main-or-master default. Without this a project whose trunk is named anything
+	 * else could never build an index at all.
+	 */
+	setDefaultBranch: rpc.procedure
+		.input(z.object({ slug: z.string(), defaultBranch: z.string().trim().min(1).max(255).nullable() }))
+		.output(z.object({ ok: z.literal(true) }))
+		.handler(async ({ ctx, input }) => {
+			const project = await ctx.services.db.getProjectBySlug(input.slug)
+			if (!project) notFound(`Project not found: ${input.slug}`)
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
+			await ctx.services.db.setProjectDefaultBranch(project.id, input.defaultBranch)
+			await ctx.auth.audit({
+				action: 'project.update',
+				resourceType: 'project',
+				resourceId: project.slug,
+				metadata: { defaultBranch: input.defaultBranch },
+			})
+			return { ok: true }
 		}),
 
 	// The project's live DSN capabilities (ingest + read), for a "keys" view — revocable.

@@ -75,6 +75,11 @@ export function defaultBase(): string {
 		process.env['GITHUB_BASE_REF'] ? `origin/${process.env['GITHUB_BASE_REF']}` : undefined,
 		'origin/main',
 		'origin/master',
+		// The remote's OWN answer, for a repo whose trunk is `develop`, `trunk` or
+		// anything else. Asked after the common names only because it costs a git
+		// call; asked at all because the alternative below diffs a single commit,
+		// which on a multi-commit branch silently hides most of the change.
+		remoteDefaultBranch(),
 		'main',
 		'master',
 	].filter((c): c is string => !!c)
@@ -82,6 +87,15 @@ export function defaultBase(): string {
 		if (gitLines(`git rev-parse --verify --quiet ${shellQuote(candidate)}`).length > 0) return candidate
 	}
 	return 'HEAD~1'
+}
+
+/** `origin`'s default branch (`origin/develop`), from the local ref or the remote. */
+function remoteDefaultBranch(): string | undefined {
+	const [symbolic] = gitLines('git symbolic-ref --quiet refs/remotes/origin/HEAD')
+	if (symbolic) return symbolic.replace(/^refs\/remotes\//, '')
+	const line = gitLines('git remote show origin').find((l) => l.includes('HEAD branch:'))
+	const name = line?.split('HEAD branch:')[1]?.trim()
+	return name && name !== '(unknown)' ? `origin/${name}` : undefined
 }
 
 /** Single-quote a ref for the shell. Refs can contain `/` and `-`, never a quote we'd need to escape. */

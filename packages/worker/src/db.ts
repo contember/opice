@@ -314,20 +314,35 @@ const toStep = (r: StepRow): Step => ({
 export class Db {
 	constructor(private readonly d1: D1Database) {}
 
-	async createProject(input: { slug: string; name: string }): Promise<Project> {
+	async createProject(input: { slug: string; name: string; defaultBranch?: string }): Promise<Project> {
 		const createdAt = Date.now()
+		const defaultBranch = input.defaultBranch?.trim() || null
 		const result = await this.d1
-			.prepare('INSERT INTO projects (slug, name, created_at) VALUES (?, ?, ?)')
-			.bind(input.slug, input.name, createdAt)
+			.prepare('INSERT INTO projects (slug, name, default_branch, created_at) VALUES (?, ?, ?, ?)')
+			.bind(input.slug, input.name, defaultBranch, createdAt)
 			.run()
 		return {
 			id: Number(result.meta.last_row_id),
 			slug: input.slug,
 			name: input.name,
-			// A fresh project has no explicit trunk name; NULL means main-or-master.
-			defaultBranch: null,
+			defaultBranch,
 			createdAt,
 		}
+	}
+
+	/**
+	 * Set (or clear) the branch allowed to write the change-tracking index.
+	 *
+	 * Without this a project whose trunk isn't main/master could never build an
+	 * index at all: every upload would be refused by {@link isDefaultBranch} and
+	 * `--impacted` would report an empty index forever, with nothing the operator
+	 * could do about it. Null restores the main-or-master default.
+	 */
+	async setProjectDefaultBranch(projectId: number, branch: string | null): Promise<void> {
+		await this.d1
+			.prepare('UPDATE projects SET default_branch = ? WHERE id = ?')
+			.bind(branch?.trim() || null, projectId)
+			.run()
 	}
 
 	async getProjectBySlug(slug: string): Promise<Project | null> {

@@ -35,6 +35,8 @@ import type { FootprintFile } from './types.js'
 const SOURCE_MAP_TIMEOUT_MS = 5_000
 /** Don't parse absurd maps — a multi-hundred-MB map is a pathology, not a build. */
 const MAX_SOURCE_MAP_BYTES = 64 * 1024 * 1024
+/** How many source maps are fetched at once — see {@link prefetchSourceMaps}. */
+const SOURCE_MAP_CONCURRENCY = 4
 
 /**
  * Source maps skipped this run because they are index maps (`sections`), which
@@ -276,7 +278,17 @@ async function prefetchSourceMaps(
 			// Unresolvable reference — the decode loop will simply find no map.
 		}
 	}
-	await Promise.all([...urls].map((url) => fetchSourceMap(url, context, cache)))
+	// Bounded concurrency: a production build can reference dozens of maps, each
+	// several MB, and fetching them all at once buffers all of them at once — in
+	// the test process, during teardown, for a feature that must never be able to
+	// fail a run.
+	const pending = [...urls]
+	const workers = Array.from({ length: Math.min(SOURCE_MAP_CONCURRENCY, pending.length) }, async () => {
+		for (let url = pending.pop(); url !== undefined; url = pending.pop()) {
+			await fetchSourceMap(url, context, cache)
+		}
+	})
+	await Promise.all(workers)
 }
 
 /**
@@ -314,6 +326,14 @@ async function fetchSourceMap(
 	try {
 		const response = await context.request.get(url, { timeout: SOURCE_MAP_TIMEOUT_MS, failOnStatusCode: false })
 		if (response.ok()) {
+			// Refuse from the DECLARED length first — checking after `body()` means
+			// the oversize object has already been buffered, which is the thing the
+			// cap exists to prevent.
+			const declared = Number(response.headers()['content-length'] ?? '')
+			if (Number.isFinite(declared) && declared > MAX_SOURCE_MAP_BYTES) {
+				cache.set(url, null)
+				return null
+			}
 			const body = await response.body()
 			if (body.byteLength <= MAX_SOURCE_MAP_BYTES) {
 				const text = body.toString('utf-8')

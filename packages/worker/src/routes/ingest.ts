@@ -463,7 +463,11 @@ async function uploadFootprint(
 	// prefix of what it covers, and edges are replaced wholesale, so indexing that
 	// prefix would delete the valid ones and quietly stop selecting the scenario
 	// for everything it never reached. The blob is stored regardless of all three.
-	const complete = new URL(request.url).searchParams.get('complete') !== 'false'
+	// Explicit opt-in, not opt-out: a client that doesn't say the walkthrough
+	// finished hasn't proved it did. An older harness omits the parameter
+	// entirely, and treating that silence as "complete" would let it replace a
+	// scenario's valid edges with whatever it managed to collect.
+	const complete = new URL(request.url).searchParams.get('complete') === 'true'
 	let indexed = false
 	if (complete && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
