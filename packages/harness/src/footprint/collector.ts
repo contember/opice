@@ -84,6 +84,8 @@ export class FootprintCollector {
 	private mapperFailures = 0
 	/** Set when the coverage pass itself failed, so the file dimension can't claim completeness. */
 	private coverageFailed = false
+	/** Set when the scenario opened a page coverage never instrumented (a popup, a new tab). */
+	private uninstrumentedPages = false
 	/** Set once the coverage pass has returned — its verdict on bundles supersedes the module collector's. */
 	private coverageRan = false
 	/** Bundles coverage could not resolve to sources, from its own source-map pass. */
@@ -158,6 +160,12 @@ export class FootprintCollector {
 		} catch (err) {
 			this.warnings.add(`component collection unavailable: ${message(err)}`)
 		}
+		// Coverage instruments THIS page. A popup or a new tab is a page it never
+		// sees, so its scripts are invisible to the source-map pass — and if they
+		// are bundled, nothing else can name them either. Noted here so the file
+		// dimension can refuse to claim completeness in that case rather than
+		// silently omitting the popup's sources from the index.
+		this.context.on('page', () => { this.uninstrumentedPages = true })
 		if (await startJsCoverage(page)) {
 			this.coverageStarted = true
 			this.collectors.add('coverage')
@@ -279,7 +287,15 @@ export class FootprintCollector {
 		// the models would silently read as "none", and an empty authoritative set
 		// would replace whatever a fuller run had indexed. The endpoint itself was
 		// observed perfectly well; only the models are unknown.
-		if (extracted.documents.length === 0 && extracted.persisted === 0) this.unreadableOperations++
+		// A CORS preflight carries no body by definition — it is not a GraphQL
+		// document that failed to reach us, it is not a document at all. Counting it
+		// marked models partial for every cross-origin API, which excluded EVERY
+		// model edge even when the POST that followed parsed perfectly.
+		const method = request.method().toUpperCase()
+		const carriesBody = method !== 'OPTIONS' && method !== 'HEAD'
+		if (carriesBody && extracted.documents.length === 0 && extracted.persisted === 0) {
+			this.unreadableOperations++
+		}
 		const operations: FootprintOperation[] = []
 		for (const document of extracted.documents) {
 			const parseOptions = {
@@ -447,10 +463,13 @@ export class FootprintCollector {
 			truncatedFiles: this.truncatedFiles,
 			// What the MODULE collector could not name only counts against us when
 			// nothing else could name it either. For SCRIPTS, coverage is that
-			// second chance, so when it ran its own tally supersedes this one.
-			// Stylesheets have no second chance at all — coverage is JS-only — so
-			// their count always stands.
-			unmappableFiles: (this.coverageRan ? this.unmappedBundles : this.unmappableScripts) + this.unmappableStyles,
+			// second chance, so when it ran its own tally supersedes this one —
+			// unless the scenario opened a page coverage never instrumented, whose
+			// bundles it cannot have resolved and cannot speak for. Stylesheets have
+			// no second chance at all — coverage is JS-only — so their count always
+			// stands.
+			unmappableFiles: (this.coverageRan && !this.uninstrumentedPages ? this.unmappedBundles : this.unmappableScripts)
+				+ this.unmappableStyles,
 			coverageFailed: this.coverageFailed,
 			truncatedRequests: this.truncatedRequests,
 			persistedQueries: this.persistedQueries,

@@ -334,14 +334,53 @@ async function readScenarioAssetBody(
 	if (Number.isFinite(declared) && declared > limits.maxBytes) {
 		return { response: badRequest(`${limits.label} too large (${declared} bytes > ${limits.maxBytes})`) }
 	}
-	const body = await request.arrayBuffer()
+	const body = await readCapped(request, limits.maxBytes)
+	if (!body) {
+		return { response: badRequest(`${limits.label} too large (exceeds ${limits.maxBytes} bytes)`) }
+	}
 	if (body.byteLength === 0) {
 		return { response: badRequest(`empty ${limits.label} body`) }
 	}
-	if (body.byteLength > limits.maxBytes) {
-		return { response: badRequest(`${limits.label} too large (${body.byteLength} bytes > ${limits.maxBytes})`) }
-	}
 	return { body, scenario }
+}
+
+/**
+ * Read a request body, giving up as soon as it passes `maxBytes`. Null when it does.
+ *
+ * `arrayBuffer()` buffers first and lets the caller check the size afterwards,
+ * which only works when `content-length` was honest. A chunked upload declares
+ * no length at all, so an oversized or malformed one would be buffered in full —
+ * spending the Worker's whole 128 MB allowance and killing the invocation
+ * instead of returning the 400 this is here to return. Reading the stream with a
+ * running total bounds the damage to one chunk past the limit.
+ */
+async function readCapped(request: Request, maxBytes: number): Promise<ArrayBuffer | null> {
+	if (!request.body) return new ArrayBuffer(0)
+	const reader = request.body.getReader()
+	const chunks: Uint8Array[] = []
+	let total = 0
+	try {
+		for (;;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			if (!value) continue
+			total += value.byteLength
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => {})
+				return null
+			}
+			chunks.push(value)
+		}
+	} finally {
+		reader.releaseLock()
+	}
+	const out = new Uint8Array(total)
+	let offset = 0
+	for (const chunk of chunks) {
+		out.set(chunk, offset)
+		offset += chunk.byteLength
+	}
+	return out.buffer
 }
 
 /**

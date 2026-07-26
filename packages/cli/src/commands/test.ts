@@ -85,7 +85,6 @@ export async function testCommand(args: string[]): Promise<number> {
 	// by resolveImpact) the selection is simply empty and the tier runs alone.
 	// That is a correct, if less targeted, run; a dashboard outage must never be
 	// able to shrink what CI covers.
-	if (impactedFlag.present && !impacted) warn('--impacted added nothing — running the tier alone.')
 	const impactedFiles = impacted?.files ?? []
 	// A test file the PR itself CHANGED is selected from git, not from the index.
 	// The index cannot know about it: a newly added test has never run, so it has
@@ -106,6 +105,12 @@ export async function testCommand(args: string[]): Promise<number> {
 	const select = [explicitSelect, ...impactedFiles, ...changedTests].filter(Boolean).join(',') || undefined
 	if (changedTests.length > 0) {
 		console.error(`[opice] --impacted: ${changedTests.length} changed test file(s) selected directly from the diff.`)
+	}
+	// Warned only once the fallback is known to have added nothing either. Saying
+	// "running the tier alone" and then listing directly selected tests two lines
+	// later contradicts itself, and a warning nobody can trust is worse than none.
+	if (impactedFlag.present && !impacted && changedTests.length === 0) {
+		warn('--impacted added nothing — running the tier alone.')
 	}
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
