@@ -67,13 +67,13 @@ export interface ScenarioFootprint {
 	endpoints: FootprintEndpoint[]
 	models: FootprintModel[]
 	warnings?: string[]
-	/** Dimensions the harness had to truncate — see {@link indexableKinds}. */
-	truncated?: FootprintDimension[]
+	/** Dimensions the harness collected but knows are incomplete — see {@link indexableKinds}. */
+	partial?: FootprintDimension[]
 }
 
-export type FootprintDimension = 'files' | 'requests'
+export type FootprintDimension = 'files' | 'components' | 'endpoints' | 'models'
 
-const DIMENSIONS: readonly FootprintDimension[] = ['files', 'requests']
+const DIMENSIONS: readonly FootprintDimension[] = ['files', 'components', 'endpoints', 'models']
 
 function isDimension(value: unknown): value is FootprintDimension {
 	return typeof value === 'string' && (DIMENSIONS as readonly string[]).includes(value)
@@ -122,7 +122,7 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 		endpoints: asArray(raw['endpoints']).flatMap(toEndpoint),
 		models: asArray(raw['models']).flatMap(toModel),
 		...(Array.isArray(raw['warnings']) ? { warnings: raw['warnings'].filter(isNonEmptyString) } : {}),
-		...(Array.isArray(raw['truncated']) ? { truncated: raw['truncated'].filter(isDimension) } : {}),
+		...(Array.isArray(raw['partial']) ? { partial: raw['partial'].filter(isDimension) } : {}),
 	}
 }
 
@@ -185,23 +185,30 @@ export function toEdges(footprint: ScenarioFootprint, kinds?: readonly Footprint
  * feature is built to avoid.
  *
  * So each dimension is replaced only by a run that actually measured it, and
- * measured it whole: a dimension the harness truncated is a SAMPLE, and
- * replacing a complete set with a sample drops whatever fell off the end.
+ * measured it WHOLE. The second half is the subtle one: a collector can run to
+ * completion and still learn nothing — the module collector against a bundle
+ * recognises no source paths, a persisted query carries a hash where its
+ * document should be. Those are ordinary deployments, not bugs, and the harness
+ * marks the affected dimensions `partial` rather than reporting an authoritative
+ * emptiness. Caps count the same way: a sample is not the set.
+ *
  * Dimensions this run can't speak for are left exactly as they were — the
  * previous run's answer is stale at worst, whereas deleting it is wrong.
  */
 export function indexableKinds(footprint: ScenarioFootprint): FootprintEdgeKind[] {
 	const ran = new Set(footprint.collected)
-	const truncated = new Set(footprint.truncated ?? [])
+	// A collector that ran is not the same as a dimension that is complete: it can
+	// run to completion and learn nothing (a bundle has no source paths, a
+	// persisted query carries no document). The harness reports which dimensions
+	// it cannot vouch for, and those are left exactly as they were.
+	const partial = new Set(footprint.partial ?? [])
 	const kinds: FootprintEdgeKind[] = []
 	// Files come from either collector; `coverage` additionally decides exercised
 	// vs merely loaded, but `modules` alone is a complete file list.
-	if ((ran.has('modules') || ran.has('coverage')) && !truncated.has('files')) kinds.push('file')
-	if (ran.has('components')) kinds.push('component')
-	// Endpoints and models are both derived from the request stream, so a
-	// truncated request list makes both a sample.
-	if (ran.has('network') && !truncated.has('requests')) kinds.push('endpoint')
-	if (ran.has('graphql') && !truncated.has('requests')) kinds.push('model')
+	if ((ran.has('modules') || ran.has('coverage')) && !partial.has('files')) kinds.push('file')
+	if (ran.has('components') && !partial.has('components')) kinds.push('component')
+	if (ran.has('network') && !partial.has('endpoints')) kinds.push('endpoint')
+	if (ran.has('graphql') && !partial.has('models')) kinds.push('model')
 	return kinds
 }
 

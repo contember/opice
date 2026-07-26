@@ -35,17 +35,33 @@ describe('indexableKinds', () => {
 		expect(indexableKinds(footprint({ collected: ['coverage'] }))).toEqual(['file'])
 	})
 
-	// A truncated list is a sample, and replacing a complete set with a sample
-	// drops whatever fell off the end.
-	test('a truncated dimension is not authoritative', () => {
-		expect(indexableKinds(footprint({ collected: ['modules'], truncated: ['files'] }))).toEqual([])
-		const capped = indexableKinds(footprint({ collected: ['network', 'graphql'], truncated: ['requests'] }))
+	// A partial list is a sample, and replacing a complete set with a sample drops
+	// whatever fell off the end.
+	test('a partial dimension is not authoritative', () => {
+		expect(indexableKinds(footprint({ collected: ['modules'], partial: ['files'] }))).toEqual([])
+		const capped = indexableKinds(footprint({ collected: ['network', 'graphql'], partial: ['endpoints', 'models'] }))
 		expect(capped).toEqual([])
 	})
 
-	test('truncating one dimension leaves the other authoritative', () => {
-		const kinds = indexableKinds(footprint({ collected: ['modules', 'network'], truncated: ['requests'] }))
+	test('a partial dimension leaves the others authoritative', () => {
+		const kinds = indexableKinds(footprint({ collected: ['modules', 'network'], partial: ['endpoints'] }))
 		expect(kinds).toEqual(['file'])
+	})
+
+	// A collector can run to completion and learn nothing: against a bundle the
+	// module collector recognises no source paths at all. "No files" from there
+	// means "could not tell", and must not delete a dev-server run's file edges.
+	test('a run against a bundle does not speak for files', () => {
+		const kinds = indexableKinds(footprint({ collected: ['modules', 'network', 'graphql'], partial: ['files'] }))
+		expect(kinds).not.toContain('file')
+		expect(kinds).toContain('endpoint')
+	})
+
+	// A persisted query hides the document, so the models are unknown — but the
+	// endpoint it was posted to was perfectly visible.
+	test('persisted queries cost the models, not the endpoints', () => {
+		const kinds = indexableKinds(footprint({ collected: ['network', 'graphql'], partial: ['models'] }))
+		expect(kinds).toEqual(['endpoint'])
 	})
 
 	test('a run that collected nothing indexes nothing', () => {

@@ -76,6 +76,12 @@ export class FootprintCollector {
 	private truncatedRequests = 0
 	private truncatedFiles = 0
 	private persistedQueries = 0
+	/** Module requests whose source path could not be recovered — a bundle, not a dev server. */
+	private unmappableFiles = 0
+	/** Operations whose user-supplied `mapOperation` threw; their models fell back to the built-in derivation. */
+	private mapperFailures = 0
+	/** Set when the coverage pass itself failed, so the file dimension can't claim completeness. */
+	private coverageFailed = false
 	private disposed = false
 
 	private constructor(
@@ -191,17 +197,27 @@ export class FootprintCollector {
 		if (!this.isAppOrigin(url)) return
 		const mapped = moduleUrlToSourcePath(url, this.options.config.sourceRoot)
 		if (mapped.bundled) {
+			// The collector ran and recognised nothing: a bundle's chunk names are not
+			// source paths. Recorded, not just warned, because "no files" from here
+			// means "could not tell", and the index must not mistake it for "touches
+			// no files" and delete what a dev-server run established.
+			this.unmappableFiles++
 			this.warnings.add(
 				'the app under test is serving bundled assets — file-level footprint needs a dev server or source maps.',
 			)
 			return
 		}
 		if (!mapped.path || isIgnored(mapped.path, this.options.config.ignore)) return
+		// The `has` check comes FIRST: at exactly the cap, a repeat request for a
+		// module already recorded drops nothing, and counting it as truncation would
+		// mark an otherwise complete footprint partial and stop it refreshing the
+		// index. Only a path that would have been ADDED can be dropped.
+		if (this.modules.has(mapped.path)) return
 		if (this.modules.size >= MAX_FILES) {
 			this.truncatedFiles++
 			return
 		}
-		if (!this.modules.has(mapped.path)) this.modules.set(mapped.path, { path: mapped.path, source: 'module' })
+		this.modules.set(mapped.path, { path: mapped.path, source: 'module' })
 	}
 
 	private parseGraphql(request: Request, url: string): FootprintOperation[] {
@@ -234,7 +250,17 @@ export class FootprintCollector {
 				...(this.options.config.transparentFields ? { transparentFields: this.options.config.transparentFields } : {}),
 			}
 			for (const parsed of parseOperations(document.query, parseOptions)) {
-				const mapped = this.options.config.mapOperation?.(parsed)
+				let mapped: FootprintModel[] | null | undefined
+				try {
+					mapped = this.options.config.mapOperation?.(parsed)
+				} catch (err) {
+					// A throwing mapper costs its operation's models, nothing more. Left
+					// uncaught it escapes to `onRequest`'s catch, which drops the WHOLE
+					// request — so a bug in user configuration would quietly erase the
+					// endpoint too, and the footprint would still call itself complete.
+					this.mapperFailures++
+					this.warnings.add(`mapOperation threw (falling back to the built-in model derivation): ${message(err)}`)
+				}
 				operations.push(toFootprintOperation(parsed, mapped ?? deriveModels(parsed)))
 			}
 		}
@@ -324,6 +350,10 @@ export class FootprintCollector {
 				}
 				for (const warning of coverage.warnings) this.warnings.add(warning)
 			} catch (err) {
+				// Coverage was started, so the file dimension was expected to come from
+				// it; failing here means the file list is whatever the module collector
+				// happened to see, which against a bundle is nothing.
+				this.coverageFailed = true
 				this.warnings.add(`JS coverage collection failed: ${message(err)}`)
 			}
 		}
@@ -350,12 +380,16 @@ export class FootprintCollector {
 			models: aggregateModels(this.requests),
 		}
 		if (this.warnings.size > 0) footprint.warnings = [...this.warnings]
-		// The same two facts as the warnings above, in a form a consumer can act
-		// on: the index must not replace a dimension from a truncated sample.
-		const truncated: FootprintDimension[] = []
-		if (this.truncatedFiles > 0) truncated.push('files')
-		if (this.truncatedRequests > 0) truncated.push('requests')
-		if (truncated.length > 0) footprint.truncated = truncated
+		// The same facts as the warnings above, in a form a consumer can act on.
+		const partial = derivePartialDimensions({
+			truncatedFiles: this.truncatedFiles,
+			unmappableFiles: this.unmappableFiles,
+			coverageFailed: this.coverageFailed,
+			truncatedRequests: this.truncatedRequests,
+			persistedQueries: this.persistedQueries,
+			mapperFailures: this.mapperFailures,
+		})
+		if (partial.length > 0) footprint.partial = partial
 		return footprint
 	}
 
@@ -413,6 +447,44 @@ function safeOrigin(url: string | undefined): string | null {
 
 function message(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Which dimensions this run collected but cannot vouch for.
+ *
+ * The index replaces a scenario's edges wholesale, so a dimension listed here is
+ * left exactly as a previous run left it. Every signal below has a matching
+ * human-readable warning; this is the half a machine can act on, and it is a
+ * pure function of the counters so it can be reasoned about without a browser.
+ */
+export function derivePartialDimensions(signals: {
+	/** Files dropped past the per-scenario cap. */
+	truncatedFiles: number
+	/** Module requests whose source path could not be recovered — a bundle, not a dev server. */
+	unmappableFiles: number
+	/** The coverage pass was started and then failed. */
+	coverageFailed: boolean
+	/** Requests dropped past the per-scenario cap. */
+	truncatedRequests: number
+	/** GraphQL requests that carried a hash instead of a document. */
+	persistedQueries: number
+	/** Operations whose user-supplied `mapOperation` threw. */
+	mapperFailures: number
+}): FootprintDimension[] {
+	const partial = new Set<FootprintDimension>()
+	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
+	// that was supposed to supply them and didn't.
+	if (signals.truncatedFiles > 0 || signals.unmappableFiles > 0 || signals.coverageFailed) partial.add('files')
+	// Requests feed both dimensions, so a truncated stream makes both a sample.
+	if (signals.truncatedRequests > 0) {
+		partial.add('endpoints')
+		partial.add('models')
+	}
+	// A persisted query is a perfectly visible endpoint whose document — and so
+	// whose models — never crossed the wire. Only the model side suffers, and the
+	// same is true of a mapper that threw.
+	if (signals.persistedQueries > 0 || signals.mapperFailures > 0) partial.add('models')
+	return [...partial]
 }
 
 /**

@@ -124,21 +124,31 @@ export interface ScenarioFootprint {
 	 */
 	warnings?: string[]
 	/**
-	 * Dimensions that hit a collection cap, so the list is a SAMPLE rather than
-	 * the whole set.
+	 * Dimensions that were collected but are known INCOMPLETE — the list is a
+	 * sample, not the whole set.
 	 *
 	 * Separate from {@link warnings} because a consumer has to ACT on it: the
-	 * change-tracking index replaces a scenario's edges wholesale, and replacing
-	 * them from a truncated list silently drops whatever fell off the end. The
-	 * warning says the same thing in prose, which no machine can read.
+	 * change-tracking index replaces a scenario's edges wholesale, and replacing a
+	 * complete set with a partial one silently drops the difference. The warnings
+	 * say the same thing in prose, which no machine can read.
+	 *
+	 * "Collected" and "complete" are genuinely different questions, and a collector
+	 * can run to completion while learning nothing: the module collector runs
+	 * against a bundled app and recognises no source paths, coverage runs without
+	 * usable source maps, a GraphQL request carries a persisted-query hash instead
+	 * of a document. Each is a normal deployment, not a bug — but a footprint that
+	 * reported them as authoritative emptiness would delete a fuller run's edges.
 	 */
-	truncated?: FootprintDimension[]
+	partial?: FootprintDimension[]
 }
 
 /**
  * A dimension of collection that can independently be complete, partial or
- * absent. Coarser than {@link FootprintCollectorKind}: several collectors feed
- * one dimension (both `modules` and `coverage` produce files), and it is the
- * dimension that a consumer reasons about.
+ * absent. Aligned with the index's edge kinds rather than with collectors,
+ * because that is the granularity a consumer acts on: several collectors feed
+ * one dimension (both `modules` and `coverage` produce files) and one collector
+ * feeds several (the request stream yields endpoints and models, which can fail
+ * independently — a persisted query hides the models while the endpoint stays
+ * perfectly visible).
  */
-export type FootprintDimension = 'files' | 'requests'
+export type FootprintDimension = 'files' | 'components' | 'endpoints' | 'models'
