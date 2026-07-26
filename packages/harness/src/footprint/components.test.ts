@@ -50,3 +50,24 @@ describe('component collection', () => {
 		expect(() => new Function(COMPONENT_SCRIPT)).not.toThrow()
 	})
 })
+
+describe('an app with its own DevTools hook', () => {
+	// The script deliberately bails when a real hook is present, so a developer's
+	// tools are never hijacked — which means it collects nothing at all. The
+	// collector detects that by the absence of the sweep function and marks the
+	// dimension partial rather than reporting an authoritative empty set.
+	test('installs nothing and exposes no sweep', () => {
+		const win: Record<string, unknown> = {
+			__REACT_DEVTOOLS_GLOBAL_HOOK__: { renderers: new Map() },
+			addEventListener() {},
+		}
+		new Function('window', 'setTimeout', 'Date', COMPONENT_SCRIPT)(win, () => 0, Date)
+		expect(win['__opiceFootprintSweep']).toBeUndefined()
+	})
+
+	test('installs its sweep when no hook is present', () => {
+		const win: Record<string, unknown> = { addEventListener() {} }
+		new Function('window', 'setTimeout', 'Date', COMPONENT_SCRIPT)(win, () => 0, Date)
+		expect(typeof win['__opiceFootprintSweep']).toBe('function')
+	})
+})

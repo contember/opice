@@ -36,7 +36,7 @@ import type { FootprintFile } from './types.js'
 /** Cap on fetching a single source map, so a slow/huge map can't stall teardown. */
 const SOURCE_MAP_TIMEOUT_MS = 5_000
 /** Don't parse absurd maps — a multi-hundred-MB map is a pathology, not a build. */
-const MAX_SOURCE_MAP_BYTES = 64 * 1024 * 1024
+const MAX_SOURCE_MAP_BYTES = 32 * 1024 * 1024
 /** How many source maps are fetched at once — see {@link prefetchSourceMaps}. */
 const SOURCE_MAP_CONCURRENCY = 4
 /**
@@ -61,8 +61,15 @@ const SOURCE_MAP_TOTAL_BUDGET_MS = 20_000
  * documented as unable to do that. Maps past the budget are simply not fetched;
  * their scripts degrade to "no source map", which already reads as an unresolved
  * bundle and keeps the file dimension partial.
+ *
+ * Sized as concurrency x the per-map cap deliberately. Capacity is RESERVED at
+ * the per-map cap before each fetch (the actual size isn't known until the body
+ * arrives, and a check-then-add across an await is what let four workers each
+ * pull a full-size map). A smaller budget than this would therefore serialise
+ * the fetches it is meant to run in parallel, and they share the 20s wall-clock
+ * budget above.
  */
-const SOURCE_MAP_TOTAL_CACHE_BYTES = 96 * 1024 * 1024
+const SOURCE_MAP_TOTAL_CACHE_BYTES = MAX_SOURCE_MAP_BYTES * SOURCE_MAP_CONCURRENCY
 
 /**
  * Source maps skipped this run because they are index maps (`sections`), which
@@ -365,16 +372,25 @@ async function prefetchSourceMaps(
 	const pending = [...urls]
 	const deadline = Date.now() + SOURCE_MAP_TOTAL_BUDGET_MS
 	const skipped: string[] = []
-	let cachedBytes = 0
+	// RESERVED, not measured after the fact. The workers run concurrently, so a
+	// plain "is the total under budget?" check is read by all of them before any
+	// of them adds anything — four workers would each pass it and each pull up to
+	// a full-size map, retaining several times the budget. Reserving the worst
+	// case up front and refunding the difference afterwards makes the sum of
+	// everything in flight bounded by the budget at all times.
+	let reservedBytes = 0
 	const workers = Array.from({ length: Math.min(SOURCE_MAP_CONCURRENCY, pending.length) }, async () => {
 		for (let url = pending.pop(); url !== undefined; url = pending.pop()) {
 			// Stop SCHEDULING once either budget is spent — the request in flight
 			// still has its own timeout, so the worst case stays bounded.
-			if (Date.now() >= deadline || cachedBytes >= SOURCE_MAP_TOTAL_CACHE_BYTES) {
+			if (Date.now() >= deadline || reservedBytes + MAX_SOURCE_MAP_BYTES > SOURCE_MAP_TOTAL_CACHE_BYTES) {
 				skipped.push(url)
 				continue
 			}
-			cachedBytes += (await fetchSourceMap(url, context, cache)).bytes
+			reservedBytes += MAX_SOURCE_MAP_BYTES
+			const { bytes } = await fetchSourceMap(url, context, cache)
+			// Refund what the map didn't use — most are far below the per-map cap.
+			reservedBytes -= MAX_SOURCE_MAP_BYTES - bytes
 		}
 	})
 	await Promise.all(workers)

@@ -412,14 +412,28 @@ export class FootprintCollector {
 			// its last interaction rendered never arrives, while the component
 			// dimension still reports itself complete.
 			const pages = new Set<Page>([page, ...this.context.pages()])
+			let installed = false
 			for (const open of pages) {
 				try {
-					await open.evaluate('window.__opiceFootprintSweep && window.__opiceFootprintSweep()')
+					// The sweep function exists only where the script actually installed
+					// its hook. It bails out when the app already has a real DevTools
+					// hook — deliberately, so a developer's tools are never hijacked —
+					// and in that case it collected nothing at all. Reporting that empty
+					// list as authoritative would replace the scenario's component edges
+					// with nothing, and component changes would stop selecting it.
+					const ran = await open.evaluate<boolean>(
+						'!!window.__opiceFootprintSweep && (window.__opiceFootprintSweep(), true)',
+					)
+					if (ran) installed = true
 				} catch {
 					// Closed, navigating, or never ran the script — the names we have
 					// are the names we have.
 				}
 			}
+			// No page could confirm the hook. Treated as "could not tell" rather than
+			// "found none": a page that closed early reports the same way, and both
+			// are safer read as partial than as an authoritative empty set.
+			if (!installed) this.componentsTruncated = true
 		}
 		const files = new Map<string, FootprintFile>(this.modules)
 		if (this.coverageStarted) {
