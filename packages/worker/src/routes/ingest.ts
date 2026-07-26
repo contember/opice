@@ -444,7 +444,13 @@ async function uploadFootprint(
 	const key = `${project.slug}/${run.id}/footprint-${scenarioId}.json`
 	let footprintFailed = false
 	try {
-		await putWithRetry(services.runAssets, key, bytes, { httpMetadata: { contentType: 'application/json' } })
+		// The SANITIZED document is what gets stored — never the bytes that arrived.
+		// `normalizeFootprint` rebuilds every request from an allow-list, and this is
+		// what makes that hold: persisting the original body would keep whatever
+		// extra fields a client sent, and the RPC would hand them back out, including
+		// to run-share holders.
+		const sanitized = new TextEncoder().encode(JSON.stringify(footprint))
+		await putWithRetry(services.runAssets, key, sanitized, { httpMetadata: { contentType: 'application/json' } })
 		await services.db.attachFootprint(scenarioId, key, summarize(footprint))
 	} catch (err) {
 		footprintFailed = true

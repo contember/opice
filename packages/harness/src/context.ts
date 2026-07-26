@@ -245,7 +245,10 @@ export async function launchPage(
 		collector = await FootprintCollector.attach(context, page, {
 			scenario: label ?? 'scenario',
 			mode,
-			config: await loadFootprintConfig(),
+			// Resolved from the TEST's directory, not the cwd: in a monorepo run from
+			// the repo root, a package's own `browser-footprint.ts` sits beside its
+			// tests and would otherwise never be found.
+			config: await loadFootprintConfig(opts?.testFile ? path.dirname(path.resolve(opts.testFile)) : undefined),
 			...(opts?.testFile ? { testFile: opts.testFile } : {}),
 			...(opts?.baseUrl ? { baseUrl: opts.baseUrl } : {}),
 		})

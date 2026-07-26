@@ -768,12 +768,16 @@ export class Db {
 		edges: FootprintEdgeInput[]
 	}): Promise<{ applied: boolean }> {
 		const now = Date.now()
-		// Both statements are guarded on the incoming run being at least as new as
-		// whatever is indexed, and they run in one D1 batch (a transaction), so a
-		// slow older run that finishes after a newer one cannot delete the newer
-		// edges and then fail to replace them — it simply does nothing.
+		// Every statement is guarded on the incoming run being at least as new as
+		// what is already indexed, and they run in one D1 batch (a transaction), so
+		// a slow older run finishing after a newer one cannot delete the newer edges
+		// and then fail to replace them — it simply does nothing.
+		//
+		// The guard reads the STATE table, not the edges: a newer run that produced
+		// no edges leaves no edge row to compare against, and an older run arriving
+		// afterwards would otherwise be free to reinsert what the newer one removed.
 		const notOlder = `NOT EXISTS (
-			SELECT 1 FROM footprint_edges
+			SELECT 1 FROM footprint_index_state
 			WHERE project_id = ?1 AND scenario_key = ?2 AND run_started_at > ?3
 		)`
 		const statements: D1PreparedStatement[] = [
@@ -812,12 +816,24 @@ export class Db {
 					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
 			)
 		}
+		// Recorded last so it reflects a replacement that actually applied, and
+		// guarded the same way so an older run can't move the marker backwards.
+		statements.push(
+			this.d1
+				.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, run_started_at, run_id, updated_at)
+					SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${notOlder}
+					ON CONFLICT (project_id, scenario_key) DO UPDATE SET
+						run_started_at = excluded.run_started_at, run_id = excluded.run_id, updated_at = excluded.updated_at`)
+				.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.runId, now),
+		)
 		const results = await this.d1.batch(statements)
 		// The guard makes this a no-op for a run older than what's indexed, and the
 		// caller reports whether the index was actually written — saying "indexed"
 		// when a stale upload changed nothing would be a lie a CI log can't check.
-		const written = results.slice(1).reduce((sum, r) => sum + (r.meta.changes ?? 0), 0)
-		return { applied: input.edges.length === 0 || written > 0 }
+		// The marker statement is the reliable signal: it is written on every
+		// accepted replacement, including one that legitimately has no edges.
+		const marker = results[results.length - 1]
+		return { applied: (marker?.meta.changes ?? 0) > 0 }
 	}
 
 	/**
@@ -858,11 +874,12 @@ export class Db {
 	 * ADDS to the tier, so a missing entry costs targeting, never coverage.
 	 */
 	async pruneStaleFootprintEdges(now = Date.now()): Promise<number> {
-		const result = await this.d1
-			.prepare('DELETE FROM footprint_edges WHERE updated_at < ?')
-			.bind(now - EDGE_RETENTION_MS)
-			.run()
-		return result.meta.changes ?? 0
+		const cutoff = now - EDGE_RETENTION_MS
+		const [edges] = await this.d1.batch([
+			this.d1.prepare('DELETE FROM footprint_edges WHERE updated_at < ?').bind(cutoff),
+			this.d1.prepare('DELETE FROM footprint_index_state WHERE updated_at < ?').bind(cutoff),
+		])
+		return edges?.meta.changes ?? 0
 	}
 
 	/** How many edges the project has indexed, and when it was last refreshed. */

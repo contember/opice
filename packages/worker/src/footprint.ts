@@ -33,14 +33,37 @@ export interface FootprintEndpoint {
 
 export type FootprintCollectorKind = 'network' | 'graphql' | 'modules' | 'coverage' | 'components'
 
+/** One GraphQL operation, as stored. Only names survive — never variables. */
+export interface FootprintOperation {
+	type: string
+	name?: string
+	rootFields: string[]
+	models: FootprintModel[]
+}
+
+/**
+ * One recorded request, reduced to the fields the contract allows. This type is
+ * an allow-list, not a description: anything a client sends that isn't named
+ * here is dropped rather than stored.
+ */
+export interface FootprintRequest {
+	step: number | null
+	method: string
+	route: string
+	params?: string[]
+	status: number | null
+	resourceType: string
+	durationMs: number | null
+	operations?: FootprintOperation[]
+}
+
 export interface ScenarioFootprint {
 	scenario: string
 	testFile?: string
 	collected: FootprintCollectorKind[]
 	files: FootprintFile[]
 	components: string[]
-	/** Per-request detail. Kept verbatim for the blob; the index doesn't read it. */
-	requests: unknown[]
+	requests: FootprintRequest[]
 	endpoints: FootprintEndpoint[]
 	models: FootprintModel[]
 	warnings?: string[]
@@ -85,7 +108,7 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 		collected: asArray(raw['collected']).filter(isCollectorKind),
 		files: asArray(raw['files']).flatMap(toFile),
 		components: asArray(raw['components']).filter(isNonEmptyString),
-		requests: asArray(raw['requests']),
+		requests: asArray(raw['requests']).flatMap(toRequest),
 		endpoints: asArray(raw['endpoints']).flatMap(toEndpoint),
 		models: asArray(raw['models']).flatMap(toModel),
 		...(Array.isArray(raw['warnings']) ? { warnings: raw['warnings'].filter(isNonEmptyString) } : {}),
@@ -290,6 +313,53 @@ function toModel(value: unknown): FootprintModel[] {
 	const name = record['name']
 	if (!isNonEmptyString(name)) return []
 	return [{ name, write: record['write'] === true }]
+}
+
+/**
+ * Reduce a request to the allowed fields.
+ *
+ * The footprint's contract is that it carries shapes, not values — no headers,
+ * no cookies, no GraphQL variables, no query values. The collector honours that,
+ * but the collector is not the only thing that can POST here: an older harness
+ * or a hand-rolled client is authenticated too. Rebuilding each request from an
+ * allow-list is what makes the contract hold at the boundary rather than by
+ * convention upstream.
+ */
+function toRequest(value: unknown): FootprintRequest[] {
+	if (typeof value !== 'object' || value === null) return []
+	const record = value as Record<string, unknown>
+	const method = record['method']
+	const route = record['route']
+	if (!isNonEmptyString(method) || !isNonEmptyString(route)) return []
+	const step = record['step']
+	const status = record['status']
+	const durationMs = record['durationMs']
+	const params = asArray(record['params']).filter(isNonEmptyString)
+	const operations = asArray(record['operations']).flatMap(toOperation)
+	return [{
+		step: typeof step === 'number' && Number.isFinite(step) ? step : null,
+		method,
+		route,
+		...(params.length > 0 ? { params } : {}),
+		status: typeof status === 'number' && Number.isFinite(status) ? status : null,
+		resourceType: isNonEmptyString(record['resourceType']) ? record['resourceType'] : 'other',
+		durationMs: typeof durationMs === 'number' && Number.isFinite(durationMs) ? durationMs : null,
+		...(operations.length > 0 ? { operations } : {}),
+	}]
+}
+
+function toOperation(value: unknown): FootprintOperation[] {
+	if (typeof value !== 'object' || value === null) return []
+	const record = value as Record<string, unknown>
+	const type = record['type']
+	if (!isNonEmptyString(type)) return []
+	const name = record['name']
+	return [{
+		type,
+		...(isNonEmptyString(name) ? { name } : {}),
+		rootFields: asArray(record['rootFields']).filter(isNonEmptyString),
+		models: asArray(record['models']).flatMap(toModel),
+	}]
 }
 
 function toEndpoint(value: unknown): FootprintEndpoint[] {

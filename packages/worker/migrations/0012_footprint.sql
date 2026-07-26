@@ -74,3 +74,19 @@ CREATE TABLE footprint_edges (
 CREATE INDEX footprint_edges_lookup ON footprint_edges(project_id, kind, value);
 -- Replacing one scenario's edges wholesale on a new run.
 CREATE INDEX footprint_edges_scenario ON footprint_edges(project_id, scenario_key);
+
+-- Freshness marker per scenario, written on every accepted replacement.
+--
+-- The edge rows carry `run_started_at` too, but they cannot be the authority: a
+-- newer run that legitimately produces NO edges deletes the old rows and leaves
+-- nothing behind, and an older overlapping run arriving afterwards would then
+-- see no newer row and happily reinsert its stale edges. This table remembers
+-- that the newer run happened.
+CREATE TABLE footprint_index_state (
+	project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	scenario_key   TEXT NOT NULL,
+	run_started_at INTEGER NOT NULL,
+	run_id         TEXT,
+	updated_at     INTEGER NOT NULL,
+	PRIMARY KEY (project_id, scenario_key)
+);

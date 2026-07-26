@@ -93,10 +93,10 @@ const FootprintOperationSchema = z.object({
 })
 
 /**
- * One recorded request. Everything but the method and route has a default, and
- * unknown keys pass through: the harness owns this shape and will grow it, and a
- * schema that rejected a field it hadn't heard of would turn a *newer* client
- * into an unreadable footprint.
+ * One recorded request. Everything but the method and route has a default, so an
+ * older blob still reads. Unknown keys are STRIPPED rather than passed through:
+ * the stored document is written by `normalizeFootprint`'s allow-list, and
+ * echoing anything beyond it would defeat that at the read end.
  */
 const FootprintRequestSchema = z.object({
 	step: z.number().nullable().default(null),
@@ -107,7 +107,7 @@ const FootprintRequestSchema = z.object({
 	resourceType: z.string().default('other'),
 	durationMs: z.number().nullable().default(null),
 	operations: z.array(FootprintOperationSchema).optional(),
-}).passthrough()
+})
 
 /** The full footprint blob, as stored in R2. */
 export const ScenarioFootprintSchema = z.object({

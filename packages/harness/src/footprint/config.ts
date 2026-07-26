@@ -90,7 +90,11 @@ export function findUserFootprintFile(from?: string): string | null {
 	return findUserFile(['browser-footprint.ts', 'browser-footprint.js', 'browser-footprint.mjs'], from)
 }
 
-let cached: { config: FootprintConfig } | null = null
+// Keyed by the resolved config FILE (or '' when there is none), because the
+// lookup starts from the test's own directory: a monorepo run from the repo root
+// legitimately resolves different configs for different packages, and one global
+// slot would let whichever package ran first answer for all of them.
+const cached = new Map<string, FootprintConfig>()
 
 /**
  * Load the repo's footprint overrides, or an empty config when there are none.
@@ -98,24 +102,27 @@ let cached: { config: FootprintConfig } | null = null
  * the defaults with a warning — a footprint must never be able to fail a run.
  */
 export async function loadFootprintConfig(from?: string): Promise<FootprintConfig> {
-	if (cached) return cached.config
 	const file = findUserFootprintFile(from)
+	const key = file ?? ''
+	const hit = cached.get(key)
+	if (hit) return hit
 	if (!file) {
-		cached = { config: {} }
-		return cached.config
+		cached.set(key, {})
+		return cached.get(key) as FootprintConfig
 	}
+	let config: FootprintConfig = {}
 	try {
 		const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>
 		const candidate = mod['footprint'] ?? mod['default']
 		// Accept an object or a factory — a factory lets a repo read its own config
 		// files before answering.
 		const resolved = typeof candidate === 'function' ? (candidate as () => unknown)() : candidate
-		cached = { config: typeof resolved === 'object' && resolved !== null ? (resolved as FootprintConfig) : {} }
+		if (typeof resolved === 'object' && resolved !== null) config = resolved as FootprintConfig
 	} catch (err) {
 		console.warn(`[opice] failed to load ${file} (ignored, using footprint defaults): ${err instanceof Error ? err.message : String(err)}`)
-		cached = { config: {} }
 	}
-	return cached.config
+	cached.set(key, config)
+	return config
 }
 
 /** Does `path` match any ignore rule? */
