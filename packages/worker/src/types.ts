@@ -117,6 +117,8 @@ export interface Run {
 	commitSha: string | null
 	/** Commit timestamp (ms); orders index replacement by revision, not wall clock. */
 	commitTime: number | null
+	/** Depth of the run's revision on its branch; NULL on a shallow clone. See migration 0012. */
+	commitDepth: number | null
 	status: RunStatus
 	source: RunSource | null
 	/** The tier this run selected (OPICE_TIER); null = no filter / ran everything. */

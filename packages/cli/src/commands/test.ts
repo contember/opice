@@ -168,6 +168,7 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(git.commitTime ? { OPICE_COMMIT_TIME: git.commitTime } : {}),
+		...(git.commitDepth ? { OPICE_COMMIT_DEPTH: git.commitDepth } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 		...(select ? { OPICE_SELECT: select } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),

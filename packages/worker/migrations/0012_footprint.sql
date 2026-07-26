@@ -42,6 +42,14 @@ ALTER TABLE projects ADD COLUMN default_branch TEXT;
 -- old pipeline produces a fresh start time but not a fresh commit, and ordering
 -- by the clock would let that rerun restore stale edges over a newer commit's.
 ALTER TABLE runs ADD COLUMN commit_time INTEGER;
+-- The commit's DEPTH on its branch (`git rev-list --count HEAD`), when the
+-- checkout has enough history to know it. A better revision key than the
+-- timestamp: git's %ct has second resolution, so two trunk commits can share
+-- one, and committer dates can invert outright across runners with skewed
+-- clocks. Depth only ever increases as the trunk advances. NULL on a shallow
+-- clone — where the count would be the clone's depth, not the commit's, and
+-- believing it would rank a newer run BELOW an older one.
+ALTER TABLE runs ADD COLUMN commit_depth INTEGER;
 
 CREATE TABLE footprint_edges (
 	project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -107,6 +115,10 @@ CREATE TABLE footprint_index_state (
 	-- RERUN of the older commit win by executing later — the exact failure
 	-- commit-time ordering exists to prevent.
 	run_id         TEXT,
+	-- The depth of the revision that wrote this row, when it was known. Compared
+	-- in preference to run_started_at, and only against another row that also has
+	-- one — a depth and a timestamp are not comparable quantities.
+	run_depth      INTEGER,
 	updated_at     INTEGER NOT NULL,
 	PRIMARY KEY (project_id, scenario_key, kind)
 );

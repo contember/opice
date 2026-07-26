@@ -188,3 +188,26 @@ describe('ambiguous js/css directories', () => {
 		expect(moduleUrlToSourcePath('https://app.test/assets/cart-utils.js').bundled).toBe(true)
 	})
 })
+
+describe('framework build output', () => {
+	// A Next.js chunk IS the project's source, compiled beyond recognition.
+	// Passing over it quietly let a whole production app report a complete and
+	// empty file set.
+	test('a Next.js chunk reads as a bundle, not as noise', () => {
+		const result = moduleUrlToSourcePath('https://app.test/_next/static/chunks/pages/index-abc.js')
+		expect(result.bundled).toBe(true)
+		expect(result.path).toBeNull()
+	})
+
+	test('SvelteKit production output is a bundle', () => {
+		expect(moduleUrlToSourcePath('https://app.test/_app/immutable/entry/app.js').bundled).toBe(true)
+	})
+
+	// Genuine vendor noise stays noise: skipping it costs nothing, because it was
+	// never project source to begin with.
+	test.each(['/node_modules/lodash/index.js', '/@vite/client', '/@react-refresh'])('%s is noise, not a bundle', (url) => {
+		const result = moduleUrlToSourcePath(`https://app.test${url}`)
+		expect(result.bundled).toBe(false)
+		expect(result.path).toBeNull()
+	})
+})

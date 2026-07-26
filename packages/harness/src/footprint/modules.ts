@@ -42,8 +42,21 @@ const VENDOR_FRAGMENTS = [
 	'/.vite/',
 	'/__vite',
 	'/.nuxt/',
-	'/_next/static/chunks/',
 	'/.svelte-kit/',
+]
+
+/**
+ * Framework BUILD OUTPUT holding the application's own code, compiled.
+ *
+ * The distinction from {@link VENDOR_FRAGMENTS} is what the silence means. A
+ * `/node_modules/` request is noise: skipping it costs nothing, because it was
+ * never project source. A Next.js chunk is the opposite — it IS the project's
+ * source, compiled beyond recognition, so passing over it quietly would let the
+ * footprint report a complete and empty file set for a whole production app and
+ * replace real source edges with nothing. It has to read as "could not tell".
+ */
+const BUNDLE_FRAGMENTS = [
+	'/_next/static/chunks/',
 ]
 
 /**
@@ -76,7 +89,7 @@ function looksHashed(token: string): boolean {
  * considered, so a genuine source file at `src/assets/icons.ts` is untouched —
  * it is the leading segment that says "this came out of a bundler".
  */
-const BUILD_OUTPUT_DIRS = new Set(['assets', 'static', 'dist', 'build', 'out', '_next', '_nuxt', '_astro', 'bundles'])
+const BUILD_OUTPUT_DIRS = new Set(['assets', 'static', 'dist', 'build', 'out', '_next', '_nuxt', '_astro', '_app', 'bundles'])
 
 /**
  * Directories that hold build output in SOME projects and hand-written source in
@@ -133,6 +146,9 @@ export function moduleUrlToSourcePath(rawUrl: string, sourceRoot?: string): Modu
 	// encoded path would match nothing. Decoding is per segment so an encoded
 	// separator can't invent a directory level.
 	let pathname = decodePathname(url.pathname)
+	if (BUNDLE_FRAGMENTS.some((fragment) => pathname.includes(fragment))) {
+		return { path: null, bundled: true }
+	}
 	if (VENDOR_FRAGMENTS.some((fragment) => pathname.includes(fragment))) {
 		return { path: null, bundled: false }
 	}

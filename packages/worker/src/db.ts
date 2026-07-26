@@ -55,6 +55,7 @@ interface RunRow {
 	branch: string | null
 	commit_sha: string | null
 	commit_time: number | null
+	commit_depth: number | null
 	status: ScenarioStatus
 	tier: string | null
 	total_scenarios: number
@@ -204,6 +205,7 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		branch: r.branch,
 		commitSha: r.commit_sha,
 		commitTime: r.commit_time,
+		commitDepth: r.commit_depth,
 		status,
 		source: r.source,
 		tier: r.tier,
@@ -439,12 +441,13 @@ export class Db {
 		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; commitTime?: number; source?: RunSource; tier?: string }): Promise<Run> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; commitTime?: number; commitDepth?: number; source?: RunSource; tier?: string }): Promise<Run> {
 		const startedAt = Date.now()
 		const commitTime = typeof input.commitTime === 'number' && Number.isFinite(input.commitTime) ? input.commitTime : null
+		const commitDepth = typeof input.commitDepth === 'number' && Number.isInteger(input.commitDepth) ? input.commitDepth : null
 		await this.d1
-			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, commit_time, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, commitTime, input.source ?? null, input.tier ?? null, startedAt, startedAt)
+			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, commit_time, commit_depth, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, commitTime, commitDepth, input.source ?? null, input.tier ?? null, startedAt, startedAt)
 			.run()
 		return {
 			id: input.id,
@@ -452,6 +455,7 @@ export class Db {
 			branch: input.branch ?? null,
 			commitSha: input.commit ?? null,
 			commitTime,
+			commitDepth,
 			status: 'running',
 			source: input.source ?? null,
 			tier: input.tier ?? null,
@@ -802,6 +806,8 @@ export class Db {
 		branch: string | null
 		/** The run's COMMIT time — the freshness key the guard below compares. */
 		runStartedAt: number
+		/** The run's commit DEPTH, when known — the preferred ordering key. See migration 0012. */
+		runDepth?: number | null
 		edges: FootprintEdgeInput[]
 		/**
 		 * The edge kinds this run may REPLACE (see `indexableKinds`). Kinds absent
@@ -829,9 +835,23 @@ export class Db {
 		// Correlated on the KIND, so each dimension orders independently: a run that
 		// only measured endpoints cannot be refused because a newer run already
 		// wrote the file edges, and cannot block one either.
-		const notOlder = (kind: string) => `NOT EXISTS (
+		// Prefer DEPTH, fall back to the timestamp, and never mix the two: a depth
+		// and a millisecond count are not comparable quantities, so a row is judged
+		// by depth only when BOTH it and the incoming run have one. Depth is the
+		// better key because git's %ct has second resolution — two trunk commits
+		// can share it, and the strict `>=` refusal then locks the second one out
+		// until a commit lands in a later second — and because committer dates can
+		// invert outright between runners with skewed clocks, which no amount of
+		// tie-breaking fixes. Depth only grows as the trunk advances.
+		// `depth` is the placeholder holding this run's depth, which differs per
+		// statement — each binds a different number of parameters before it.
+		const notOlder = (kind: string, depth: string) => `NOT EXISTS (
 			SELECT 1 FROM footprint_index_state s
-			WHERE s.project_id = ?1 AND s.scenario_key = ?2 AND s.kind = ${kind} AND s.run_started_at >= ?3
+			WHERE s.project_id = ?1 AND s.scenario_key = ?2 AND s.kind = ${kind}
+				AND (CASE
+					WHEN s.run_depth IS NOT NULL AND ${depth} IS NOT NULL THEN s.run_depth >= ${depth}
+					ELSE s.run_started_at >= ?3
+				END)
 		)`
 		// The delete is scoped to the kinds this run can speak for. A run that
 		// observed endpoints but no files replaces the endpoint edges and leaves the
@@ -846,9 +866,9 @@ export class Db {
 					.prepare(
 						`DELETE FROM footprint_edges
 							WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})
-								AND ${notOlder('footprint_edges.kind')}`,
+								AND ${notOlder('footprint_edges.kind', `?${4 + kindList.length}`)}`,
 					)
-					.bind(input.projectId, input.scenarioKey, input.runStartedAt, ...kindList),
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, ...kindList, input.runDepth ?? null),
 			)
 		}
 		// The edges travel as ONE json array parameter per statement, expanded by
@@ -873,13 +893,13 @@ export class Db {
 								json_extract(e.value, '$.w'), json_extract(e.value, '$.x'),
 								?6, ?7, ?3, ?8
 							FROM json_each(?9) AS e
-							WHERE ${notOlder("json_extract(e.value, '$.k')")}
+							WHERE ${notOlder("json_extract(e.value, '$.k')", '?10')}
 							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
 								writes = excluded.writes, exercised = excluded.exercised,
 								run_id = excluded.run_id, branch = excluded.branch,
 								run_started_at = excluded.run_started_at, updated_at = excluded.updated_at`,
 					)
-					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload, input.runDepth ?? null),
 			)
 		}
 		// One marker per replaced kind, recorded last so each reflects a replacement
@@ -889,11 +909,12 @@ export class Db {
 		for (const kind of kindList) {
 			statements.push(
 				this.d1
-					.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, kind, run_started_at, run_id, updated_at)
-						SELECT ?1, ?2, ?4, ?3, ?5, ?6 WHERE ${notOlder('?4')}
+					.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, kind, run_started_at, run_id, run_depth, updated_at)
+						SELECT ?1, ?2, ?4, ?3, ?5, ?7, ?6 WHERE ${notOlder('?4', '?7')}
 						ON CONFLICT (project_id, scenario_key, kind) DO UPDATE SET
-							run_started_at = excluded.run_started_at, run_id = excluded.run_id, updated_at = excluded.updated_at`)
-					.bind(input.projectId, input.scenarioKey, input.runStartedAt, kind, input.runId, now),
+							run_started_at = excluded.run_started_at, run_id = excluded.run_id,
+							run_depth = excluded.run_depth, updated_at = excluded.updated_at`)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, kind, input.runId, now, input.runDepth ?? null),
 			)
 		}
 		const results = await this.d1.batch(statements)

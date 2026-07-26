@@ -5,11 +5,12 @@ import { execFileSync } from 'node:child_process'
  * configured in opice runs (branch, commit). Falls back to env vars commonly
  * set by CI (GITHUB_REF_NAME, GITHUB_SHA) when not in a git checkout.
  */
-export function detectGitMeta(): { branch?: string; commit?: string; commitTime?: string } {
+export function detectGitMeta(): { branch?: string; commit?: string; commitTime?: string; commitDepth?: string } {
 	const fromEnv = {
 		branch: process.env['OPICE_BRANCH'] ?? ciBranch(),
 		commit: process.env['OPICE_COMMIT'] ?? process.env['GITHUB_SHA'],
 		commitTime: process.env['OPICE_COMMIT_TIME'],
+		commitDepth: process.env['OPICE_COMMIT_DEPTH'],
 	}
 	// The commit TIME is what orders the change-tracking index: re-running an old
 	// workflow gives it a fresh start time but not a fresh commit, and without
@@ -22,10 +23,15 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 		const branch = fromEnv.branch ?? nonEmptyBranch(run(['rev-parse', '--abbrev-ref', 'HEAD']))
 		const commit = fromEnv.commit ?? run(['rev-parse', 'HEAD'])
 		const commitTime = fromEnv.commitTime ?? run(['show', '-s', '--format=%ct', 'HEAD'])
+		// Depth is a better revision key than the timestamp, but only from a full
+		// checkout: on a shallow clone `rev-list --count` answers the depth of the
+		// CLONE (1 for the CI default), which would rank every run identically.
+		const commitDepth = fromEnv.commitDepth ?? gitDepth()
 		return {
 			...(branch ? { branch } : {}),
 			...(commit ? { commit } : {}),
 			...(commitTime ? { commitTime } : {}),
+			...(commitDepth ? { commitDepth } : {}),
 		}
 	} catch {
 		return fromEnv
@@ -54,6 +60,13 @@ function ciBranch(): string | undefined {
 		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
 		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
 	)
+}
+
+/** The commit's depth on its branch, or undefined when the checkout is shallow. */
+function gitDepth(): string | undefined {
+	if (run(['rev-parse', '--is-shallow-repository']) !== 'false') return undefined
+	const count = run(['rev-list', '--count', 'HEAD'])
+	return Number(count) > 0 ? count : undefined
 }
 
 /** A branch name, or undefined for the empty string and git's detached-HEAD placeholder. */

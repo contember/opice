@@ -168,11 +168,14 @@ async function readAsset(services: Services, project: Project, key: string, fall
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ branch?: string; commit?: string; commitTime?: number; source?: string; tier?: string }>(request)) ?? {}
+	const body = (await readJson<{ branch?: string; commit?: string; commitTime?: number; commitDepth?: number; source?: string; tier?: string }>(request)) ?? {}
 	const source = body.source === 'ci' || body.source === 'local' ? body.source : undefined
 	const tier = typeof body.tier === 'string' ? body.tier : undefined
 	const commitTime = typeof body.commitTime === 'number' && Number.isFinite(body.commitTime) ? body.commitTime : undefined
-	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, commitTime, source, tier })
+	const commitDepth = typeof body.commitDepth === 'number' && Number.isInteger(body.commitDepth) && body.commitDepth > 0
+		? body.commitDepth
+		: undefined
+	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, commitTime, commitDepth, source, tier })
 	return json({ runId: run.id })
 }
 
@@ -575,6 +578,7 @@ async function uploadFootprint(
 				// a run without one is never indexed at all, rather than ordered by
 				// wall clock. See migration 0012.
 				runStartedAt: commitTime,
+				runDepth: run.commitDepth,
 				// Only the dimensions this run actually measured, whole. A run that saw
 				// no files (network mode against a bundle, no source maps) must not
 				// delete the file edges a fuller run established — that would shrink

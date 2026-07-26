@@ -54,6 +54,7 @@ export interface ReporterConfig {
 	 * old pipeline outranks a newer commit purely by wall clock.
 	 */
 	commitTime?: number
+	commitDepth?: number
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
 	source?: 'ci' | 'local'
 	/**
@@ -266,6 +267,7 @@ class HttpReporter implements Reporter {
 			branch: this.config.branch,
 			commit: this.config.commit,
 			commitTime: this.config.commitTime,
+			commitDepth: this.config.commitDepth,
 			source: this.config.source,
 			tier: this.config.tier,
 		})
@@ -686,6 +688,15 @@ function warnStrictNoop(why: string): void {
 }
 
 /** Commit timestamp in ms, from `OPICE_COMMIT_TIME` (seconds or ms). */
+function commitDepth(env: NodeJS.ProcessEnv): number | undefined {
+	const raw = env['OPICE_COMMIT_DEPTH']
+	if (raw) {
+		const n = Number(raw)
+		if (Number.isInteger(n) && n > 0) return n
+	}
+	return gitCommitDepth()
+}
+
 function commitTime(env: NodeJS.ProcessEnv): number | undefined {
 	const raw = env['OPICE_COMMIT_TIME'] ?? gitCommitTime()
 	if (!raw) return undefined
@@ -693,6 +704,31 @@ function commitTime(env: NodeJS.ProcessEnv): number | undefined {
 	if (!Number.isFinite(n) || n <= 0) return undefined
 	// git's `%ct` is seconds; accept either and normalize to ms.
 	return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+}
+
+/**
+ * The commit's depth on its branch, or undefined when it cannot be trusted.
+ *
+ * A better revision key than the timestamp: `%ct` has second resolution, so two
+ * trunk commits can share one, and committer dates can invert outright between
+ * runners with skewed clocks. Depth only ever grows as the trunk advances.
+ *
+ * Refused on a SHALLOW clone, which is the default for most CI checkouts. There
+ * `rev-list --count` answers the depth of the CLONE, not of the commit — a
+ * constant 1 for `fetch-depth: 1` — so believing it would rank every run equal
+ * and, worse, could rank a newer run below an older one. Undefined simply falls
+ * back to the timestamp, which is what happens today.
+ */
+let cachedDepth: number | undefined | null
+function gitCommitDepth(): number | undefined {
+	if (cachedDepth === undefined) {
+		cachedDepth = null
+		if (gitOutput(['rev-parse', '--is-shallow-repository']) === 'false') {
+			const count = Number(gitOutput(['rev-list', '--count', 'HEAD']))
+			if (Number.isInteger(count) && count > 0) cachedDepth = count
+		}
+	}
+	return cachedDepth ?? undefined
 }
 
 /**
@@ -842,6 +878,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		branch: env['OPICE_BRANCH'] ?? ciBranch(env) ?? gitBranch(),
 		commit: env['OPICE_COMMIT'] ?? ciCommit(env) ?? gitOutput(['rev-parse', 'HEAD']),
 		...(commitTime(env) !== undefined ? { commitTime: commitTime(env) } : {}),
+		...(commitDepth(env) !== undefined ? { commitDepth: commitDepth(env) } : {}),
 		source: isCI ? 'ci' : 'local',
 		// Record the selected tier only when one was explicitly requested — a run
 		// with no OPICE_TIER ran everything and carries no tier filter.
