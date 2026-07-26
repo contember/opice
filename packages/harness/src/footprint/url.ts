@@ -62,6 +62,19 @@ export interface RouteTemplate {
 }
 
 /**
+ * A segment that is safe to keep verbatim: a short, ordinary route word.
+ *
+ * The check is deliberately inverted — keep what looks like a NAME, collapse
+ * everything else — because the alternative is enumerating every shape a value
+ * can take, and the first one missed is a footprint with an email address in it.
+ * `isIdSegment` recognises the id shapes it knows; this catches what it cannot:
+ * addresses (`@`), percent-encoded text, magic-link tokens and JWTs (too long),
+ * and anything else that isn't a plain word. The cost of a false collapse is two
+ * endpoints merged into one row; the cost of a false keep is a leak.
+ */
+const ROUTE_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,31}$/
+
+/**
  * Turn a request URL into a route template, relative to the app's own origin.
  * A same-origin URL keeps only its path; anything else keeps its origin too, so
  * a third-party API is visibly third-party on the dashboard.
@@ -78,7 +91,7 @@ export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTempla
 	}
 	if (url.protocol === 'data:' || url.protocol === 'blob:' || url.protocol === 'about:') return null
 	const segments = url.pathname.split('/').filter(Boolean)
-	const templated = segments.map((segment, i) => (isIdSegment(segment, i) ? ':id' : segment))
+	const templated = segments.map((segment, i) => (isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment))
 	const path = '/' + templated.join('/')
 	const sameOrigin = appOrigin !== undefined && url.origin === appOrigin
 	const route = sameOrigin ? path : `${url.origin}${path}`

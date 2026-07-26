@@ -152,13 +152,14 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 			+ 'Run the app under a dev server, or build it with source maps, for file-level coverage.',
 		)
 	}
-	// A file whose module body ran but none of whose functions were called was
-	// LOADED, not used — reported as `module`, the same claim the network
-	// collector makes. Only a file that actually executed code earns `coverage`.
+	// `exercised` is stated explicitly rather than left to be inferred: these are
+	// the files V8 actually measured, so this is the one place that can tell
+	// "loaded but never called" from "we couldn't measure it".
 	const files: FootprintFile[] = [...byPath].map(([path, seen]) => ({
 		path,
-		source: seen.exercised ? 'coverage' : 'module',
+		source: 'coverage',
 		executed: round(seen.executed),
+		exercised: seen.exercised,
 	}))
 	files.sort((a, b) => a.path.localeCompare(b.path))
 	return { files, warnings }

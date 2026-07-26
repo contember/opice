@@ -72,3 +72,25 @@ describe('isApiResourceType', () => {
 		expect(isApiResourceType('image')).toBe(false)
 	})
 })
+
+describe('redaction', () => {
+	// The footprint is uploaded and rendered on a dashboard, so a path segment that
+	// isn't a route word is a value — and `isIdSegment` only knows the id shapes.
+	test('collapses values isIdSegment cannot recognise', () => {
+		expect(route(`${APP}/users/honza@example.com/settings`)).toBe('/users/:id/settings')
+		expect(route(`${APP}/reset/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMiJ9.dBjftJeZ4CVP`)).toBe('/reset/:id')
+		expect(route(`${APP}/invite/a-very-long-single-use-magic-link-token-value`)).toBe('/invite/:id')
+		expect(route(`${APP}/search/Honza%20Sl%C3%A1dek`)).toBe('/search/:id')
+	})
+
+	test('no recognisable value survives into the template', () => {
+		const template = route(`${APP}/u/honza@example.com/t/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdef`)
+		expect(template).not.toContain('@')
+		expect(template).not.toContain('eyJ')
+	})
+
+	test('still keeps ordinary route words', () => {
+		expect(route(`${APP}/api/v1/admin-dashboard-v2/unsubscribe_all`)).toBe('/api/v1/admin-dashboard-v2/unsubscribe_all')
+		expect(route(`${APP}/assets/manifest.json`)).toBe('/assets/manifest.json')
+	})
+})

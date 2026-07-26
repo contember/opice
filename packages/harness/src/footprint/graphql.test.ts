@@ -81,6 +81,23 @@ describe('parseOperations', () => {
 		expect(parseOperations(`query { __schema { types { name } } }`)[0]?.rootFields).toEqual([])
 	})
 
+	test('is not fooled by an object-valued variable default', () => {
+		// Searching for the next brace would find the default's, and read `active`
+		// as the operation's root field.
+		const ops = parseOperations('query Q($filter: Filter = {active: true}) { listInvoice { id } }')
+		expect(ops).toEqual([{ type: 'query', name: 'Q', rootFields: ['listInvoice'] }])
+	})
+
+	test('skips directives between the variables and the selection set', () => {
+		const ops = parseOperations('query Q($id: ID = {a: 1}) @cached(ttl: 60) { getUser { id } }')
+		expect(ops[0]?.rootFields).toEqual(['getUser'])
+	})
+
+	test('an object default does not lose the operation under operationName', () => {
+		const doc = 'query Q($f: F = {a: {b: 1}}) { listArticle { id } }'
+		expect(parseOperations(doc, { operationName: 'Q' })[0]?.rootFields).toEqual(['listArticle'])
+	})
+
 	test('degrades rather than throwing on a truncated document', () => {
 		expect(() => parseOperations(`query Broken { listInvoice { id `)).not.toThrow()
 	})

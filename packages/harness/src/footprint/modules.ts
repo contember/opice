@@ -46,8 +46,13 @@ const VENDOR_FRAGMENTS = [
 	'/.svelte-kit/',
 ]
 
-/** A hashed production chunk — `index-a1b2c3d4.js`, `main.4f2b91.css`. */
-const HASHED_CHUNK_RE = /[.-][0-9a-f]{8,}\.(?:js|mjs|css)$/i
+/**
+ * A hashed production chunk — `index-a1b2c3d4.js`, `main.4f2b91.css`, and Vite's
+ * base64url-style `index-C9nUJBE7.js`. Matching hex alone let that last shape
+ * through as if it were a source file, putting an unmatchable build artifact in
+ * the index instead of reporting that source attribution had failed.
+ */
+const HASHED_CHUNK_RE = /[.-][A-Za-z0-9_-]{8,}\.(?:js|mjs|css)$/
 
 export interface ModulePathResult {
 	/** The repo-relative-ish source path, or null when this URL isn't project source. */

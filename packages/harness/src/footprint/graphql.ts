@@ -312,7 +312,17 @@ export function parseOperations(document: string, options: ParseOptions = {}): P
 			name = parsedName.name
 			i = skipTrivia(text, parsedName.next)
 		}
-		// Variable definitions + directives sit between the name and the selection set.
+		// Variable definitions and directives sit between the name and the selection
+		// set, and a variable's DEFAULT can itself be an object — `($f: F = {a: 1})`.
+		// Searching for the next brace would find that default and read its contents
+		// as the operation's root fields, so the parens are skipped as a block first.
+		i = skipTrivia(text, i)
+		if (text[i] === '(') i = skipTrivia(text, matchBlock(text, i, '(', ')'))
+		while (text[i] === '@') {
+			const directive = readName(text, i + 1)
+			i = skipTrivia(text, directive.next)
+			if (text[i] === '(') i = skipTrivia(text, matchBlock(text, i, '(', ')'))
+		}
 		const braceStart = text.indexOf('{', i)
 		if (braceStart === -1) break
 		const end = matchBlock(text, braceStart, '{', '}')

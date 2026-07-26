@@ -15,8 +15,9 @@
  */
 
 import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { parseOpiceDsn } from './dsn'
-import { changedPaths, defaultBase } from './git'
+import { changedPaths, defaultBase, gitLines } from './git'
 
 /** How the platform describes its own index, so an empty answer can be explained. */
 export interface ImpactIndexStatus {
@@ -120,7 +121,18 @@ export async function queryImpact(
  */
 export function impactedTestFiles(scenarios: readonly ImpactedScenario[]): string[] {
 	const files = [...new Set(scenarios.map((s) => s.testFile).filter((f): f is string => !!f))].sort()
-	return files.filter((file) => existsSync(file))
+	// Resolved against the REPO ROOT, not the cwd: CI records these paths relative
+	// to the repository, and `opice` is explicitly usable from a subdirectory (that
+	// is what config discovery walks up for). Checking them against a nested cwd
+	// would find nothing and quietly reduce the selection to zero.
+	const root = repoRoot()
+	return files.filter((file) => existsSync(root ? path.resolve(root, file) : file))
+}
+
+/** The repository root, or null outside a checkout. */
+function repoRoot(): string | null {
+	const [top] = gitLines('git rev-parse --show-toplevel')
+	return top ?? null
 }
 
 /**

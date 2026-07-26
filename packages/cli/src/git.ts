@@ -29,7 +29,7 @@ function run(cmd: string): string {
 }
 
 /** Run a git command, returning its non-empty output lines; [] if it fails. */
-function lines(cmd: string): string[] {
+export function gitLines(cmd: string): string[] {
 	try {
 		return run(cmd).split('\n').map((line) => line.trim()).filter(Boolean)
 	} catch {
@@ -59,7 +59,7 @@ export function changedPaths(base: string): string[] {
 		'git diff --name-only --no-renames HEAD',
 		'git ls-files --others --exclude-standard',
 	]) {
-		for (const line of lines(cmd)) paths.add(line)
+		for (const line of gitLines(cmd)) paths.add(line)
 	}
 	return [...paths]
 }
@@ -79,7 +79,7 @@ export function defaultBase(): string {
 		'master',
 	].filter((c): c is string => !!c)
 	for (const candidate of candidates) {
-		if (lines(`git rev-parse --verify --quiet ${shellQuote(candidate)}`).length > 0) return candidate
+		if (gitLines(`git rev-parse --verify --quiet ${shellQuote(candidate)}`).length > 0) return candidate
 	}
 	return 'HEAD~1'
 }

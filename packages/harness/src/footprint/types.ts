@@ -81,6 +81,17 @@ export interface FootprintFile {
 	source: 'module' | 'coverage'
 	/** Fraction of the file's bytes V8 saw execute (0..1). Only with source 'coverage'. */
 	executed?: number
+	/**
+	 * Did the scenario CALL code in this file, as opposed to merely loading it?
+	 *
+	 * Present only when V8 actually measured the file. **Absent means unknown** —
+	 * a stylesheet (never executed by V8 at all), a module from a page coverage
+	 * wasn't watching, or a run where coverage failed outright. The platform reads
+	 * an absent value as the strongest claim the data supports, because the
+	 * alternative is filtering a file out of impact selection on the strength of
+	 * our own instrumentation having missed it.
+	 */
+	exercised?: boolean
 }
 
 /** An endpoint aggregate, deduplicated across the scenario's requests. */

@@ -16,6 +16,8 @@ export interface FootprintFile {
 	path: string
 	source: 'module' | 'coverage'
 	executed?: number
+	/** Whether V8 saw code in the file CALLED. Absent = not measurable, not "no". */
+	exercised?: boolean
 }
 
 export interface FootprintModel {
@@ -90,29 +92,19 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 	}
 }
 
-/**
- * Extensions V8 coverage can attribute. A stylesheet is executed by the browser's
- * CSS engine, never by V8, so it can only ever be observed by the module
- * collector — marking it "loaded, not called" would be a statement about our
- * instrumentation rather than about the scenario, and would quietly drop every
- * stylesheet out of impact selection.
- */
-const V8_MEASURABLE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i
-
 /** Flatten a footprint into the change-tracking index's edge rows. */
 export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
 	const edges: FootprintEdgeInput[] = []
-	// Without the coverage collector there is no way to tell a file the scenario
-	// CALLED from one it merely loaded — so every file edge carries the strongest
-	// claim the data supports rather than being silently downgraded to "loaded",
-	// which would make impact selection match nothing at all in `network` mode.
-	const canTellExercised = footprint.collected.includes('coverage')
 	for (const file of footprint.files) {
-		const measurable = V8_MEASURABLE.test(file.path)
 		edges.push({
 			kind: 'file',
 			value: file.path,
-			exercised: !canTellExercised || !measurable || file.source === 'coverage',
+			// Only an explicit `false` demotes a file to "loaded but never called".
+			// Absent means the harness could not measure it — a stylesheet, a popup's
+			// module, a run whose coverage failed — and filtering those out of impact
+			// selection would be acting on a gap in our instrumentation as if it were
+			// a fact about the scenario.
+			exercised: file.exercised !== false,
 		})
 	}
 	for (const component of footprint.components) edges.push({ kind: 'component', value: component })
@@ -283,10 +275,12 @@ function toFile(value: unknown): FootprintFile[] {
 	const path = record['path']
 	if (!isNonEmptyString(path)) return []
 	const executed = record['executed']
+	const exercised = record['exercised']
 	return [{
 		path,
 		source: record['source'] === 'coverage' ? 'coverage' : 'module',
 		...(typeof executed === 'number' && Number.isFinite(executed) ? { executed } : {}),
+		...(typeof exercised === 'boolean' ? { exercised } : {}),
 	}]
 }
 

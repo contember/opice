@@ -30,6 +30,10 @@ describe('moduleUrlToSourcePath', () => {
 
 	test('flags a hashed production chunk instead of reporting it as a file', () => {
 		expect(moduleUrlToSourcePath(`${APP}/assets/index-a1b2c3d4.js`)).toEqual({ path: null, bundled: true })
+		// Vite's hashes are base64url-ish, not hex — matching hex alone let these
+		// through as if they were source files.
+		expect(moduleUrlToSourcePath(`${APP}/assets/index-C9nUJBE7.js`)).toEqual({ path: null, bundled: true })
+		expect(moduleUrlToSourcePath(`${APP}/assets/main-BxT2_9qK.css`)).toEqual({ path: null, bundled: true })
 	})
 
 	test('applies sourceRoot for a dev server rooted below the repo root', () => {
