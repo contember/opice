@@ -394,7 +394,14 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// scenario's edges wholesale — indexing a prefix would delete the
 					// valid ones and quietly stop selecting this scenario for the files
 					// it never reached. The blob is stored either way.
-					const complete = currentWalkthroughCompleted && currentScenarioFailures === 0
+					// A scenario carrying an un-authored (pending) stub is a skeleton: the
+					// stub returns without running anything, so the body completes and no
+					// failure is counted, yet the footprint covers only the steps that do
+					// exist. Indexing that would replace a full scenario's edges with a
+					// fragment — exactly what the completeness gate exists to prevent.
+					const complete = currentWalkthroughCompleted
+						&& currentScenarioFailures === 0
+						&& currentScenarioPending === 0
 					if (!complete && !isBody) warnLegacyFootprint()
 					footprintUpload = reporter.uploadFootprint({
 						scenarioId: currentScenarioId,

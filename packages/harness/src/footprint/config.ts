@@ -125,8 +125,19 @@ export async function loadFootprintConfig(from?: string): Promise<FootprintConfi
 	return config
 }
 
-/** Does `path` match any ignore rule? */
+/**
+ * Does `path` match any ignore rule?
+ *
+ * A `RegExp` is tested statelessly. `test` on a rule carrying `g` or `y` advances
+ * `lastIndex`, so the same path would alternate between ignored and included
+ * across calls — and an ignore rule that only works every other time silently
+ * leaks generated or vendor files into the footprint and the index.
+ */
 export function isIgnored(path: string, ignore: FootprintConfig['ignore']): boolean {
 	if (!ignore) return false
-	return ignore.some((rule) => (typeof rule === 'string' ? path.includes(rule) : rule.test(path)))
+	return ignore.some((rule) => {
+		if (typeof rule === 'string') return path.includes(rule)
+		if (rule.global || rule.sticky) rule.lastIndex = 0
+		return rule.test(path)
+	})
 }

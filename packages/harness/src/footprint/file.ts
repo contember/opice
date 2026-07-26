@@ -34,8 +34,11 @@ const usedStems = new Set<string>()
 function footprintStem(footprint: ScenarioFootprint): string {
 	const scenario = slugify(footprint.scenario, 'scenario')
 	if (!footprint.testFile) return scenario
-	const base = footprint.testFile.split(/[\\/]/).pop() ?? ''
-	const file = slugify(base.replace(/\.(test|spec)\.[tj]sx?$/i, ''), '')
+	// The FULL relative path, not just the basename: `a/index.test.ts` and
+	// `b/index.test.ts` are a normal shape, they run in separate processes, and on
+	// basename alone they would race for the same artifact.
+	const withoutSuffix = footprint.testFile.replace(/\.(test|spec)\.[tj]sx?$/i, '')
+	const file = slugify(withoutSuffix, '')
 	return file ? `${file}--${scenario}` : scenario
 }
 

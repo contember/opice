@@ -885,8 +885,14 @@ export class Db {
 	/** How many edges the project has indexed, and when it was last refreshed. */
 	async footprintIndexStatus(projectId: number): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
 		const [indexed, missing] = await this.d1.batch<{ edges?: number; scenarios?: number; updated_at?: number | null; unindexed?: number }>([
+			// Scenario count and freshness come from the STATE table, not the edges: a
+			// scenario that legitimately touches nothing is recorded there and nowhere
+			// else, and counting edges would report the index as never built.
 			this.d1
-				.prepare('SELECT COUNT(*) AS edges, COUNT(DISTINCT scenario_key) AS scenarios, MAX(updated_at) AS updated_at FROM footprint_edges WHERE project_id = ?')
+				.prepare(`SELECT
+						(SELECT COUNT(*) FROM footprint_edges WHERE project_id = ?1) AS edges,
+						(SELECT COUNT(*) FROM footprint_index_state WHERE project_id = ?1) AS scenarios,
+						(SELECT MAX(updated_at) FROM footprint_index_state WHERE project_id = ?1) AS updated_at`)
 				.bind(projectId),
 			// Scenarios the project has REPORTED but which carry no edges. A count
 			// of indexed scenarios alone can't tell a complete index from a partial
@@ -903,9 +909,9 @@ export class Db {
 					SELECT COUNT(*) AS unindexed FROM scenarios s
 					WHERE s.run_id IN (SELECT id FROM latest)
 						AND NOT EXISTS (
-							SELECT 1 FROM footprint_edges e
-							WHERE e.project_id = ?1
-								AND e.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
+							SELECT 1 FROM footprint_index_state st
+							WHERE st.project_id = ?1
+								AND st.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
 						)`)
 				.bind(projectId),
 		])
