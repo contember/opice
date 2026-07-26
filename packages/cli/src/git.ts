@@ -50,16 +50,40 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
  */
 function ciBranch(): string | undefined {
 	const env = process.env
-	return nonEmptyBranch(
+	// A PULL-REQUEST build is never a default-branch build. When the provider
+	// announces a target and the branch we derived is that target, we are looking
+	// at the target rather than the source — the Drone shape above, and a trap any
+	// provider could repeat. Reporting nothing is right: the worker refuses to
+	// index a run it cannot attribute, which is the safe direction.
+	const derived = nonEmptyBranch(
 		env['GITHUB_REF_NAME'] // GitHub Actions
 		?? env['CI_COMMIT_BRANCH'] // GitLab CI
 		?? env['BUILDKITE_BRANCH'] // Buildkite
 		?? env['CIRCLE_BRANCH'] // CircleCI
 		?? env['BRANCH_NAME'] // Jenkins multibranch
-		?? env['DRONE_BRANCH'] // Drone
+		// Drone reports the TARGET branch here on a pull-request build, so the
+		// source branch has to win — otherwise a PR into main reports itself as
+		// main, passes the worker's default-branch gate, and replaces the shared
+		// index with feature-branch footprints. Every other provider in this list
+		// names the source branch (or nothing) on a PR build.
+		?? env['DRONE_SOURCE_BRANCH'] ?? env['DRONE_BRANCH'] // Drone
 		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
 		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
 	)
+	const target = prTargetName()
+	return derived && target && derived === target ? undefined : derived
+}
+
+/** The bare name of the branch a pull/merge request targets, if we're in one. */
+function prTargetName(): string | undefined {
+	const env = process.env
+	const name = env['GITHUB_BASE_REF']
+		?? env['CI_MERGE_REQUEST_TARGET_BRANCH_NAME']
+		?? env['BUILDKITE_PULL_REQUEST_BASE_BRANCH']
+		?? env['BITBUCKET_PR_DESTINATION_BRANCH']
+		?? env['CHANGE_TARGET']
+		?? env['DRONE_TARGET_BRANCH']
+	return name?.trim() || undefined
 }
 
 /** The commit's depth on its branch, or undefined when the checkout is shallow. */
@@ -238,15 +262,8 @@ export function defaultBase(): string {
 
 /** The branch a pull/merge request targets, as `origin/<name>`, if we're in one. */
 function prBaseBranch(): string | undefined {
-	const env = process.env
-	const name = env['GITHUB_BASE_REF'] // GitHub Actions
-		?? env['CI_MERGE_REQUEST_TARGET_BRANCH_NAME'] // GitLab CI
-		?? env['BUILDKITE_PULL_REQUEST_BASE_BRANCH'] // Buildkite
-		?? env['BITBUCKET_PR_DESTINATION_BRANCH'] // Bitbucket Pipelines
-		?? env['CHANGE_TARGET'] // Jenkins multibranch
-		?? env['DRONE_TARGET_BRANCH'] // Drone
-	const trimmed = name?.trim()
-	return trimmed ? `origin/${trimmed}` : undefined
+	const name = prTargetName()
+	return name ? `origin/${name}` : undefined
 }
 
 /** `origin`'s default branch from the LOCAL symbolic ref — no network. */

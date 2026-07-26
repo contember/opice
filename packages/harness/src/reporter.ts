@@ -744,16 +744,32 @@ function gitCommitDepth(): number | undefined {
  * default-branch build.
  */
 export function ciBranch(env: NodeJS.ProcessEnv): string | undefined {
-	return usableBranch(
+	const derived = usableBranch(
 		env['GITHUB_REF_NAME'] // GitHub Actions
 		?? env['CI_COMMIT_BRANCH'] // GitLab CI
 		?? env['BUILDKITE_BRANCH'] // Buildkite
 		?? env['CIRCLE_BRANCH'] // CircleCI
 		?? env['BRANCH_NAME'] // Jenkins multibranch
-		?? env['DRONE_BRANCH'] // Drone
+		// Drone reports the TARGET branch here on a pull-request build — see the
+		// CLI's copy. The source branch has to win, or a PR into main reports
+		// itself as main and its footprints replace the shared index.
+		?? env['DRONE_SOURCE_BRANCH'] ?? env['DRONE_BRANCH'] // Drone
 		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
 		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
 	)
+	// A PULL-REQUEST build is never a default-branch build. If the branch we
+	// derived IS the announced target, we are reading the target rather than the
+	// source — reporting nothing is right, because the worker refuses to index a
+	// run it cannot attribute, and that is the safe direction.
+	const target = (
+		env['GITHUB_BASE_REF']
+		?? env['CI_MERGE_REQUEST_TARGET_BRANCH_NAME']
+		?? env['BUILDKITE_PULL_REQUEST_BASE_BRANCH']
+		?? env['BITBUCKET_PR_DESTINATION_BRANCH']
+		?? env['CHANGE_TARGET']
+		?? env['DRONE_TARGET_BRANCH']
+	)?.trim()
+	return derived && target && derived === target ? undefined : derived
 }
 
 /**

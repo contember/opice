@@ -89,3 +89,35 @@ describe('ciCommit', () => {
 		expect(ciCommit(env as NodeJS.ProcessEnv)).toBeUndefined()
 	})
 })
+
+// Drone names the TARGET branch in DRONE_BRANCH on a pull-request build, so a PR
+// into main would report itself as main, pass the worker's default-branch gate,
+// and replace the shared index with feature-branch footprints.
+describe('pull-request builds are never default-branch builds', () => {
+	test('Drone prefers the source branch', () => {
+		expect(ciBranch({
+			DRONE_BRANCH: 'main',
+			DRONE_SOURCE_BRANCH: 'feat/x',
+			DRONE_TARGET_BRANCH: 'main',
+		} as NodeJS.ProcessEnv)).toBe('feat/x')
+	})
+
+	test('a branch equal to the announced target is refused', () => {
+		expect(ciBranch({ DRONE_BRANCH: 'main', DRONE_TARGET_BRANCH: 'main' } as NodeJS.ProcessEnv)).toBeUndefined()
+	})
+
+	test.each([
+		['GITHUB_BASE_REF', 'GITHUB_REF_NAME'],
+		['CI_MERGE_REQUEST_TARGET_BRANCH_NAME', 'CI_COMMIT_BRANCH'],
+		['BUILDKITE_PULL_REQUEST_BASE_BRANCH', 'BUILDKITE_BRANCH'],
+		['BITBUCKET_PR_DESTINATION_BRANCH', 'BITBUCKET_BRANCH'],
+		['CHANGE_TARGET', 'BRANCH_NAME'],
+	])('%s guards the same trap for its provider', (targetKey, branchKey) => {
+		expect(ciBranch({ [targetKey]: 'main', [branchKey]: 'main' } as NodeJS.ProcessEnv)).toBeUndefined()
+		expect(ciBranch({ [targetKey]: 'main', [branchKey]: 'feat/x' } as NodeJS.ProcessEnv)).toBe('feat/x')
+	})
+
+	test('a plain push build is unaffected', () => {
+		expect(ciBranch({ GITHUB_REF_NAME: 'main' } as NodeJS.ProcessEnv)).toBe('main')
+	})
+})
