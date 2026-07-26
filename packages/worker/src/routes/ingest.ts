@@ -168,10 +168,11 @@ async function readAsset(services: Services, project: Project, key: string, fall
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ branch?: string; commit?: string; source?: string; tier?: string }>(request)) ?? {}
+	const body = (await readJson<{ branch?: string; commit?: string; commitTime?: number; source?: string; tier?: string }>(request)) ?? {}
 	const source = body.source === 'ci' || body.source === 'local' ? body.source : undefined
 	const tier = typeof body.tier === 'string' ? body.tier : undefined
-	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, source, tier })
+	const commitTime = typeof body.commitTime === 'number' && Number.isFinite(body.commitTime) ? body.commitTime : undefined
+	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, commitTime, source, tier })
 	return json({ runId: run.id })
 }
 
@@ -478,7 +479,9 @@ async function uploadFootprint(
 				scenarioName: scenario.name,
 				runId: run.id,
 				branch: run.branch,
-				runStartedAt: run.startedAt,
+				// The COMMIT's time, falling back to the run's start when a client
+				// doesn't report one — see migration 0012.
+				runStartedAt: run.commitTime ?? run.startedAt,
 				edges: toEdges(footprint),
 			})
 			// False when a NEWER run already indexed this scenario — the write was

@@ -306,17 +306,25 @@ async function prefetchSourceMaps(
 	// fail a run.
 	const pending = [...urls]
 	const deadline = Date.now() + SOURCE_MAP_TOTAL_BUDGET_MS
+	const skipped: string[] = []
 	const workers = Array.from({ length: Math.min(SOURCE_MAP_CONCURRENCY, pending.length) }, async () => {
 		for (let url = pending.pop(); url !== undefined; url = pending.pop()) {
 			// Stop SCHEDULING once the budget is spent — the request in flight still
 			// has its own timeout, so the worst case stays bounded.
-			if (Date.now() >= deadline) return
+			if (Date.now() >= deadline) {
+				skipped.push(url)
+				continue
+			}
 			await fetchSourceMap(url, context, cache)
 		}
 	})
 	await Promise.all(workers)
-	if (pending.length > 0) {
-		console.warn(`[opice] source-map fetching hit its ${SOURCE_MAP_TOTAL_BUDGET_MS}ms budget — ${pending.length} map(s) skipped.`)
+	// Record the skipped ones as misses. Without this the decode loop below finds
+	// them absent from the cache and fetches every one again, one at a time — so
+	// the budget would bound nothing at all.
+	for (const url of skipped) if (!cache.has(url)) cache.set(url, null)
+	if (skipped.length > 0) {
+		console.warn(`[opice] source-map fetching hit its ${SOURCE_MAP_TOTAL_BUDGET_MS}ms budget — ${skipped.length} map(s) skipped.`)
 	}
 }
 

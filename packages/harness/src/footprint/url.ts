@@ -75,19 +75,34 @@ export interface RouteTemplate {
 const ROUTE_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,31}$/
 
 /**
- * A long unbroken run of letters and digits, in any case. Route names are words:
- * they are short, or they are broken up by `-`, `_` or `.`. A 16+ character
- * uninterrupted token is a value — a lowercase ULID, a reset token, a session id
- * — and `isIdSegment` only recognises the ones that also mix case or are pure
- * hex, which left `/reset/abc123def456ghi789` intact.
+ * Does this segment contain a high-entropy run — a value rather than a name?
  *
- * Applied at EVERY position, first segment included. `isIdSegment` spares the
- * first segment because a numeric one there is far more likely to be a route
- * (`/2024/archive`) than an id — that reasoning is about digits, not about
- * opaque runs, and a single-use token handed out as `/<token>` is a perfectly
- * ordinary shape.
+ * The discriminator is the longest UNBROKEN alphanumeric run, not the length of
+ * the whole segment. Route names are built from words joined by `-`, `_` or `.`:
+ * `admin-dashboard-v2` is eighteen characters but its longest run is
+ * `dashboard`. A token is the opposite — `abc123def456ghi-789jkl` carries a
+ * fifteen-character run even though it, too, contains a dash. Two earlier
+ * attempts at this checked the segment as a whole and leaked exactly the tokens
+ * that happen to include a separator.
+ *
+ * The run must mix letters and digits. That is what keeps ordinary long words
+ * (`documentation`, `notifications`) out of it while still catching ULIDs,
+ * base64url tokens and session ids, which in practice always carry digits.
+ * Pure-hex and all-digit runs are already handled by {@link isIdSegment}.
  */
-const OPAQUE_RUN_RE = /^[A-Za-z0-9]{16,}$/
+function hasOpaqueRun(segment: string): boolean {
+	for (const run of segment.split(/[^A-Za-z0-9]+/)) {
+		if (run.length < MIN_OPAQUE_RUN) continue
+		if (/[A-Za-z]/.test(run) && /\d/.test(run)) return true
+	}
+	return false
+}
+
+/**
+ * Shortest alphanumeric run treated as a token. Long enough that real compound
+ * words survive, short enough to catch a truncated or short-form id.
+ */
+const MIN_OPAQUE_RUN = 12
 
 /**
  * Turn a request URL into a route template, relative to the app's own origin.
@@ -107,7 +122,7 @@ export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTempla
 	if (url.protocol === 'data:' || url.protocol === 'blob:' || url.protocol === 'about:') return null
 	const segments = url.pathname.split('/').filter(Boolean)
 	const templated = segments.map((segment, i) => {
-		if (OPAQUE_RUN_RE.test(segment)) return ':id'
+		if (hasOpaqueRun(segment)) return ':id'
 		return isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment
 	})
 	const path = '/' + templated.join('/')

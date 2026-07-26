@@ -5,19 +5,23 @@ import { execSync } from 'node:child_process'
  * configured in opice runs (branch, commit). Falls back to env vars commonly
  * set by CI (GITHUB_REF_NAME, GITHUB_SHA) when not in a git checkout.
  */
-export function detectGitMeta(): { branch?: string; commit?: string } {
+export function detectGitMeta(): { branch?: string; commit?: string; commitTime?: string } {
 	const fromEnv = {
 		branch: process.env['OPICE_BRANCH'] ?? process.env['GITHUB_REF_NAME'],
 		commit: process.env['OPICE_COMMIT'] ?? process.env['GITHUB_SHA'],
+		commitTime: process.env['OPICE_COMMIT_TIME'],
 	}
-	if (fromEnv.branch && fromEnv.commit) return fromEnv
-
+	// The commit TIME is what orders the change-tracking index: re-running an old
+	// workflow gives it a fresh start time but not a fresh commit, and without
+	// this the rerun would outrank a newer commit and restore stale edges.
 	try {
-		const branch = run('git rev-parse --abbrev-ref HEAD')
-		const commit = run('git rev-parse HEAD')
+		const branch = fromEnv.branch ?? run('git rev-parse --abbrev-ref HEAD')
+		const commit = fromEnv.commit ?? run('git rev-parse HEAD')
+		const commitTime = fromEnv.commitTime ?? run('git show -s --format=%ct HEAD')
 		return {
-			branch: fromEnv.branch ?? branch,
-			commit: fromEnv.commit ?? commit,
+			...(branch ? { branch } : {}),
+			...(commit ? { commit } : {}),
+			...(commitTime ? { commitTime } : {}),
 		}
 	} catch {
 		return fromEnv
@@ -73,6 +77,11 @@ export function defaultBase(): string {
 	const local = [
 		process.env['OPICE_IMPACT_BASE'],
 		process.env['GITHUB_BASE_REF'] ? `origin/${process.env['GITHUB_BASE_REF']}` : undefined,
+		// `origin/HEAD` before the guesses: it is a LOCAL ref, so it costs nothing,
+		// and it is the repository's own answer. A repo whose trunk is `develop`
+		// usually still has an `origin/main` lying around, and preferring the guess
+		// would diff against the wrong branch every time.
+		symbolicDefaultBranch(),
 		'origin/main',
 		'origin/master',
 		'main',
@@ -81,14 +90,19 @@ export function defaultBase(): string {
 	for (const candidate of local) {
 		if (exists(candidate)) return candidate
 	}
-	// Only now ask the remote. It answers for a repo whose trunk is `develop`,
-	// `trunk` or anything else — but `git remote show origin` is a network and
-	// possibly an auth round trip, so it must not run on the common path where
-	// `origin/main` was sitting right there. Asked at all because the fallback
-	// below diffs a single commit, hiding most of a multi-commit branch.
+	// Only now ask the REMOTE — `git remote show origin` is a network and possibly
+	// an auth round trip, so it must not run on the common path. Asked at all
+	// because the fallback below diffs a single commit, hiding most of a
+	// multi-commit branch.
 	const remote = remoteDefaultBranch()
 	if (remote && exists(remote)) return remote
 	return 'HEAD~1'
+}
+
+/** `origin`'s default branch from the LOCAL symbolic ref — no network. */
+function symbolicDefaultBranch(): string | undefined {
+	const [symbolic] = gitLines('git symbolic-ref --quiet refs/remotes/origin/HEAD')
+	return symbolic ? symbolic.replace(/^refs\/remotes\//, '') : undefined
 }
 
 /** Does this ref resolve in the local repository? */
@@ -96,11 +110,8 @@ function exists(ref: string): boolean {
 	return gitLines(`git rev-parse --verify --quiet ${shellQuote(ref)}`).length > 0
 }
 
-/** `origin`'s default branch (`origin/develop`), from the local ref or the remote. */
+/** `origin`'s default branch, asked over the network. See {@link symbolicDefaultBranch} for the free path. */
 function remoteDefaultBranch(): string | undefined {
-	// The local ref first — it's free and usually present after a normal clone.
-	const [symbolic] = gitLines('git symbolic-ref --quiet refs/remotes/origin/HEAD')
-	if (symbolic) return symbolic.replace(/^refs\/remotes\//, '')
 	const line = gitLines('git remote show origin').find((l) => l.includes('HEAD branch:'))
 	const name = line?.split('HEAD branch:')[1]?.trim()
 	return name && name !== '(unknown)' ? `origin/${name}` : undefined

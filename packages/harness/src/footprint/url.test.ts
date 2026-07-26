@@ -109,3 +109,17 @@ describe('redaction', () => {
 		expect(route(`${APP}/assets/manifest.json`)).toBe('/assets/manifest.json')
 	})
 })
+
+describe('opaque runs', () => {
+	// The segment as a whole is the wrong unit: a token can carry separators and a
+	// route name can be long. What separates them is the longest unbroken run.
+	test('collapses tokens that contain separators', () => {
+		expect(route(`${APP}/reset/abc123def456ghi-789jkl`)).toBe('/reset/:id')
+		expect(route(`${APP}/i/aGVsbG8gd29ybGQ12345_x`)).toBe('/i/:id')
+	})
+
+	test('keeps compound route names of the same length', () => {
+		expect(route(`${APP}/api/admin-dashboard-v2/settings`)).toBe('/api/admin-dashboard-v2/settings')
+		expect(route(`${APP}/documentation/notifications`)).toBe('/documentation/notifications')
+	})
+})

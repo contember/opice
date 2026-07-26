@@ -48,6 +48,12 @@ export interface ReporterConfig {
 	clientSecret: string
 	branch?: string
 	commit?: string
+	/**
+	 * Commit timestamp (ms). Orders the change-tracking index by SOURCE revision
+	 * rather than by when a workflow happened to start — otherwise re-running an
+	 * old pipeline outranks a newer commit purely by wall clock.
+	 */
+	commitTime?: number
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
 	source?: 'ci' | 'local'
 	/**
@@ -259,6 +265,7 @@ class HttpReporter implements Reporter {
 		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs`, {
 			branch: this.config.branch,
 			commit: this.config.commit,
+			commitTime: this.config.commitTime,
 			source: this.config.source,
 			tier: this.config.tier,
 		})
@@ -662,6 +669,16 @@ function warnStrictNoop(why: string): void {
 	)
 }
 
+/** Commit timestamp in ms, from `OPICE_COMMIT_TIME` (seconds or ms). */
+function commitTime(env: NodeJS.ProcessEnv): number | undefined {
+	const raw = env['OPICE_COMMIT_TIME']
+	if (!raw) return undefined
+	const n = Number(raw)
+	if (!Number.isFinite(n) || n <= 0) return undefined
+	// git's `%ct` is seconds; accept either and normalize to ms.
+	return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+}
+
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {
 	// Strict reporting: fail the run if any report to the platform fails. Opt-in
 	// (default best-effort is locked design), resolved once here for the whole
@@ -711,6 +728,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		clientSecret,
 		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
+		...(commitTime(env) !== undefined ? { commitTime: commitTime(env) } : {}),
 		source: isCI ? 'ci' : 'local',
 		// Record the selected tier only when one was explicitly requested — a run
 		// with no OPICE_TIER ran everything and carries no tier filter.

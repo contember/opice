@@ -37,6 +37,12 @@ ALTER TABLE scenarios ADD COLUMN footprint_summary TEXT;  -- compact JSON counts
 -- a project whose trunk is called something else.
 ALTER TABLE projects ADD COLUMN default_branch TEXT;
 
+-- Commit timestamp (ms) of the run's revision. The change-tracking index orders
+-- replacements by this rather than by when the workflow started: re-running an
+-- old pipeline produces a fresh start time but not a fresh commit, and ordering
+-- by the clock would let that rerun restore stale edges over a newer commit's.
+ALTER TABLE runs ADD COLUMN commit_time INTEGER;
+
 CREATE TABLE footprint_edges (
 	project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 	-- `<test_file>::<name>` — the scenario's identity ACROSS runs. Two scenarios

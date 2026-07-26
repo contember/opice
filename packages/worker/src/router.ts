@@ -56,6 +56,7 @@ export const RunSchema = z.object({
 	projectId: z.number(),
 	branch: z.string().nullable(),
 	commitSha: z.string().nullable(),
+	commitTime: z.number().nullable(),
 	status: RunStatusSchema,
 	source: z.enum(['ci', 'local']).nullable(),
 	tier: z.string().nullable(),

@@ -54,6 +54,7 @@ interface RunRow {
 	project_id: number
 	branch: string | null
 	commit_sha: string | null
+	commit_time: number | null
 	status: ScenarioStatus
 	tier: string | null
 	total_scenarios: number
@@ -202,6 +203,7 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		projectId: r.project_id,
 		branch: r.branch,
 		commitSha: r.commit_sha,
+		commitTime: r.commit_time,
 		status,
 		source: r.source,
 		tier: r.tier,
@@ -437,17 +439,19 @@ export class Db {
 		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; source?: RunSource; tier?: string }): Promise<Run> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; commitTime?: number; source?: RunSource; tier?: string }): Promise<Run> {
 		const startedAt = Date.now()
+		const commitTime = typeof input.commitTime === 'number' && Number.isFinite(input.commitTime) ? input.commitTime : null
 		await this.d1
-			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.source ?? null, input.tier ?? null, startedAt, startedAt)
+			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, commit_time, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, commitTime, input.source ?? null, input.tier ?? null, startedAt, startedAt)
 			.run()
 		return {
 			id: input.id,
 			projectId: input.projectId,
 			branch: input.branch ?? null,
 			commitSha: input.commit ?? null,
+			commitTime,
 			status: 'running',
 			source: input.source ?? null,
 			tier: input.tier ?? null,

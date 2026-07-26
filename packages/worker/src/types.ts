@@ -115,6 +115,8 @@ export interface Run {
 	projectId: number
 	branch: string | null
 	commitSha: string | null
+	/** Commit timestamp (ms); orders index replacement by revision, not wall clock. */
+	commitTime: number | null
 	status: RunStatus
 	source: RunSource | null
 	/** The tier this run selected (OPICE_TIER); null = no filter / ran everything. */
