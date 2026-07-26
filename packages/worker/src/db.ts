@@ -1039,7 +1039,16 @@ export class Db {
 						-- would not contain it, unindexed would read 0, and an empty
 						-- match would look authoritative. Runs with no commit_time sort
 						-- last — they are never indexed anyway (see routes/ingest.ts).
-						ORDER BY (commit_time IS NULL), commit_time DESC, started_at DESC
+						--
+						-- DEPTH first, matching replaceFootprintEdges. Ordering the
+						-- inventory by timestamp while ordering the edges by depth means
+						-- the two can disagree about which revision is newer: with
+						-- inverted committer dates the inventory would come from the
+						-- ANCESTOR, and a scenario the real newer revision added would be
+						-- missing from it — so unindexed reads 0 and an empty impact
+						-- result looks authoritative.
+						ORDER BY (commit_depth IS NULL), commit_depth DESC,
+							(commit_time IS NULL), commit_time DESC, started_at DESC
 						LIMIT 1
 					), latest AS (
 						SELECT r.id FROM runs r, newest n

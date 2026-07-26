@@ -67,8 +67,17 @@ export function resolveImpactCredentials(config: { project?: string; endpoint?: 
 	const dsn = read ?? write
 	const endpoint = process.env['OPICE_ENDPOINT'] ?? config.endpoint ?? dsn?.endpoint
 	const project = process.env['OPICE_PROJECT'] ?? config.project ?? dsn?.project
-	const clientId = dsn?.clientId ?? process.env['OPICE_CLIENT_ID']
-	const clientSecret = dsn?.clientSecret ?? process.env['OPICE_CLIENT_SECRET']
+	// The READ DSN's own credentials win, because they are the least-privileged
+	// thing that works and OPICE_CLIENT_ID pairs with the ingest token. Failing
+	// that, an explicit pair beats the write DSN — which is the reporter's
+	// precedence, and the reason it matters: rotating credentials by exporting
+	// OPICE_CLIENT_ID over a stale OPICE_DSN would otherwise leave reporting
+	// working while `--impacted` kept presenting the old token and failed at
+	// Access, with the selection quietly falling back to the tier.
+	const explicitId = process.env['OPICE_CLIENT_ID']
+	const explicitSecret = process.env['OPICE_CLIENT_SECRET']
+	const clientId = read?.clientId ?? explicitId ?? write?.clientId
+	const clientSecret = read?.clientSecret ?? explicitSecret ?? write?.clientSecret
 	if (!endpoint || !project || !clientId || !clientSecret) return null
 	return { endpoint, project, clientId, clientSecret }
 }
