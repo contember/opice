@@ -176,3 +176,19 @@ describe('readSourceMappingUrl', () => {
 		expect(readSourceMappingUrl('just some code')).toBeNull()
 	})
 })
+
+describe('inline source map size cap', () => {
+	test('decodes an ordinary inline map', () => {
+		const map = JSON.stringify({ version: 3, sources: ['a.ts'], mappings: 'AAAA' })
+		const url = `data:application/json;base64,${Buffer.from(map).toString('base64')}`
+		expect(decodeInlineSourceMap(url)?.sources).toEqual(['a.ts'])
+	})
+
+	// The encoded URI is already resident as part of the script; decoding adds a
+	// buffer, a string and a parsed object on top, and this path had none of the
+	// caps the external one has.
+	test('refuses an oversized payload before decoding it', () => {
+		const url = `data:application/json;base64,${'A'.repeat(33 * 1024 * 1024)}`
+		expect(decodeInlineSourceMap(url)).toBeNull()
+	})
+})

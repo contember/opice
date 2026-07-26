@@ -234,3 +234,23 @@ describe('looksLikeGraphql', () => {
 		expect(looksLikeGraphql('/api/invoices', JSON.stringify({ total: 10 }))).toBe(false)
 	})
 })
+
+describe('looksLikeGraphql body size', () => {
+	// It used to stop at a megabyte and answer "not GraphQL" for a body the
+	// collector was willing to scan, so the request was neither parsed nor
+	// counted as unreadable — and the models read as an authoritative empty set.
+	test('recognises a large JSON body on a non-/graphql path', () => {
+		const padding = 'x'.repeat(1_200_000)
+		const body = JSON.stringify({ query: '{ orders { id } }', variables: { padding } })
+		expect(body.length).toBeGreaterThan(1_000_000)
+		expect(looksLikeGraphql('/api/content', body)).toBe(true)
+	})
+
+	test('still rejects a large body that is not GraphQL', () => {
+		expect(looksLikeGraphql('/api/upload', JSON.stringify({ blob: 'y'.repeat(1_200_000) }))).toBe(false)
+	})
+
+	test('a /graphql path needs no body at all', () => {
+		expect(looksLikeGraphql('/graphql', undefined)).toBe(true)
+	})
+})

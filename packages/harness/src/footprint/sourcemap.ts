@@ -253,6 +253,19 @@ export function readSourceMappingUrl(source: string): string | null {
 	return last?.[1] ?? null
 }
 
+/**
+ * Largest inline `data:` payload we'll decode.
+ *
+ * An inline map costs more than an external one of the same size: the encoded
+ * URI is already in memory as part of the script, and decoding adds a buffer, a
+ * string and a parsed object on top. The external path has both a per-map cap
+ * and an aggregate reservation; this one had neither, so a large inline
+ * production map could exhaust the test runner during teardown — for telemetry
+ * that is documented as unable to fail a run. Oversize reads as "no map", which
+ * already marks the file dimension partial.
+ */
+const MAX_INLINE_SOURCE_MAP_BYTES = 32 * 1024 * 1024
+
 /** Decode an inline `data:` source map. Returns null for anything else. */
 export function decodeInlineSourceMap(url: string): RawSourceMap | null {
 	if (!url.startsWith('data:')) return null
@@ -260,6 +273,8 @@ export function decodeInlineSourceMap(url: string): RawSourceMap | null {
 	if (comma === -1) return null
 	const meta = url.slice(0, comma)
 	const payload = url.slice(comma + 1)
+	// Checked BEFORE decoding: the point is not to allocate the decoded copy.
+	if (payload.length > MAX_INLINE_SOURCE_MAP_BYTES) return null
 	try {
 		const text = meta.includes(';base64') ? Buffer.from(payload, 'base64').toString('utf-8') : decodeURIComponent(payload)
 		return parseSourceMap(text)

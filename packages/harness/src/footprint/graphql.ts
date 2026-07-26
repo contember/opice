@@ -441,7 +441,12 @@ export function toFootprintOperation(operation: ParsedOperation, models?: Footpr
 export function looksLikeGraphql(pathname: string, body: string | undefined, contentType?: string): boolean {
 	if (/\/graphql\b/i.test(pathname)) return true
 	if ((contentType ?? '').toLowerCase().includes('application/graphql')) return true
-	if (!body || body.length > 1_000_000) return false
+	if (!body) return false
+	// No size limit of its own. It used to stop at a megabyte, which quietly
+	// answered "not GraphQL" for a body the COLLECTOR was willing to scan (its
+	// limit is 2 MiB) — so such a request was neither parsed nor counted as
+	// unreadable, and the models read as an authoritative empty set. One limit,
+	// enforced in one place, is the only way those two agree.
 	if (!body.includes('"query"') && !body.includes('"operationName"')) return false
 	return /["']\s*(query|operationName)\s*["']\s*:/.test(body)
 }
