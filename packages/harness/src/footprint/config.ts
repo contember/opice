@@ -116,7 +116,11 @@ export async function loadFootprintConfig(from?: string): Promise<FootprintConfi
 		const candidate = mod['footprint'] ?? mod['default']
 		// Accept an object or a factory — a factory lets a repo read its own config
 		// files before answering.
-		const resolved = typeof candidate === 'function' ? (candidate as () => unknown)() : candidate
+		// Awaited: the factory form exists so a repo can read its own config files
+		// before answering, which is inherently async. A returned Promise passes an
+		// `object` check and would be cast straight through, leaving every override
+		// silently absent.
+		const resolved = typeof candidate === 'function' ? await (candidate as () => unknown)() : candidate
 		if (typeof resolved === 'object' && resolved !== null) config = resolved as FootprintConfig
 	} catch (err) {
 		console.warn(`[opice] failed to load ${file} (ignored, using footprint defaults): ${err instanceof Error ? err.message : String(err)}`)

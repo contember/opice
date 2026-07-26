@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -68,7 +67,12 @@ export async function testCommand(args: string[]): Promise<number> {
 	// union, so the always-on tier still runs and nothing is ever subtracted.
 	// Fails OPEN — an unreachable platform or an empty index adds nothing and
 	// leaves the tier exactly as it was.
-	const impactedFlag = extractOptionalValueFlag(afterSelect, 'impacted', looksLikeGitRef)
+	// No `isValue`: a bare `--impacted` NEVER consumes the following token. A git
+	// ref and a bun test-name filter are indistinguishable — `opice test
+	// --impacted login` would otherwise diff against a ref called `login` AND
+	// drop the filter bun was meant to receive, changing both halves of the run.
+	// Use `--impacted=<ref>` to name a base. Same rule as `--video`, above.
+	const impactedFlag = extractOptionalValueFlag(afterSelect, 'impacted')
 	const afterImpacted = impactedFlag.rest
 	const impacted = impactedFlag.present
 		? await resolveImpact(
@@ -209,20 +213,6 @@ function looksLikeReportPath(s: string): boolean {
 	return /\.html?$/i.test(s)
 }
 
-/**
- * Does this token look like the git ref `--impacted` diffs against?
- *
- * A dot alone can't disqualify it — `release/1.2` and `v2.1` are ordinary ref
- * names, and rejecting them meant the flag was stripped while the ref sailed on
- * to `bun test` as a file filter, so the run both diffed the wrong base AND
- * selected the wrong tests. What actually distinguishes the two is that a bun
- * positional is a PATH: it names a test file or a directory that exists.
- */
-function looksLikeGitRef(token: string): boolean {
-	if (!/^[\w./~^@{}-]+$/.test(token) || token.includes('*')) return false
-	if (/\.(test|spec)\.[tj]sx?$/i.test(token)) return false
-	return !existsSync(token)
-}
 
 function isTruthy(value: string | undefined): boolean {
 	if (!value) return false

@@ -116,7 +116,13 @@ export const ScenarioFootprintSchema = z.object({
 	scenario: z.string(),
 	testFile: z.string().optional(),
 	collected: z.array(z.string()),
-	files: z.array(z.object({ path: z.string(), source: z.string(), executed: z.number().optional() })),
+	files: z.array(z.object({
+		path: z.string(),
+		source: z.string(),
+		executed: z.number().optional(),
+		/** Whether V8 saw code in the file CALLED. Absent = not measurable, not "no". */
+		exercised: z.boolean().optional(),
+	})),
 	components: z.array(z.string()),
 	requests: z.array(FootprintRequestSchema),
 	endpoints: z.array(z.object({ route: z.string(), methods: z.array(z.string()), count: z.number() })),

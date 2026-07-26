@@ -144,8 +144,10 @@ function repoRootAbove(from: string): string | null {
 }
 
 /**
- * Best-effort capture of the `*.test.ts` path that called `browserTest`, by
- * walking the stack for the first `.test.` frame. Reported so a failed
+ * Best-effort capture of the `*.test.ts` / `*.spec.ts` path that called
+ * `browserTest`, by walking the stack for the first such frame. Both spellings
+ * matter: bun runs either, and a scenario whose file isn't captured is indexed
+ * with no test file at all, so `--impacted` can never force-run it. Reported so a failed
  * scenario links back to its source file. Relative to the repository root when
  * there is one, so the same file reads the same however the run was invoked.
  */
@@ -153,7 +155,7 @@ function captureTestFile(): { relative: string; absolute: string } | undefined {
 	const stack = new Error().stack
 	if (!stack) return undefined
 	for (const line of stack.split('\n')) {
-		const match = line.match(/\(?((?:file:\/\/)?\/[^\s():]+\.test\.[tj]sx?)/)
+		const match = line.match(/\(?((?:file:\/\/)?\/[^\s():]+\.(?:test|spec)\.[tj]sx?)/)
 		if (match?.[1]) {
 			const abs = match[1].replace(/^file:\/\//, '')
 			try {

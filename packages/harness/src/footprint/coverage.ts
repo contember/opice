@@ -13,6 +13,7 @@
  * is telemetry; it must not be able to fail a test.
  */
 
+import { existsSync } from 'node:fs'
 import type { BrowserContext, Page } from 'playwright'
 import { isIgnored, type FootprintConfig } from './config.js'
 import { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
@@ -247,7 +248,13 @@ export function resolveSourcePath(
 	config: FootprintConfig,
 ): string | null {
 	const withRoot = joinSourceRoot(sourceRoot, raw)
-	if (!/^[a-z-]+:\/\//i.test(withRoot) && !withRoot.startsWith('/')) {
+	// A leading `/` is URL-rooted when the base is a URL (`sourceRoot: "/"` is
+	// common), NOT a host filesystem path — reading it as one produced
+	// `/src/App.tsx`, which matches nothing in a repo. Only skip URL resolution
+	// for a path that actually exists on this machine.
+	const rooted = withRoot.startsWith('/')
+	const isLocalPath = rooted && existsSync(withRoot)
+	if (!/^[a-z-]+:\/\//i.test(withRoot) && !isLocalPath) {
 		try {
 			const absolute = new URL(withRoot, scriptUrl)
 			const mapped = moduleUrlToSourcePath(absolute.href, config.sourceRoot)

@@ -139,6 +139,17 @@ function skipTrivia(text: string, i: number): number {
 	return i
 }
 
+/** Skip any `@directive(...)` sequence at `i`, returning the index after it. */
+function skipDirectives(text: string, from: number): number {
+	let i = skipTrivia(text, from)
+	while (text[i] === '@') {
+		const directive = readName(text, i + 1)
+		i = skipTrivia(text, directive.next)
+		if (text[i] === '(') i = skipTrivia(text, matchBlock(text, i, '(', ')'))
+	}
+	return i
+}
+
 /** Read a GraphQL name starting at `i`; returns the name and the index after it. */
 function readName(text: string, i: number): { name: string; next: number } {
 	let j = i
@@ -191,6 +202,11 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 				i = skipTrivia(body, next)
 				const typeName = readName(body, i)
 				i = skipTrivia(body, typeName.next)
+				// A directive may sit between the type condition and the selection set
+				// (`... on Query @include(if: $x) { … }`). Without skipping it, the
+				// fragment body is missed and the DIRECTIVE's name is recorded as a
+				// root field instead of the fields inside.
+				i = skipDirectives(body, i)
 				if (body[i] === '{') {
 					const end = matchBlock(body, i, '{', '}')
 					fields.push(...parseSelectionSet(body.slice(i + 1, end - 1), fragments, seen))
@@ -198,6 +214,8 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 				}
 				continue
 			}
+			// A named spread can carry directives too: `...Fields @skip(if: $x)`.
+			i = skipDirectives(body, skipTrivia(body, next))
 			if (name && !seen.has(name)) {
 				// Named spread: splice the fragment's own fields in, guarding against
 				// a cyclic document (illegal GraphQL, but we must not hang on one).
@@ -208,7 +226,6 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 					fields.push(...parseSelectionSet(fragmentBody, fragments, nested))
 				}
 			}
-			i = next
 			continue
 		}
 		if (!NAME_START_RE.test(body[i] as string)) {
@@ -228,11 +245,7 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 		if (body[i] === '(') {
 			i = skipTrivia(body, matchBlock(body, i, '(', ')'))
 		}
-		while (body[i] === '@') {
-			const directive = readName(body, i + 1)
-			i = skipTrivia(body, directive.next)
-			if (body[i] === '(') i = skipTrivia(body, matchBlock(body, i, '(', ')'))
-		}
+		i = skipDirectives(body, i)
 		let selection: string | undefined
 		if (body[i] === '{') {
 			const end = matchBlock(body, i, '{', '}')

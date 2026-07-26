@@ -40,6 +40,18 @@ describe('parseOperations', () => {
 		expect(ops[0]?.rootFields).toEqual(['getUser', 'listInvoice'])
 	})
 
+	test('skips a directive on an inline fragment', () => {
+		// Without skipping it, the fragment body is missed and `include` is recorded
+		// as the root field instead of what's inside.
+		const ops = parseOperations('query { ... on Query @include(if: true) { listUser { id } } }')
+		expect(ops[0]?.rootFields).toEqual(['listUser'])
+	})
+
+	test('skips a directive on a named spread', () => {
+		const ops = parseOperations('query Q { ...Fields @skip(if: false) } fragment Fields on Query { listInvoice { id } }')
+		expect(ops[0]?.rootFields).toEqual(['listInvoice'])
+	})
+
 	test('splices inline fragments too', () => {
 		const ops = parseOperations(`query { ... on Query { listArticle { id } } }`)
 		expect(ops[0]?.rootFields).toEqual(['listArticle'])
