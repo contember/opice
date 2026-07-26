@@ -7,6 +7,7 @@ import {
 	lineStartOffsets,
 	parseSourceMap,
 	readSourceMappingUrl,
+	UNMAPPED,
 } from './sourcemap.js'
 
 describe('lineStartOffsets', () => {
@@ -34,8 +35,31 @@ describe('decodeMappings', () => {
 		])
 	})
 
-	test('skips segments that carry no source', () => {
-		expect(decodeMappings('A', lineStartOffsets('abc'))).toEqual([])
+	// This used to assert that a source-less segment was dropped entirely, which
+	// was the bug: it is a BOUNDARY. Dropping it let the preceding mapping run on
+	// through bundler glue to the next real segment, and if V8 executed that glue
+	// the bytes were credited to a source file nothing had called — which then
+	// read `exercised` and was selected by every impact query.
+	test('records a source-less segment as an unmapped boundary', () => {
+		expect(decodeMappings('A', lineStartOffsets('abc'))).toEqual([
+			{ offset: 0, sourceIndex: UNMAPPED },
+		])
+	})
+
+	test('an unmapped boundary terminates the preceding mapping', () => {
+		// Segment 1 maps offset 0 to source 0; segment 2 (one field) is glue at
+		// offset 2; segment 3 maps offset 4 back to a source.
+		const mappings = decodeMappings('AAAA,E,EAAA', lineStartOffsets('abcdefgh'))
+		expect(mappings.map((m) => m.sourceIndex)).toEqual([0, UNMAPPED, 0])
+	})
+
+	test('unmapped bytes are attributed to no source', () => {
+		const mappings = decodeMappings('AAAA,E,EAAA', lineStartOffsets('abcdefgh'))
+		// One range covering everything: only the mapped spans should be counted.
+		const executed = executedBytesBySource(mappings, [{ start: 0, end: 8, count: 1 }])
+		expect(executed.has(UNMAPPED)).toBe(false)
+		// 0–2 and 4–8 are source 0; 2–4 is glue and belongs to nobody.
+		expect(executed.get(0)).toBe(6)
 	})
 
 	test('degrades rather than throwing on a malformed mappings string', () => {

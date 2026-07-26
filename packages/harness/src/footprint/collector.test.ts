@@ -174,3 +174,26 @@ describe('derivePartialDimensions — unreadable GraphQL documents', () => {
 		expect(derivePartialDimensions({ ...none, unreadableOperations: 1 })).toEqual(['models'])
 	})
 })
+
+// Coverage is JS-only. A production build with mappable JS and a bundled
+// stylesheet must not report the file dimension complete: every CSS source is
+// missing from it, so a later CSS change would select nothing.
+describe('derivePartialDimensions — bundled CSS has no second chance', () => {
+	const none = {
+		truncatedFiles: 0,
+		unmappableFiles: 0,
+		coverageFailed: false,
+		truncatedRequests: 0,
+		persistedQueries: 0,
+		mapperFailures: 0,
+	}
+
+	test('mappable JS plus unresolved CSS is still partial', () => {
+		// Coverage resolved every script (0), but one stylesheet stayed unnamed.
+		expect(derivePartialDimensions({ ...none, unmappableFiles: 1 })).toEqual(['files'])
+	})
+
+	test('everything resolved is complete', () => {
+		expect(derivePartialDimensions({ ...none, unmappableFiles: 0 })).toEqual([])
+	})
+})

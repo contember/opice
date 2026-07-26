@@ -76,8 +76,10 @@ export class FootprintCollector {
 	private truncatedRequests = 0
 	private truncatedFiles = 0
 	private persistedQueries = 0
-	/** Module requests whose source path could not be recovered — a bundle, not a dev server. */
-	private unmappableFiles = 0
+	/** Script requests whose source path could not be recovered — a bundle, not a dev server. Coverage may still resolve these. */
+	private unmappableScripts = 0
+	/** Stylesheet requests whose source could not be recovered. NOTHING else can resolve these — V8 coverage is JS-only. */
+	private unmappableStyles = 0
 	/** Operations whose user-supplied `mapOperation` threw; their models fell back to the built-in derivation. */
 	private mapperFailures = 0
 	/** Set when the coverage pass itself failed, so the file dimension can't claim completeness. */
@@ -187,7 +189,7 @@ export class FootprintCollector {
 		const url = request.url()
 		const resourceType = request.resourceType()
 		if (resourceType === 'script' || resourceType === 'stylesheet') {
-			this.recordModule(url)
+			this.recordModule(url, resourceType)
 			return
 		}
 		if (!isApiResourceType(resourceType)) return
@@ -208,7 +210,7 @@ export class FootprintCollector {
 	}
 
 	/** A dev server's module request doubles as the identity of a source file. */
-	private recordModule(url: string): void {
+	private recordModule(url: string, resourceType: 'script' | 'stylesheet'): void {
 		if (!this.isAppOrigin(url)) return
 		const mapped = moduleUrlToSourcePath(url, this.options.config.sourceRoot)
 		if (mapped.bundled) {
@@ -216,7 +218,14 @@ export class FootprintCollector {
 			// source paths. Recorded, not just warned, because "no files" from here
 			// means "could not tell", and the index must not mistake it for "touches
 			// no files" and delete what a dev-server run established.
-			this.unmappableFiles++
+			//
+			// Scripts and stylesheets are counted apart because only ONE of them has a
+			// second chance: V8 coverage resolves JS through its source maps and knows
+			// nothing about CSS. Folding them together let a build with mappable JS
+			// and a bundled stylesheet report the file dimension complete while every
+			// CSS source was missing from it.
+			if (resourceType === 'stylesheet') this.unmappableStyles++
+			else this.unmappableScripts++
 			this.warnings.add(
 				'the app under test is serving bundled assets — file-level footprint needs a dev server or source maps.',
 			)
@@ -437,9 +446,11 @@ export class FootprintCollector {
 		const partial = derivePartialDimensions({
 			truncatedFiles: this.truncatedFiles,
 			// What the MODULE collector could not name only counts against us when
-			// nothing else could name it either. If coverage ran, its own tally of
-			// unresolvable bundles is the accurate one and this is superseded.
-			unmappableFiles: this.coverageRan ? this.unmappedBundles : this.unmappableFiles,
+			// nothing else could name it either. For SCRIPTS, coverage is that
+			// second chance, so when it ran its own tally supersedes this one.
+			// Stylesheets have no second chance at all — coverage is JS-only — so
+			// their count always stands.
+			unmappableFiles: (this.coverageRan ? this.unmappedBundles : this.unmappableScripts) + this.unmappableStyles,
 			coverageFailed: this.coverageFailed,
 			truncatedRequests: this.truncatedRequests,
 			persistedQueries: this.persistedQueries,

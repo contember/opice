@@ -115,17 +115,31 @@ export function decodeMappings(mappings: string, lineStarts: number[]): Mapping[
 		i = next
 		if (values.length === 0) continue
 		generatedColumn += values[0] as number
+		const lineStart = lineStarts[generatedLine]
 		if (values.length >= 4) {
 			sourceIndex += values[1] as number
-			const lineStart = lineStarts[generatedLine]
 			if (lineStart !== undefined) {
 				out.push({ offset: lineStart + generatedColumn, sourceIndex })
 			}
+		} else if (lineStart !== undefined) {
+			// A one-field segment maps a generated position to NO source — bundler
+			// glue, a runtime helper, a module wrapper. It is a boundary, so it has
+			// to be recorded: dropping it lets the preceding mapping run on through
+			// the generated code to the next real segment, and if V8 executed that
+			// glue the bytes are credited to a source file that was never called —
+			// which then reads `exercised` and gets selected by every impact query.
+			out.push({ offset: lineStart + generatedColumn, sourceIndex: UNMAPPED })
 		}
 	}
 	out.sort((a, b) => a.offset - b.offset)
 	return out
 }
+
+/**
+ * Sentinel `sourceIndex` for a generated position that maps to no source at all.
+ * A real index is always >= 0, so this can never collide with one.
+ */
+export const UNMAPPED = -1
 
 export interface CoverageRange {
 	start: number
@@ -198,6 +212,8 @@ export function executedBytesBySource(mappings: readonly Mapping[], covered: rea
 			if (mapping.offset >= range.end) break
 			const from = Math.max(mapping.offset, range.start)
 			const to = Math.min(nextOffset, range.end)
+			// The boundary marker attributes to nothing — that is its whole purpose.
+			if (mapping.sourceIndex === UNMAPPED) continue
 			if (to > from) bySource.set(mapping.sourceIndex, (bySource.get(mapping.sourceIndex) ?? 0) + (to - from))
 		}
 	}
@@ -210,6 +226,7 @@ export function totalBytesBySource(mappings: readonly Mapping[], generatedLength
 	for (let i = 0; i < mappings.length; i++) {
 		const mapping = mappings[i] as Mapping
 		const nextOffset = i + 1 < mappings.length ? (mappings[i + 1] as Mapping).offset : generatedLength
+		if (mapping.sourceIndex === UNMAPPED) continue
 		const span = Math.max(0, nextOffset - mapping.offset)
 		bySource.set(mapping.sourceIndex, (bySource.get(mapping.sourceIndex) ?? 0) + span)
 	}
