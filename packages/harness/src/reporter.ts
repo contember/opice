@@ -454,15 +454,18 @@ class HttpReporter implements Reporter {
 			console.error(`[opice] footprint upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
 		}
 		// The footprint was stored, but the platform did NOT fold it into the
-		// change-tracking index — it only accepts CI runs of the default branch.
-		// Say so once: a team collecting footprints on a feature branch would
-		// otherwise watch `--impacted` report an empty index forever with no clue why.
+		// change-tracking index. Say so once — a team collecting footprints on a
+		// feature branch would otherwise watch `--impacted` report an empty index
+		// forever with no clue why — but say WHICH reason, because they are not
+		// alike. "Not the default branch" is a configuration question; "a run at
+		// least as new already indexed this" is the system working exactly as
+		// designed, and reporting that as a branch problem sends people to change
+		// settings that were never wrong.
 		if (result['indexed'] === false && !this.warnedNotIndexed) {
 			this.warnedNotIndexed = true
-			console.error(
-				'[opice] footprints are being stored but NOT indexed for change tracking — only a CI run of the '
-				+ 'default branch (main/master) may write the index, so `opice test --impacted` will not see them.',
-			)
+			const reason = typeof result['indexReason'] === 'string' ? result['indexReason'] : undefined
+			const explanation = INDEX_REASONS[reason ?? ''] ?? INDEX_REASONS['']
+			console.error(`[opice] footprints are being stored but NOT indexed for change tracking — ${explanation}`)
 		}
 	}
 
@@ -674,6 +677,25 @@ export function setReporter(reporter: Reporter): void {
  * `main` with reporting credentials would hand everyone else their local working
  * state as the authoritative answer.
  */
+/**
+ * What the platform's `indexReason` means, in the words the person reading a CI
+ * log needs. Only the first two are anything for them to act on.
+ */
+export const INDEX_REASONS: Record<string, string> = {
+	'not-ci': 'this is a local run, and only CI runs write the shared index.',
+	'not-default-branch': 'only a CI run of the default branch (main/master, or the project\'s configured trunk) '
+		+ 'may write the index, so `opice test --impacted` will not see these.',
+	'incomplete-walkthrough': 'the walkthrough did not finish, so this footprint covers only part of what the '
+		+ 'scenario reaches and must not replace what a complete run recorded.',
+	'no-commit-time': 'the run reports no commit timestamp, so there is nothing to order index writes by. '
+		+ 'Run through `opice test`, or set OPICE_COMMIT_TIME.',
+	'nothing-measured': 'no dimension was collected completely enough to speak for — see the footprint warnings.',
+	'already-current': 'a run of the same or a newer revision already indexed these scenarios. Nothing is wrong; '
+		+ 'the index is simply already current.',
+	'index-error': 'the platform failed to write the index. The footprints themselves were stored.',
+	'': 'only a CI run of the default branch may write the index, so `opice test --impacted` will not see these.',
+}
+
 export function isTruthyEnv(value: string | undefined): boolean {
 	if (!value) return false
 	const normalized = value.trim().toLowerCase()

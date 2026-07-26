@@ -444,11 +444,21 @@ async function fetchSourceMap(
 	try {
 		const response = await context.request.get(url, { timeout: SOURCE_MAP_TIMEOUT_MS, failOnStatusCode: false })
 		if (response.ok()) {
-			// Refuse from the DECLARED length first — checking after `body()` means
-			// the oversize object has already been buffered, which is the thing the
-			// cap exists to prevent.
+			// The length must be DECLARED, and it decides before `body()` is called.
+			// Playwright's APIResponse offers no streamed read, so `body()` buffers
+			// whatever arrives — a chunked response, or one with no length, is
+			// therefore unbounded and the caps above become decoration. Refusing it
+			// costs that bundle its attribution, which already reads as an
+			// unresolved bundle and keeps the file dimension partial: the honest
+			// outcome, and the only one that cannot exhaust the test process.
+			//
+			// A COMPRESSED response is the residual gap — the declared length is the
+			// compressed size while `body()` returns the decoded bytes, so a small
+			// declaration can still expand. It is bounded in practice by the
+			// compression ratio rather than by anything enforced here, and closing
+			// it properly needs a streaming read Playwright does not expose.
 			const declared = Number(response.headers()['content-length'] ?? '')
-			if (Number.isFinite(declared) && declared > MAX_SOURCE_MAP_BYTES) {
+			if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_SOURCE_MAP_BYTES) {
 				cache.set(url, null)
 				return { map: null, bytes: 0 }
 			}

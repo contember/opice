@@ -602,6 +602,12 @@ async function uploadFootprint(
 	// blob is stored either way.
 	const commitTime = run.commitTime ?? null
 	let indexed = false
+	// WHY a footprint wasn't indexed, for the reporter to relay. `indexed: false`
+	// alone covers cases that mean completely different things — a refused refresh
+	// of the same revision is the system working, a feature-branch run is a
+	// configuration question — and a client that can only see the boolean has to
+	// guess, which it did, wrongly and confidently.
+	let indexReason: string | null = null
 	// Re-read the project immediately before deciding. `project` was loaded before
 	// the body was parsed and the blob was written to R2, so it can be seconds
 	// stale — and `setProjectDefaultBranch` CLEARS the index when the trunk
@@ -611,13 +617,16 @@ async function uploadFootprint(
 	// gap between this read and the batch below rather than closing it outright:
 	// D1 cannot include the read in the same transaction.
 	const current = (await services.db.getProjectBySlug(project.slug)) ?? project
-	if (
-		complete
-		&& kinds.length > 0
-		&& commitTime !== null
-		&& run.source === 'ci'
-		&& isDefaultBranch(current, run.branch)
-	) {
+	const eligible = complete && kinds.length > 0 && commitTime !== null
+		&& run.source === 'ci' && isDefaultBranch(current, run.branch)
+	if (!eligible) {
+		if (run.source !== 'ci') indexReason = 'not-ci'
+		else if (!isDefaultBranch(current, run.branch)) indexReason = 'not-default-branch'
+		else if (!complete) indexReason = 'incomplete-walkthrough'
+		else if (commitTime === null) indexReason = 'no-commit-time'
+		else indexReason = 'nothing-measured'
+	}
+	if (eligible) {
 		try {
 			const replaced = await services.db.replaceFootprintEdges({
 				projectId: current.id,
@@ -641,13 +650,17 @@ async function uploadFootprint(
 			// False when a NEWER run already indexed this scenario — the write was
 			// correctly refused rather than having failed.
 			indexed = replaced.applied
+			// Applied=false here means a run at least as new already indexed this
+			// scenario — the guard working, not a failure.
+			if (!indexed) indexReason = 'already-current'
 		} catch (err) {
 			// The index is a derived convenience; the blob above is the record. A
 			// failure here degrades `--impacted`, it doesn't lose data.
+			indexReason = 'index-error'
 			console.error(`footprint indexing failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 		}
 	}
-	return json({ ok: !footprintFailed, footprintFailed, indexed })
+	return json({ ok: !footprintFailed, footprintFailed, indexed, ...(indexReason ? { indexReason } : {}) })
 }
 
 /**

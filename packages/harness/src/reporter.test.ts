@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ciBranch, ciCommit, isTruthyEnv, usableBranch } from './reporter'
+import { ciBranch, ciCommit, INDEX_REASONS, isTruthyEnv, usableBranch } from './reporter'
 
 // `source` is derived from this, and only a `ci` run of the default branch may
 // replace the shared change-tracking index — so a misread here hands everyone
@@ -119,5 +119,31 @@ describe('pull-request builds are never default-branch builds', () => {
 
 	test('a plain push build is unaffected', () => {
 		expect(ciBranch({ GITHUB_REF_NAME: 'main' } as NodeJS.ProcessEnv)).toBe('main')
+	})
+})
+
+// `indexed: false` covers cases that mean opposite things. Telling someone their
+// branch is misconfigured when the index is simply already current sends them to
+// change settings that were never wrong.
+describe('index reasons', () => {
+	test('every reason the worker can send has an explanation', () => {
+		const fromWorker = [
+			'not-ci', 'not-default-branch', 'incomplete-walkthrough',
+			'no-commit-time', 'nothing-measured', 'already-current', 'index-error',
+		]
+		for (const reason of fromWorker) {
+			expect(INDEX_REASONS[reason]).toBeTruthy()
+		}
+	})
+
+	test('an unknown or absent reason falls back', () => {
+		expect(INDEX_REASONS['']).toBeTruthy()
+		expect(INDEX_REASONS['something-new'] ?? INDEX_REASONS['']).toBe(INDEX_REASONS[''] as string)
+	})
+
+	// The two that mean "nothing is wrong" must not read as a problem.
+	test('already-current does not blame the branch', () => {
+		expect(INDEX_REASONS['already-current']).toContain('Nothing is wrong')
+		expect(INDEX_REASONS['already-current']).not.toContain('default branch')
 	})
 })
