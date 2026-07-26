@@ -181,7 +181,12 @@ export function gitPathsOrThrow(...args: string[]): string[] {
 export function defaultBase(): string {
 	const local = [
 		process.env['OPICE_IMPACT_BASE'],
-		process.env['GITHUB_BASE_REF'] ? `origin/${process.env['GITHUB_BASE_REF']}` : undefined,
+		// The PR's TARGET branch, from whichever provider is running us. A pull
+		// request against a non-default branch is common, and diffing it against
+		// origin/HEAD compares the wrong merge base — missing changes the PR made
+		// and inventing ones it didn't, so the selection is wrong in both
+		// directions. This is the one place a merge-request variable belongs.
+		prBaseBranch(),
 		// `origin/HEAD` before the guesses: it is a LOCAL ref, so it costs nothing,
 		// and it is the repository's own answer. A repo whose trunk is `develop`
 		// usually still has an `origin/main` lying around, and preferring the guess
@@ -202,6 +207,19 @@ export function defaultBase(): string {
 	const remote = remoteDefaultBranch()
 	if (remote && exists(remote)) return remote
 	return 'HEAD~1'
+}
+
+/** The branch a pull/merge request targets, as `origin/<name>`, if we're in one. */
+function prBaseBranch(): string | undefined {
+	const env = process.env
+	const name = env['GITHUB_BASE_REF'] // GitHub Actions
+		?? env['CI_MERGE_REQUEST_TARGET_BRANCH_NAME'] // GitLab CI
+		?? env['BUILDKITE_PULL_REQUEST_BASE_BRANCH'] // Buildkite
+		?? env['BITBUCKET_PR_DESTINATION_BRANCH'] // Bitbucket Pipelines
+		?? env['CHANGE_TARGET'] // Jenkins multibranch
+		?? env['DRONE_TARGET_BRANCH'] // Drone
+	const trimmed = name?.trim()
+	return trimmed ? `origin/${trimmed}` : undefined
 }
 
 /** `origin`'s default branch from the LOCAL symbolic ref — no network. */

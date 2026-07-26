@@ -721,6 +721,26 @@ export function ciBranch(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /**
+ * The commit SHA this CI provider reports, if any.
+ *
+ * Not cosmetic either: the worker groups bun's per-test-file runs by
+ * `commit_sha` to build a scenario inventory, so a null SHA collapses a whole
+ * suite to whichever single run was newest — and `unindexed` then reports zero
+ * while sibling files go uninventoried.
+ */
+export function ciCommit(env: NodeJS.ProcessEnv): string | undefined {
+	const value = env['GITHUB_SHA'] // GitHub Actions
+		?? env['CI_COMMIT_SHA'] // GitLab CI
+		?? env['BUILDKITE_COMMIT'] // Buildkite
+		?? env['CIRCLE_SHA1'] // CircleCI
+		?? env['GIT_COMMIT'] // Jenkins
+		?? env['DRONE_COMMIT_SHA'] // Drone
+		?? env['BITBUCKET_COMMIT'] // Bitbucket Pipelines
+		?? env['CF_PAGES_COMMIT_SHA'] // Cloudflare Pages
+	return value?.trim() || undefined
+}
+
+/**
  * The checked-out branch, straight from git. Resolved once, best-effort — the
  * last resort when neither the CLI nor a CI provider named one.
  */
@@ -820,7 +840,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		clientId,
 		clientSecret,
 		branch: env['OPICE_BRANCH'] ?? ciBranch(env) ?? gitBranch(),
-		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
+		commit: env['OPICE_COMMIT'] ?? ciCommit(env) ?? gitOutput(['rev-parse', 'HEAD']),
 		...(commitTime(env) !== undefined ? { commitTime: commitTime(env) } : {}),
 		source: isCI ? 'ci' : 'local',
 		// Record the selected tier only when one was explicitly requested — a run

@@ -78,17 +78,30 @@ function looksHashed(token: string): boolean {
  */
 const BUILD_OUTPUT_DIRS = new Set(['assets', 'static', 'dist', 'build', 'out', '_next', '_nuxt', '_astro', 'bundles'])
 
-/** Root-level bundle names that carry no directory hint at all. */
-const ROOT_BUNDLE_RE = /^\/(?:bundle|main|app|index|vendor|runtime|polyfills|chunk)(?:[.-][A-Za-z0-9_-]+)*\.(?:js|mjs|css)$/i
+/**
+ * Directories that hold build output in SOME projects and hand-written source in
+ * others. `/js/app.js` is a bundle; `/js/cart-utils.js` is very plausibly a
+ * source file in a plain-JS project. The directory alone cannot decide, so these
+ * are only treated as output when the FILENAME also looks like a bundle.
+ */
+const AMBIGUOUS_OUTPUT_DIRS = new Set(['js', 'css', 'scripts', 'styles'])
+
+/** Names a bundler produces: `app.js`, `main.css`, `vendor-2.js`, `runtime.mjs`. */
+const BUNDLE_NAME_RE = /^(?:bundle|main|app|index|vendor|runtime|polyfills|chunk|common)(?:[.-][A-Za-z0-9_-]+)*\.(?:js|mjs|css)$/i
 
 function isBuildOutput(pathname: string): boolean {
 	const extension = path.posix.extname(pathname).toLowerCase()
 	// Only ever true for BUILT extensions — a `.tsx` in any directory is source.
 	if (extension !== '.js' && extension !== '.mjs' && extension !== '.css') return false
-	if (ROOT_BUNDLE_RE.test(pathname)) return true
 	const segments = pathname.split('/').filter(Boolean)
+	const basename = segments[segments.length - 1] ?? ''
+	// A bundle-shaped name at the root has no directory to go on and needs none.
+	if (segments.length === 1) return BUNDLE_NAME_RE.test(basename)
+	const leading = (segments[0] ?? '').toLowerCase()
 	// The first segment only: `/assets/app.js` is output, `src/assets/icons.js` is not.
-	return segments.length > 1 && BUILD_OUTPUT_DIRS.has((segments[0] ?? '').toLowerCase())
+	if (BUILD_OUTPUT_DIRS.has(leading)) return true
+	// Both signals required, since neither is conclusive alone.
+	return AMBIGUOUS_OUTPUT_DIRS.has(leading) && BUNDLE_NAME_RE.test(basename)
 }
 
 export interface ModulePathResult {

@@ -157,3 +157,34 @@ describe('unhashed production bundles', () => {
 		expect(result.bundled).toBe(false)
 	})
 })
+
+describe('ambiguous js/css directories', () => {
+	// `/js` and `/css` hold build output in some projects and hand-written source
+	// in others, so the directory alone cannot decide — the filename has to agree.
+	test.each([
+		'/js/app.js',
+		'/css/app.css',
+		'/js/main.js',
+		'/scripts/bundle.js',
+		'/styles/main.css',
+		'/js/vendor-2.js',
+	])('%s is a bundle', (url) => {
+		expect(moduleUrlToSourcePath(`https://app.test${url}`).bundled).toBe(true)
+	})
+
+	test.each([
+		'/js/cart-utils.js',
+		'/js/checkout-form.js',
+		'/css/invoice-table.css',
+		'/scripts/analytics-consent.js',
+	])('%s is still source', (url) => {
+		const result = moduleUrlToSourcePath(`https://app.test${url}`)
+		expect(result.bundled).toBe(false)
+		expect(result.path).not.toBeNull()
+	})
+
+	// An unambiguous output directory needs no help from the filename.
+	test('a non-bundle name inside /assets is still output', () => {
+		expect(moduleUrlToSourcePath('https://app.test/assets/cart-utils.js').bundled).toBe(true)
+	})
+})
