@@ -1047,7 +1047,20 @@ export class Db {
 						-- ANCESTOR, and a scenario the real newer revision added would be
 						-- missing from it — so unindexed reads 0 and an empty impact
 						-- result looks authoritative.
-						ORDER BY (commit_depth IS NULL), commit_depth DESC,
+						-- Depth only when EVERY candidate has one. The guard in
+						-- replaceFootprintEdges compares a mixed pair by timestamp, so
+						-- ranking all depth-bearing runs above all null-depth ones would
+						-- disagree with it: a repo that switched to shallow checkouts
+						-- would keep choosing its last full-checkout run forever while
+						-- the edges moved on, and every scenario added since would be
+						-- missing from the inventory. Homogeneous metadata gets the
+						-- better key; mixed metadata gets the one both sides share.
+						ORDER BY (CASE WHEN (
+								SELECT COUNT(*) FROM runs d
+								WHERE d.project_id = ?1 AND d.source = 'ci'
+									AND (CASE WHEN ?3 IS NULL THEN d.branch IN ('main', 'master') ELSE d.branch = ?3 END)
+									AND d.commit_depth IS NULL
+							) = 0 THEN commit_depth ELSE NULL END) DESC,
 							(commit_time IS NULL), commit_time DESC, started_at DESC
 						LIMIT 1
 					), latest AS (

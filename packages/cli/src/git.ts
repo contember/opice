@@ -193,13 +193,6 @@ export function gitPathsOrThrow(...args: string[]): string[] {
  */
 export function defaultBase(): string {
 	const local = [
-		process.env['OPICE_IMPACT_BASE'],
-		// The PR's TARGET branch, from whichever provider is running us. A pull
-		// request against a non-default branch is common, and diffing it against
-		// origin/HEAD compares the wrong merge base — missing changes the PR made
-		// and inventing ones it didn't, so the selection is wrong in both
-		// directions. This is the one place a merge-request variable belongs.
-		prBaseBranch(),
 		// `origin/HEAD` before the guesses: it is a LOCAL ref, so it costs nothing,
 		// and it is the repository's own answer. A repo whose trunk is `develop`
 		// usually still has an `origin/main` lying around, and preferring the guess
@@ -210,6 +203,18 @@ export function defaultBase(): string {
 		'main',
 		'master',
 	].filter((c): c is string => !!c)
+	// An ANNOUNCED base is authoritative: if the environment named one, that is
+	// the question being asked, and answering a different one is worse than not
+	// answering. When the ref was never fetched, returning it anyway makes
+	// `changedPaths` fail, which `resolveImpact` turns into a warning and a
+	// fall back to the tier — a visibly unanswered query rather than a confident
+	// diff against `origin/main` that omits half the PR.
+	//
+	// The guesses below are only for when nobody said. `OPICE_IMPACT_BASE` is the
+	// operator's own word; the provider's PR target is the branch the request is
+	// actually against, which is very often not the default one.
+	const announced = process.env['OPICE_IMPACT_BASE'] ?? prBaseBranch()
+	if (announced) return announced
 	for (const candidate of local) {
 		if (exists(candidate)) return candidate
 	}

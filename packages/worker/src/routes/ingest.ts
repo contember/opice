@@ -4,7 +4,7 @@ import { indexableKinds, matchImpact, normalizeFootprint, scenarioKeyOf, summari
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
-import type { Project, Run, Scenario, ScenarioStatus, StepKind, StepStatus } from '../types'
+import type { Project, Run, Scenario, ScenarioStatus, StepKind, StepStatus, FootprintEdgeKind } from '../types'
 
 // Steps accept the tolerated fixme markers + 'pending' (a phase-1 stub); scenario
 // finish does not (a scenario is only ever passed/failed — fixme/pending surface
@@ -475,13 +475,22 @@ async function impact(request: Request, services: Services, project: Project): P
 	const includeLoaded = body.includeLoaded === true
 	const [edges, index] = await Promise.all([
 		services.db.listImpactEdges(project.id, includeLoaded),
-		// The dimensions THIS query depends on: paths match file and component
-		// edges, models match model edges. Asking about the others would report a
-		// gap the caller does not care about.
-		services.db.footprintIndexStatus(project.id, models.length > 0 ? ['file', 'model'] : ['file'], project.defaultBranch),
+		// The dimensions THIS query depends on. A changed PATH is matched against
+		// file edges by suffix AND against component and model edges by basename
+		// (see `matchEdge`), so all three decide whether an empty answer means
+		// "nothing is affected" or "never measured" — checking only files let a
+		// path whose sole relationship is an uncollected component report
+		// `unindexed: 0` and read as authoritative.
+		services.db.footprintIndexStatus(project.id, impactKinds(paths.length > 0, models.length > 0), project.defaultBranch),
 	])
 	const scenarios = matchImpact(edges, { paths, models, includeLoaded })
 	return json({ scenarios, index })
+}
+
+/** The edge kinds an impact query's answer depends on. */
+function impactKinds(hasPaths: boolean, hasModels: boolean): FootprintEdgeKind[] {
+	if (hasPaths) return ['file', 'component', 'model']
+	return hasModels ? ['model'] : ['file']
 }
 
 /**
@@ -565,10 +574,25 @@ async function uploadFootprint(
 	// blob is stored either way.
 	const commitTime = run.commitTime ?? null
 	let indexed = false
-	if (complete && kinds.length > 0 && commitTime !== null && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
+	// Re-read the project immediately before deciding. `project` was loaded before
+	// the body was parsed and the blob was written to R2, so it can be seconds
+	// stale — and `setProjectDefaultBranch` CLEARS the index when the trunk
+	// changes. An upload from the old branch that passed a stale check would then
+	// repopulate what was just cleared, and since impact reads don't filter edges
+	// by branch, that wrong data would stay live. This narrows the window to the
+	// gap between this read and the batch below rather than closing it outright:
+	// D1 cannot include the read in the same transaction.
+	const current = (await services.db.getProjectBySlug(project.slug)) ?? project
+	if (
+		complete
+		&& kinds.length > 0
+		&& commitTime !== null
+		&& run.source === 'ci'
+		&& isDefaultBranch(current, run.branch)
+	) {
 		try {
 			const replaced = await services.db.replaceFootprintEdges({
-				projectId: project.id,
+				projectId: current.id,
 				scenarioKey: scenarioKeyOf(scenario.testFile, scenario.name),
 				testFile: scenario.testFile,
 				scenarioName: scenario.name,
