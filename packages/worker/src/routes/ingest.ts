@@ -451,11 +451,15 @@ async function uploadFootprint(
 		console.error(`footprint upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 	}
 
-	// Two gates before this footprint may rewrite the shared index — it must come
-	// from CI, and from the default branch (see migration 0012 for why). The blob
-	// above is stored either way; only the index is restricted.
+	// Three gates before this footprint may rewrite the shared index. It must come
+	// from CI and from the default branch (see migration 0012 for why) — and the
+	// walkthrough must have COMPLETED. A scenario that failed part-way touched a
+	// prefix of what it covers, and edges are replaced wholesale, so indexing that
+	// prefix would delete the valid ones and quietly stop selecting the scenario
+	// for everything it never reached. The blob is stored regardless of all three.
+	const complete = new URL(request.url).searchParams.get('complete') !== 'false'
 	let indexed = false
-	if (run.source === 'ci' && isDefaultBranch(project, run.branch)) {
+	if (complete && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
 			await services.db.replaceFootprintEdges({
 				projectId: project.id,

@@ -20,6 +20,10 @@ export default {
 	async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
 		const services = buildServices(env)
 		ctx.waitUntil(services.db.reapStaleRuns())
+		// Edges are replaced per scenario, so a renamed or deleted scenario leaves
+		// rows nothing overwrites. Age them out here rather than letting the index
+		// grow forever and answer with test files that no longer exist.
+		ctx.waitUntil(services.db.pruneStaleFootprintEdges())
 	},
 }
 

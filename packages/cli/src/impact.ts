@@ -14,6 +14,7 @@
  * one can only ever add.
  */
 
+import { existsSync } from 'node:fs'
 import { parseOpiceDsn } from './dsn'
 import { changedPaths, defaultBase } from './git'
 
@@ -106,9 +107,18 @@ export async function queryImpact(
 	}
 }
 
-/** Test files of the impacted scenarios, deduplicated — what feeds `--select`. */
+/**
+ * Test files of the impacted scenarios, deduplicated — what feeds `--select`.
+ *
+ * Files that no longer exist are dropped. The index is keyed on a scenario's
+ * test file + name, so a renamed or deleted test leaves an entry behind until it
+ * ages out; passing that stale path to `--select` would be a selection nobody
+ * can act on. The working tree is the authority on what exists, and only the
+ * caller has it.
+ */
 export function impactedTestFiles(scenarios: readonly ImpactedScenario[]): string[] {
-	return [...new Set(scenarios.map((s) => s.testFile).filter((f): f is string => !!f))].sort()
+	const files = [...new Set(scenarios.map((s) => s.testFile).filter((f): f is string => !!f))].sort()
+	return files.filter((file) => existsSync(file))
 }
 
 /**

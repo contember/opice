@@ -358,7 +358,17 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				// be a real cost in the teardown budget.
 				const json = await writeFootprintFile(closed.footprint)
 				if (currentScenarioId) {
-					footprintUpload = reporter.uploadFootprint({ scenarioId: currentScenarioId, body: json })
+					// Whether the walkthrough got all the way through decides whether the
+					// platform may index this footprint. A scenario that died at step 3
+					// touched a PREFIX of what it covers, and the index replaces a
+					// scenario's edges wholesale — indexing a prefix would delete the
+					// valid ones and quietly stop selecting this scenario for the files
+					// it never reached. The blob is stored either way.
+					footprintUpload = reporter.uploadFootprint({
+						scenarioId: currentScenarioId,
+						body: json,
+						complete: currentScenarioFailures === 0,
+					})
 				}
 			}
 			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the

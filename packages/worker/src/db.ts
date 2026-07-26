@@ -25,9 +25,19 @@ const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id A
 // too). Generous — a slow scenario + screenshot upload must not trip it.
 export const STALE_RUN_MS = 10 * 60 * 1000
 
-// Rows per footprint-edge INSERT. D1 allows 100 bound parameters per query and
-// an edge binds 11, so 9 rows is the most that fits.
-const EDGES_PER_INSERT = 9
+// Edges per INSERT. They ride as one JSON parameter rather than as placeholders,
+// so this is bounded by statement size, not by D1's 100-parameter cap: 1000 keeps
+// each payload well under a hundred kilobytes while making even a 5000-edge
+// footprint five statements.
+const EDGES_PER_INSERT = 1000
+
+/**
+ * How long an unrefreshed index edge survives. Generous on purpose: an
+ * `extended`-tier scenario may only be exercised by an occasional full run, and
+ * pruning one that is merely infrequent would quietly narrow what `--impacted`
+ * selects.
+ */
+const EDGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 
 // Internal D1 row shapes — snake_case as the migration defines.
 interface ProjectRow {
@@ -759,37 +769,34 @@ export class Db {
 		const statements: D1PreparedStatement[] = [
 			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ? AND scenario_key = ?').bind(input.projectId, input.scenarioKey),
 		]
-		// Multi-row inserts, not one statement per edge: a single scenario indexes
-		// well over a thousand edges, and a nightly run does that for every scenario.
-		// D1 caps a query at 100 bound parameters, and seven of the eleven columns
-		// are the same on every row of a scenario, so batching by EDGES_PER_INSERT
-		// cuts the statement count by that factor.
+		// The edges travel as ONE json array parameter per statement, expanded by
+		// `json_each`, rather than as a row of placeholders each. A scenario indexes
+		// well over a thousand edges; at nine rows per INSERT that was ~180 queries
+		// for one scenario, which blows through the per-invocation D1 query limit
+		// (50 on the Workers Free plan) and leaves the index silently unwritten.
+		// This is a handful of statements no matter how large the footprint.
 		for (let i = 0; i < input.edges.length; i += EDGES_PER_INSERT) {
-			const chunk = input.edges.slice(i, i + EDGES_PER_INSERT)
-			const values = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
-			const bindings = chunk.flatMap((edge) => [
-				input.projectId,
-				input.scenarioKey,
-				input.testFile,
-				input.scenarioName,
-				edge.kind,
-				edge.value,
-				edge.writes ? 1 : 0,
-				edge.exercised === false ? 0 : 1,
-				input.runId,
-				input.branch,
-				now,
-			])
+			const payload = JSON.stringify(input.edges.slice(i, i + EDGES_PER_INSERT).map((edge) => ({
+				k: edge.kind,
+				v: edge.value,
+				w: edge.writes ? 1 : 0,
+				x: edge.exercised === false ? 0 : 1,
+			})))
 			statements.push(
 				this.d1
 					.prepare(
 						`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, writes, exercised, run_id, branch, updated_at)
-							VALUES ${values}
+							SELECT ?, ?, ?, ?,
+								json_extract(e.value, '$.k'), json_extract(e.value, '$.v'),
+								json_extract(e.value, '$.w'), json_extract(e.value, '$.x'),
+								?, ?, ?
+							FROM json_each(?) AS e
+							WHERE true
 							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
 								writes = excluded.writes, exercised = excluded.exercised,
 								run_id = excluded.run_id, branch = excluded.branch, updated_at = excluded.updated_at`,
 					)
-					.bind(...bindings),
+					.bind(input.projectId, input.scenarioKey, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
 			)
 		}
 		await this.d1.batch(statements)
@@ -819,6 +826,25 @@ export class Db {
 			.bind(projectId)
 			.all<FootprintEdgeRow>()
 		return results.map(toFootprintEdge)
+	}
+
+	/**
+	 * Drop index edges no run has refreshed in {@link EDGE_RETENTION_MS}.
+	 *
+	 * Edges are replaced per scenario, so a scenario that is renamed, moved to
+	 * another file or deleted leaves rows nothing will ever overwrite — the index
+	 * would grow without bound and keep answering with test files that no longer
+	 * exist. Age is the one signal available here: a scenario the default branch
+	 * hasn't exercised in three months describes an app three months gone, which
+	 * is worth less than nothing. Dropping it fails safe — `--impacted` only ever
+	 * ADDS to the tier, so a missing entry costs targeting, never coverage.
+	 */
+	async pruneStaleFootprintEdges(now = Date.now()): Promise<number> {
+		const result = await this.d1
+			.prepare('DELETE FROM footprint_edges WHERE updated_at < ?')
+			.bind(now - EDGE_RETENTION_MS)
+			.run()
+		return result.meta.changes ?? 0
 	}
 
 	/** How many edges the project has indexed, and when it was last refreshed. */

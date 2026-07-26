@@ -154,6 +154,11 @@ export interface FootprintUpload {
 	 * that runs to megabytes at the collector's caps.
 	 */
 	body: string
+	/**
+	 * Did the walkthrough finish without a failure? Only a complete footprint may
+	 * be indexed for change tracking — see the call site in `scenario.ts`.
+	 */
+	complete: boolean
 }
 
 export interface ScenarioFinish {
@@ -365,13 +370,16 @@ class HttpReporter implements Reporter {
 		body: BodyInit
 		contentType: string
 		timeoutMs: number
+		/** Appended to the URL, for the few facts that aren't part of the body. */
+		query?: Record<string, string>
 	}): Promise<Record<string, unknown> | null> {
 		// Resolve the run id first (cheap — memoized once the first scenario
 		// started). A rejected run-start is swallowed: no run ⇒ nothing to attach
 		// to, but it must never throw out of this best-effort path.
 		const runId = await this.ensureRun().catch(() => undefined)
 		if (!runId) return null
-		const path = `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/${input.kind}`
+		const search = input.query ? `?${new URLSearchParams(input.query).toString()}` : ''
+		const path = `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/${input.kind}${search}`
 		const call = `PUT ${path}`
 		try {
 			const response = await fetch(this.config.endpoint + path, {
@@ -430,6 +438,7 @@ class HttpReporter implements Reporter {
 			body: input.body,
 			contentType: 'application/json',
 			timeoutMs: REQUEST_TIMEOUT_MS,
+			query: { complete: String(input.complete) },
 		})
 		if (!result) return
 		if (result['footprintFailed'] === true) {

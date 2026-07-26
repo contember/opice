@@ -292,6 +292,18 @@ export class FootprintCollector {
 	 */
 	async finish(page: Page): Promise<ScenarioFootprint> {
 		this.dispose()
+		// Walk the component tree one last time before the page closes. The
+		// in-page walk is throttled, so whatever the scenario's LAST interaction
+		// rendered is normally still unwalked at this point — and a scenario ends
+		// with the context closing, not a navigation, so the page's own `pagehide`
+		// sweep would never fire.
+		if (this.collectors.has('components')) {
+			try {
+				await page.evaluate('window.__opiceFootprintSweep && window.__opiceFootprintSweep()')
+			} catch {
+				// Page already closed or navigating — the names we have are what we have.
+			}
+		}
 		const files = new Map<string, FootprintFile>(this.modules)
 		if (this.coverageStarted) {
 			try {

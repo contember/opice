@@ -48,8 +48,15 @@ function lines(cmd: string): string[] {
 export function changedPaths(base: string): string[] {
 	const paths = new Set<string>()
 	for (const cmd of [
-		`git diff --name-only ${shellQuote(base)}...HEAD`,
-		'git diff --name-only HEAD',
+		// `--no-renames` is load-bearing, not a style choice. With rename detection
+		// on, moving a file reports only its NEW path — but the index was built
+		// from a run of the default branch, where the file still had its OLD one.
+		// The scenario that uses it would then match nothing and quietly not run,
+		// on precisely the kind of change most likely to break it. Turning
+		// detection off reports the move as a delete + an add, so both paths are
+		// queried and the old one finds the edge.
+		`git diff --name-only --no-renames ${shellQuote(base)}...HEAD`,
+		'git diff --name-only --no-renames HEAD',
 		'git ls-files --others --exclude-standard',
 	]) {
 		for (const line of lines(cmd)) paths.add(line)
