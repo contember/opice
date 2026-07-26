@@ -80,6 +80,12 @@ const ROUTE_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,31}$/
  * uninterrupted token is a value — a lowercase ULID, a reset token, a session id
  * — and `isIdSegment` only recognises the ones that also mix case or are pure
  * hex, which left `/reset/abc123def456ghi789` intact.
+ *
+ * Applied at EVERY position, first segment included. `isIdSegment` spares the
+ * first segment because a numeric one there is far more likely to be a route
+ * (`/2024/archive`) than an id — that reasoning is about digits, not about
+ * opaque runs, and a single-use token handed out as `/<token>` is a perfectly
+ * ordinary shape.
  */
 const OPAQUE_RUN_RE = /^[A-Za-z0-9]{16,}$/
 
@@ -101,7 +107,7 @@ export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTempla
 	if (url.protocol === 'data:' || url.protocol === 'blob:' || url.protocol === 'about:') return null
 	const segments = url.pathname.split('/').filter(Boolean)
 	const templated = segments.map((segment, i) => {
-		if (i > 0 && OPAQUE_RUN_RE.test(segment)) return ':id'
+		if (OPAQUE_RUN_RE.test(segment)) return ':id'
 		return isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment
 	})
 	const path = '/' + templated.join('/')

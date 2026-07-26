@@ -339,10 +339,20 @@ export class Db {
 	 * could do about it. Null restores the main-or-master default.
 	 */
 	async setProjectDefaultBranch(projectId: number, branch: string | null): Promise<void> {
-		await this.d1
-			.prepare('UPDATE projects SET default_branch = ? WHERE id = ?')
-			.bind(branch?.trim() || null, projectId)
-			.run()
+		const next = branch?.trim() || null
+		const project = await this.getProjectById(projectId)
+		if (project && project.defaultBranch === next) return
+		// Changing the trunk invalidates everything indexed from the old one: those
+		// edges describe a branch this project no longer considers authoritative,
+		// and nothing filters them out on read, so they would keep answering impact
+		// queries until each scenario happened to be refreshed. Dropping them makes
+		// the index fail OPEN — `--impacted` reports it as empty and runs the tier
+		// alone — which is the honest state until a run of the new trunk fills it.
+		await this.d1.batch([
+			this.d1.prepare('UPDATE projects SET default_branch = ? WHERE id = ?').bind(next, projectId),
+			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ?').bind(projectId),
+			this.d1.prepare('DELETE FROM footprint_index_state WHERE project_id = ?').bind(projectId),
+		])
 	}
 
 	async getProjectBySlug(slug: string): Promise<Project | null> {

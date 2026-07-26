@@ -96,6 +96,14 @@ describe('redaction', () => {
 		expect(route(`${APP}/s/01h8xgjwbwbaq4z1e3t9k2m5np`)).toBe('/s/:id')
 	})
 
+	test('collapses an opaque token in the first segment too', () => {
+		// `isIdSegment` spares the first segment because a NUMERIC one there is
+		// usually a route (`/2024/archive`); that reasoning is about digits, and
+		// `/<single-use-token>` is an ordinary shape.
+		expect(route(`${APP}/abc123def456ghi789`)).toBe('/:id')
+		expect(route(`${APP}/2024/archive`)).toBe('/2024/archive')
+	})
+
 	test('still keeps ordinary route words', () => {
 		expect(route(`${APP}/api/v1/admin-dashboard-v2/unsubscribe_all`)).toBe('/api/v1/admin-dashboard-v2/unsubscribe_all')
 		expect(route(`${APP}/assets/manifest.json`)).toBe('/assets/manifest.json')

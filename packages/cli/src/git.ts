@@ -70,27 +70,35 @@ export function changedPaths(base: string): string[] {
  * knows its base branch, and that is the right thing to diff against.
  */
 export function defaultBase(): string {
-	const candidates = [
+	const local = [
 		process.env['OPICE_IMPACT_BASE'],
 		process.env['GITHUB_BASE_REF'] ? `origin/${process.env['GITHUB_BASE_REF']}` : undefined,
 		'origin/main',
 		'origin/master',
-		// The remote's OWN answer, for a repo whose trunk is `develop`, `trunk` or
-		// anything else. Asked after the common names only because it costs a git
-		// call; asked at all because the alternative below diffs a single commit,
-		// which on a multi-commit branch silently hides most of the change.
-		remoteDefaultBranch(),
 		'main',
 		'master',
 	].filter((c): c is string => !!c)
-	for (const candidate of candidates) {
-		if (gitLines(`git rev-parse --verify --quiet ${shellQuote(candidate)}`).length > 0) return candidate
+	for (const candidate of local) {
+		if (exists(candidate)) return candidate
 	}
+	// Only now ask the remote. It answers for a repo whose trunk is `develop`,
+	// `trunk` or anything else — but `git remote show origin` is a network and
+	// possibly an auth round trip, so it must not run on the common path where
+	// `origin/main` was sitting right there. Asked at all because the fallback
+	// below diffs a single commit, hiding most of a multi-commit branch.
+	const remote = remoteDefaultBranch()
+	if (remote && exists(remote)) return remote
 	return 'HEAD~1'
+}
+
+/** Does this ref resolve in the local repository? */
+function exists(ref: string): boolean {
+	return gitLines(`git rev-parse --verify --quiet ${shellQuote(ref)}`).length > 0
 }
 
 /** `origin`'s default branch (`origin/develop`), from the local ref or the remote. */
 function remoteDefaultBranch(): string | undefined {
+	// The local ref first — it's free and usually present after a normal clone.
 	const [symbolic] = gitLines('git symbolic-ref --quiet refs/remotes/origin/HEAD')
 	if (symbolic) return symbolic.replace(/^refs\/remotes\//, '')
 	const line = gitLines('git remote show origin').find((l) => l.includes('HEAD branch:'))
