@@ -117,3 +117,43 @@ describe('aggregation', () => {
 		expect(aggregateModels(requests)).toEqual([{ name: 'Invoice', write: true }])
 	})
 })
+
+describe('unhashed production bundles', () => {
+	// Not every bundle is hashed. Recording one as a source path is worse than
+	// recording nothing: the file dimension then claims completeness while holding
+	// a bundle filename, and replaces the real source edges with it.
+	test.each([
+		'/assets/app.js',
+		'/static/js/main.js',
+		'/dist/index.js',
+		'/build/app.css',
+		'/_next/app.js',
+		'/bundle.js',
+		'/main.js',
+		'/vendor.css',
+	])('%s is a bundle, not a source path', (url) => {
+		const result = moduleUrlToSourcePath(`https://app.test${url}`)
+		expect(result.bundled).toBe(true)
+		expect(result.path).toBeNull()
+	})
+
+	// A dev server serves the source TREE, and `assets` is a perfectly ordinary
+	// source directory when it isn't the leading one.
+	test.each([
+		'/src/main.js',
+		'/src/assets/icons.js',
+		'/app/components/Cart.tsx',
+		'/src/styles/app.css',
+		'/packages/ui/src/Button.tsx',
+	])('%s is still source', (url) => {
+		const result = moduleUrlToSourcePath(`https://app.test${url}`)
+		expect(result.bundled).toBe(false)
+		expect(result.path).not.toBeNull()
+	})
+
+	// Only built extensions are ever treated as output.
+	test('a .tsx inside a build directory is still source', () => {
+		const result = moduleUrlToSourcePath('https://app.test/assets/Cart.tsx')
+		expect(result.bundled).toBe(false)
+	})
+})

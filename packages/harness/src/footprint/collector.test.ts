@@ -156,3 +156,21 @@ describe('derivePartialDimensions — unreadable coverage and oversized bodies',
 		expect(derivePartialDimensions({ ...none, oversizedBodies: 1 })).toEqual(['models'])
 	})
 })
+
+describe('derivePartialDimensions — unreadable GraphQL documents', () => {
+	const none = {
+		truncatedFiles: 0,
+		unmappableFiles: 0,
+		coverageFailed: false,
+		truncatedRequests: 0,
+		persistedQueries: 0,
+		mapperFailures: 0,
+	}
+
+	// A GraphQL GET carrying `?query=…` is recognised as GraphQL, but Playwright
+	// reports no post data, so no document ever reaches the parser. Without this
+	// the models would read as an authoritative "none".
+	test('a request with no readable document costs the models', () => {
+		expect(derivePartialDimensions({ ...none, unreadableOperations: 1 })).toEqual(['models'])
+	})
+})

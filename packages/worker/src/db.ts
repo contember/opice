@@ -955,7 +955,20 @@ export class Db {
 	}
 
 	/** How many edges the project has indexed, and when it was last refreshed. */
-	async footprintIndexStatus(projectId: number): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
+	/**
+	 * `kinds` are the edge kinds the CALLER is about to query. A scenario counts as
+	 * unindexed when it has no state for one of them — not merely when it has no
+	 * state at all. Since freshness is tracked per kind, a scenario whose endpoints
+	 * were indexed by a network-only run but whose files never were has state, and
+	 * the old any-row test called it indexed. A source-file query would then return
+	 * zero matches alongside `unindexed: 0`, which the CLI reads as "nothing is
+	 * affected" rather than "this was never measured" — the exact false confidence
+	 * the count exists to prevent.
+	 */
+	async footprintIndexStatus(
+		projectId: number,
+		kinds: readonly FootprintEdgeKind[] = ['file'],
+	): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
 		const [indexed, missing] = await this.d1.batch<{ edges?: number; scenarios?: number; updated_at?: number | null; unindexed?: number }>([
 			// Scenario count and freshness come from the STATE table, not the edges: a
 			// scenario that legitimately touches nothing is recorded there and nowhere
@@ -995,12 +1008,16 @@ export class Db {
 					)
 					SELECT COUNT(*) AS unindexed FROM scenarios s
 					WHERE s.run_id IN (SELECT id FROM latest)
-						AND NOT EXISTS (
-							SELECT 1 FROM footprint_index_state st
-							WHERE st.project_id = ?1
-								AND st.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
+						AND EXISTS (
+							SELECT 1 FROM json_each(?2) AS k
+							WHERE NOT EXISTS (
+								SELECT 1 FROM footprint_index_state st
+								WHERE st.project_id = ?1
+									AND st.kind = k.value
+									AND st.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
+							)
 						)`)
-				.bind(projectId),
+				.bind(projectId, JSON.stringify([...new Set(kinds)])),
 		])
 		const counts = indexed?.results?.[0]
 		return {

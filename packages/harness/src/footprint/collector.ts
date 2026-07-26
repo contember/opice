@@ -90,6 +90,8 @@ export class FootprintCollector {
 	private componentsTruncated = false
 	/** GraphQL request bodies too large to scan, so their operations are unknown. */
 	private oversizedBodies = 0
+	/** GraphQL requests recognised but whose document never reached us (a GET with `?query=`). */
+	private unreadableOperations = 0
 	private disposed = false
 
 	private constructor(
@@ -262,6 +264,13 @@ export class FootprintCollector {
 		if (!looksLikeGraphql(pathname, body, contentType)) return []
 		const extracted = extractQueries(body, contentType)
 		this.persistedQueries += extracted.persisted
+		// A GraphQL request this recognises but whose document never reached us —
+		// a GET carrying `?query=…`, where Playwright reports no post data. It
+		// yields neither operations nor persisted-query evidence, so without this
+		// the models would silently read as "none", and an empty authoritative set
+		// would replace whatever a fuller run had indexed. The endpoint itself was
+		// observed perfectly well; only the models are unknown.
+		if (extracted.documents.length === 0 && extracted.persisted === 0) this.unreadableOperations++
 		const operations: FootprintOperation[] = []
 		for (const document of extracted.documents) {
 			const parseOptions = {
@@ -397,6 +406,11 @@ export class FootprintCollector {
 				`${this.oversizedBodies} GraphQL request(s) had a body too large to scan — their fields and models are not in this footprint.`,
 			)
 		}
+		if (this.unreadableOperations > 0) {
+			this.warnings.add(
+				`${this.unreadableOperations} GraphQL request(s) carried no readable document — their fields and models are not in this footprint.`,
+			)
+		}
 		if (this.componentsTruncated) {
 			this.warnings.add(
 				'the React tree exceeded the per-walk node cap — components past it are not in this footprint.',
@@ -432,6 +446,7 @@ export class FootprintCollector {
 			mapperFailures: this.mapperFailures,
 			componentsTruncated: this.componentsTruncated,
 			oversizedBodies: this.oversizedBodies,
+			unreadableOperations: this.unreadableOperations,
 		})
 		if (partial.length > 0) footprint.partial = partial
 		return footprint
@@ -523,6 +538,8 @@ export function derivePartialDimensions(signals: {
 	componentsTruncated?: boolean
 	/** GraphQL bodies too large to scan — their operations, and so their models, are unknown. */
 	oversizedBodies?: number
+	/** GraphQL requests whose document never reached the collector (a GET with `?query=`). */
+	unreadableOperations?: number
 }): FootprintDimension[] {
 	const partial = new Set<FootprintDimension>()
 	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
@@ -536,7 +553,12 @@ export function derivePartialDimensions(signals: {
 	// A persisted query is a perfectly visible endpoint whose document — and so
 	// whose models — never crossed the wire. Only the model side suffers, and the
 	// same is true of a mapper that threw.
-	if (signals.persistedQueries > 0 || signals.mapperFailures > 0 || (signals.oversizedBodies ?? 0) > 0) partial.add('models')
+	if (
+		signals.persistedQueries > 0
+		|| signals.mapperFailures > 0
+		|| (signals.oversizedBodies ?? 0) > 0
+		|| (signals.unreadableOperations ?? 0) > 0
+	) partial.add('models')
 	if (signals.componentsTruncated) partial.add('components')
 	return [...partial]
 }

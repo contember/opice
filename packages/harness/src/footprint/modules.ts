@@ -67,6 +67,30 @@ function looksHashed(token: string): boolean {
 	return /\d/.test(token) && /[a-z]/.test(token) && /[A-Z]/.test(token)
 }
 
+/**
+ * Directories that hold BUILD OUTPUT rather than source. A `.js` or `.css`
+ * served directly out of one of these is an artifact whatever its name, and its
+ * sources are only recoverable through a source map.
+ *
+ * Deliberately shallow: only the file's own directory chain from the root is
+ * considered, so a genuine source file at `src/assets/icons.ts` is untouched —
+ * it is the leading segment that says "this came out of a bundler".
+ */
+const BUILD_OUTPUT_DIRS = new Set(['assets', 'static', 'dist', 'build', 'out', '_next', '_nuxt', '_astro', 'bundles'])
+
+/** Root-level bundle names that carry no directory hint at all. */
+const ROOT_BUNDLE_RE = /^\/(?:bundle|main|app|index|vendor|runtime|polyfills|chunk)(?:[.-][A-Za-z0-9_-]+)*\.(?:js|mjs|css)$/i
+
+function isBuildOutput(pathname: string): boolean {
+	const extension = path.posix.extname(pathname).toLowerCase()
+	// Only ever true for BUILT extensions — a `.tsx` in any directory is source.
+	if (extension !== '.js' && extension !== '.mjs' && extension !== '.css') return false
+	if (ROOT_BUNDLE_RE.test(pathname)) return true
+	const segments = pathname.split('/').filter(Boolean)
+	// The first segment only: `/assets/app.js` is output, `src/assets/icons.js` is not.
+	return segments.length > 1 && BUILD_OUTPUT_DIRS.has((segments[0] ?? '').toLowerCase())
+}
+
 export interface ModulePathResult {
 	/** The repo-relative-ish source path, or null when this URL isn't project source. */
 	path: string | null
@@ -113,6 +137,17 @@ export function moduleUrlToSourcePath(rawUrl: string, sourceRoot?: string): Modu
 	const hashed = HASHED_CHUNK_RE.exec(pathname)
 	if (hashed && looksHashed(hashed[1] as string)) {
 		// A built bundle: its name says nothing about which sources went into it.
+		return { path: null, bundled: true }
+	}
+	if (isBuildOutput(pathname)) {
+		// Not every bundle is hashed — `/assets/app.js`, `/bundle.js`,
+		// `/static/js/main.js` are ordinary production output. Recording those as
+		// source paths is worse than recording nothing: the file dimension would
+		// then claim to be complete while holding a single bundle filename, and
+		// replace the real source edges with it, after which no source change
+		// selects the scenario again. Directory is the signal — a dev server
+		// serves the source TREE (`/src/components/Cart.tsx`), a build serves a
+		// handful of artifacts out of its output directory.
 		return { path: null, bundled: true }
 	}
 	if (absolute) {

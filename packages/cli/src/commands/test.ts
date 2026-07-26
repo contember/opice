@@ -95,7 +95,14 @@ export async function testCommand(args: string[]): Promise<number> {
 	// which is the single most obvious selection anyone expects. Git knows the
 	// current path, so it answers directly, and it answers even when the platform
 	// could not be reached at all.
-	const changedTests = impactedFlag.present ? changedTestFiles(impacted?.paths) : []
+	// The explicit base rides along: when the platform query fails, the fallback
+	// diff must still be against the ref the caller ASKED for. Recomputing against
+	// `defaultBase()` would answer a different question and could miss a test that
+	// only changed relative to the custom base — defeating the fallback exactly
+	// when it is the only thing left.
+	const changedTests = impactedFlag.present
+		? changedTestFiles(impacted?.paths, impactedFlag.value)
+		: []
 	const select = [explicitSelect, ...impactedFiles, ...changedTests].filter(Boolean).join(',') || undefined
 	if (changedTests.length > 0) {
 		console.error(`[opice] --impacted: ${changedTests.length} changed test file(s) selected directly from the diff.`)
@@ -285,14 +292,14 @@ function warn(message: string): void {
 }
 
 /** `*.test.*` / `*.spec.*` among the changed paths, deduplicated and still present. */
-function changedTestFiles(known?: readonly string[]): string[] {
+function changedTestFiles(known?: readonly string[], base?: string): string[] {
 	let paths = known
 	if (!paths) {
 		// `--impacted` could not run its query (no credentials, no platform), but
 		// the diff is local and free — the selection still only ADDS, so answering
 		// this half is strictly better than answering neither.
 		try {
-			paths = changedPaths(defaultBase())
+			paths = changedPaths(base ?? defaultBase())
 		} catch {
 			return []
 		}

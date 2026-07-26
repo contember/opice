@@ -395,7 +395,10 @@ async function impact(request: Request, services: Services, project: Project): P
 	const includeLoaded = body.includeLoaded === true
 	const [edges, index] = await Promise.all([
 		services.db.listImpactEdges(project.id, includeLoaded),
-		services.db.footprintIndexStatus(project.id),
+		// The dimensions THIS query depends on: paths match file and component
+		// edges, models match model edges. Asking about the others would report a
+		// gap the caller does not care about.
+		services.db.footprintIndexStatus(project.id, models.length > 0 ? ['file', 'model'] : ['file']),
 	])
 	const scenarios = matchImpact(edges, { paths, models, includeLoaded })
 	return json({ scenarios, index })
