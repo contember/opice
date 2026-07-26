@@ -149,7 +149,7 @@ function repoRootAbove(from: string): string | null {
  * scenario links back to its source file. Relative to the repository root when
  * there is one, so the same file reads the same however the run was invoked.
  */
-function captureTestFile(): string | undefined {
+function captureTestFile(): { relative: string; absolute: string } | undefined {
 	const stack = new Error().stack
 	if (!stack) return undefined
 	for (const line of stack.split('\n')) {
@@ -159,9 +159,9 @@ function captureTestFile(): string | undefined {
 			try {
 				const base = repoRootAbove(path.dirname(abs)) ?? process.cwd()
 				const rel = path.relative(base, abs)
-				return rel.startsWith('..') ? abs : rel.split(path.sep).join('/')
+				return { relative: rel.startsWith('..') ? abs : rel.split(path.sep).join('/'), absolute: abs }
 			} catch {
-				return abs
+				return { relative: abs, absolute: abs }
 			}
 		}
 	}
@@ -317,7 +317,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		throw new Error('opice: browserTest requires a `name` in its metadata — browserTest({ name: "…" }, fn).')
 	}
 	const reporter = getReporter()
-	const testFile = captureTestFile()
+	const captured = captureTestFile()
+	const testFile = captured?.relative
 	const { describe, beforeAll, afterAll, test } = bunTest()
 	// An async fn is the walkthrough body (browserTest owns its test()); a sync
 	// fn is the legacy registrar (it registers its own test()/hooks).
@@ -368,7 +369,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				if (meta.setup) await meta.setup()
 				// Body form opens the browser per attempt (in the test wrapper);
 				// the legacy registrar shares one browser, launched here once.
-				if (!isBody) await openScenario(meta, testFile)
+				if (!isBody) await openScenario(meta, captured)
 			} catch (e) {
 				// Setup failed before any step ran. bun:test does NOT run afterAll
 				// when beforeAll throws, so the scenario started above would otherwise
@@ -535,7 +536,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioBlocked = 0
 				currentWalkthroughCompleted = false
 				try {
-					await openScenario(meta, testFile)
+					await openScenario(meta, captured)
 				} catch (e) {
 					// Setup failed: record it (afterAll finishes the scenario) and fail
 					// the attempt so bun retries or, once spent, leaves the run red.
@@ -593,7 +594,7 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
  * scenario URL. `launchPage()` closes any previous context first, so calling
  * this again (a retry attempt) tears down the failed attempt's page cleanly.
  */
-async function openScenario(meta: BrowserTestMeta, testFile?: string): Promise<void> {
+async function openScenario(meta: BrowserTestMeta, testFile?: { relative: string; absolute: string }): Promise<void> {
 	// Pass the scenario name so an opt-in video recording is saved under a
 	// readable, scenario-named file (see OPICE_VIDEO in context.ts). The roles
 	// drive which stored session (if any) seeds the context, so the scenario can
@@ -603,7 +604,11 @@ async function openScenario(meta: BrowserTestMeta, testFile?: string): Promise<v
 	// name the file its scenario lives in (that pair is the key the platform's
 	// impact index is built on).
 	const base = meta.url ?? PLAYGROUND_URL
-	const page = await launchPage(meta.name, { roles: meta.roles, baseUrl: base, ...(testFile ? { testFile } : {}) })
+	const page = await launchPage(meta.name, {
+		roles: meta.roles,
+		baseUrl: base,
+		...(testFile ? { testFile: testFile.relative, testFileDir: path.dirname(testFile.absolute) } : {}),
+	})
 	// Repo-level context setup (browser-setup.ts) runs before the first
 	// navigation, so an addInitScript it registers fires before the app's own
 	// scripts on first paint.

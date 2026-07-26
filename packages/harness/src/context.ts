@@ -197,7 +197,14 @@ async function getBrowser(): Promise<Browser> {
  */
 export async function launchPage(
 	label?: string,
-	opts?: { roles?: string[]; baseUrl?: string; testFile?: string },
+	opts?: {
+		roles?: string[]
+		baseUrl?: string
+		/** Repo-relative path, recorded on the footprint. */
+		testFile?: string
+		/** ABSOLUTE directory of that test — where a `browser-footprint.ts` is looked up. */
+		testFileDir?: string
+	},
 ): Promise<Page> {
 	if (context) {
 		// A leftover context is a discarded attempt (a retry relaunches here): drop
@@ -245,10 +252,12 @@ export async function launchPage(
 		collector = await FootprintCollector.attach(context, page, {
 			scenario: label ?? 'scenario',
 			mode,
-			// Resolved from the TEST's directory, not the cwd: in a monorepo run from
-			// the repo root, a package's own `browser-footprint.ts` sits beside its
-			// tests and would otherwise never be found.
-			config: await loadFootprintConfig(opts?.testFile ? path.dirname(path.resolve(opts.testFile)) : undefined),
+			// Resolved from the TEST's own directory, not the cwd: in a monorepo run
+			// from the repo root, a package's `browser-footprint.ts` sits beside its
+			// tests and would otherwise never be found. The directory arrives already
+			// absolute — `testFile` is repo-relative, so resolving THAT against the
+			// cwd would duplicate the package prefix when the run started inside it.
+			config: await loadFootprintConfig(opts?.testFileDir),
 			...(opts?.testFile ? { testFile: opts.testFile } : {}),
 			...(opts?.baseUrl ? { baseUrl: opts.baseUrl } : {}),
 		})

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -209,12 +210,18 @@ function looksLikeReportPath(s: string): boolean {
 }
 
 /**
- * Does this token look like the git ref `--impacted` diffs against? Only a
- * ref-shaped word is consumed, so `opice test --impacted tests/foo.test.ts`
- * still passes the file through to bun instead of treating it as a base.
+ * Does this token look like the git ref `--impacted` diffs against?
+ *
+ * A dot alone can't disqualify it — `release/1.2` and `v2.1` are ordinary ref
+ * names, and rejecting them meant the flag was stripped while the ref sailed on
+ * to `bun test` as a file filter, so the run both diffed the wrong base AND
+ * selected the wrong tests. What actually distinguishes the two is that a bun
+ * positional is a PATH: it names a test file or a directory that exists.
  */
-function looksLikeGitRef(s: string): boolean {
-	return !s.includes('.') && !s.includes('*') && /^[\w./~^-]+$/.test(s)
+function looksLikeGitRef(token: string): boolean {
+	if (!/^[\w./~^@{}-]+$/.test(token) || token.includes('*')) return false
+	if (/\.(test|spec)\.[tj]sx?$/i.test(token)) return false
+	return !existsSync(token)
 }
 
 function isTruthy(value: string | undefined): boolean {

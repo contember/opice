@@ -109,7 +109,12 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		// this module" from reading the same as "this scenario used it".
 		const exercised = flattenRanges(exercisedRanges(entry.functions)).filter((r) => r.count > 0)
 		const source = entry.source
-		const sourceMap = source ? await resolveSourceMap(entry.url, source, context, mapCache) : null
+		const resolved = source ? await resolveSourceMap(entry.url, source, context, mapCache) : null
+		const sourceMap = resolved?.map ?? null
+		// Sources are resolved against the MAP's URL, per the source-map spec — a
+		// map served from a different directory or origin than its script would
+		// otherwise produce paths that match nothing in the repo.
+		const mapBase = resolved?.url ?? entry.url
 
 		if (sourceMap && source) {
 			const lineStarts = lineStartOffsets(source)
@@ -120,10 +125,10 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 			for (const [index, bytes] of executed) {
 				const raw = sourceMap.sources[index]
 				if (raw === undefined) continue
-				const resolved = resolveSourcePath(raw, sourceMap.sourceRoot, entry.url, config)
-				if (!resolved || isIgnored(resolved, config.ignore)) continue
+				const path = resolveSourcePath(raw, sourceMap.sourceRoot, mapBase, config)
+				if (!path || isIgnored(path, config.ignore)) continue
 				const total = totals.get(index) ?? bytes
-				record(byPath, resolved, total > 0 ? Math.min(1, bytes / total) : 1, (exercisedBySource.get(index) ?? 0) > 0)
+				record(byPath, path, total > 0 ? Math.min(1, bytes / total) : 1, (exercisedBySource.get(index) ?? 0) > 0)
 			}
 			continue
 		}
@@ -301,17 +306,22 @@ async function resolveSourceMap(
 	source: string,
 	context: BrowserContext,
 	cache: Map<string, RawSourceMap | null>,
-): Promise<RawSourceMap | null> {
+): Promise<{ map: RawSourceMap; url: string } | null> {
 	const reference = readSourceMappingUrl(source)
 	if (!reference) return null
-	if (reference.startsWith('data:')) return decodeInlineSourceMap(reference)
+	if (reference.startsWith('data:')) {
+		// An inline map travels with the script, so the script IS its base.
+		const map = decodeInlineSourceMap(reference)
+		return map ? { map, url: scriptUrl } : null
+	}
 	let absolute: string
 	try {
 		absolute = new URL(reference, scriptUrl).href
 	} catch {
 		return null
 	}
-	return fetchSourceMap(absolute, context, cache)
+	const map = await fetchSourceMap(absolute, context, cache)
+	return map ? { map, url: absolute } : null
 }
 
 /** Fetch + parse one source map, memoized (including the failure) in `cache`. */
