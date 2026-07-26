@@ -28,10 +28,24 @@ export async function impactCommand(args: string[]): Promise<number> {
 		{ ...(config?.project ? { project: config.project } : {}), ...(config?.endpoint ? { endpoint: config.endpoint } : {}) },
 		{ ...(base ? { base } : {}), models, includeLoaded },
 	)
+	// Null means the query could not be ANSWERED — no credentials, an unreachable
+	// platform, an index that was never built. `resolved.empty` means it was
+	// answered and the answer is "nothing changed", which is a success with no
+	// output.
 	if (!resolved) return 1
+	if (resolved.empty && !asJson) return 0
 
 	if (asJson) {
-		console.log(JSON.stringify({ base: resolved.base, paths: resolved.paths, testFiles: resolved.files, ...resolved.result }, null, '\t'))
+		// `empty` is carried through so a consumer can tell "nothing changed" from
+		// "nothing was ever indexed" — the `index` counts below are placeholders
+		// when no query was made.
+		console.log(JSON.stringify({
+			base: resolved.base,
+			paths: resolved.paths,
+			testFiles: resolved.files,
+			...(resolved.empty ? { empty: true } : {}),
+			...resolved.result,
+		}, null, '\t'))
 	} else {
 		for (const file of resolved.files) console.log(file)
 	}

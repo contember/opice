@@ -687,12 +687,42 @@ function warnStrictNoop(why: string): void {
 
 /** Commit timestamp in ms, from `OPICE_COMMIT_TIME` (seconds or ms). */
 function commitTime(env: NodeJS.ProcessEnv): number | undefined {
-	const raw = env['OPICE_COMMIT_TIME']
+	const raw = env['OPICE_COMMIT_TIME'] ?? gitCommitTime()
 	if (!raw) return undefined
 	const n = Number(raw)
 	if (!Number.isFinite(n) || n <= 0) return undefined
 	// git's `%ct` is seconds; accept either and normalize to ms.
 	return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+}
+
+/**
+ * The HEAD commit's timestamp, straight from git. Resolved once, best-effort.
+ *
+ * `opice test` injects OPICE_COMMIT_TIME, but a plain `bun test` in CI is a
+ * supported path and sets nothing — and the platform refuses to index a
+ * footprint it cannot order by revision, because ordering by wall clock lets a
+ * re-run of an old workflow overwrite a newer commit's edges. Asking git costs
+ * one process at startup and keeps that path working; where git isn't there, the
+ * answer is simply undefined and the footprint goes unindexed rather than wrong.
+ */
+let cachedCommitTime: string | undefined | null
+function gitCommitTime(): string | undefined {
+	if (cachedCommitTime === undefined) {
+		cachedCommitTime = null
+		try {
+			// Required lazily: this module is imported under plain Node by the
+			// authoring daemon, and there is no reason to pay for it until asked.
+			const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+			const out = execFileSync('git', ['show', '-s', '--format=%ct', 'HEAD'], {
+				encoding: 'utf-8',
+				stdio: ['ignore', 'pipe', 'ignore'],
+			}).trim()
+			if (out) cachedCommitTime = out
+		} catch {
+			// No git, no checkout, no HEAD — all fine, all mean "cannot order this".
+		}
+	}
+	return cachedCommitTime ?? undefined
 }
 
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {

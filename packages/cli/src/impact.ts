@@ -237,6 +237,18 @@ export interface ResolvedImpact {
 	/** Test files of the impacted scenarios — what feeds `--select`. */
 	files: string[]
 	result: ImpactResult
+	/**
+	 * True when nothing changed, so the platform was never asked. The empty
+	 * selection is then a real answer rather than a failure — and `result.index`
+	 * carries no information, since no query was made.
+	 */
+	empty?: boolean
+}
+
+/** Placeholder index status for an answer produced without querying. */
+const EMPTY_RESULT: ImpactResult = {
+	scenarios: [],
+	index: { edges: 0, scenarios: 0, updatedAt: null, unindexed: 0 },
 }
 
 /**
@@ -263,8 +275,12 @@ export async function resolveImpact(
 	const paths = changedPaths(base)
 	const models = options.models ?? []
 	if (paths.length === 0 && models.length === 0) {
+		// A clean tree is an ANSWER, not a failure: nothing changed, so nothing is
+		// impacted. Distinguished from the failures below so `opice impact` can
+		// exit 0 — it is documented as pipeable, and a non-zero exit kills the
+		// pipeline under `set -e` for a query that worked perfectly.
 		console.error(`[opice] ${label}: no changes against ${base}.`)
-		return null
+		return { base, paths: [], files: [], result: EMPTY_RESULT, empty: true }
 	}
 	const queryOptions = { paths, models, ...(options.includeLoaded ? { includeLoaded: true } : {}) }
 	const result = await queryImpact(credentials, queryOptions)

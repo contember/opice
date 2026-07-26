@@ -475,8 +475,17 @@ async function uploadFootprint(
 	// A completed walkthrough still only speaks for the dimensions it actually
 	// measured; with none of them there is nothing to index.
 	const kinds = indexableKinds(footprint)
+	// Without a commit time there is nothing to order these writes BY. Falling
+	// back to the run's start time orders them by wall clock, which is precisely
+	// the failure commit-time ordering exists to prevent: re-running an older
+	// workflow gives it a fresh start time but not a fresh commit, so it would
+	// sail past the freshness guard and replace a newer commit's edges. Refusing
+	// costs that scenario a refresh until the next run reports one; accepting
+	// silently rolls the index back. The response says `indexed: false`, and the
+	// blob is stored either way.
+	const commitTime = run.commitTime ?? null
 	let indexed = false
-	if (complete && kinds.length > 0 && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
+	if (complete && kinds.length > 0 && commitTime !== null && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
 			const replaced = await services.db.replaceFootprintEdges({
 				projectId: project.id,
@@ -485,9 +494,10 @@ async function uploadFootprint(
 				scenarioName: scenario.name,
 				runId: run.id,
 				branch: run.branch,
-				// The COMMIT's time, falling back to the run's start when a client
-				// doesn't report one — see migration 0012.
-				runStartedAt: run.commitTime ?? run.startedAt,
+				// The COMMIT's time. Guaranteed present by the `orderable` gate above —
+				// a run without one is never indexed at all, rather than ordered by
+				// wall clock. See migration 0012.
+				runStartedAt: commitTime,
 				// Only the dimensions this run actually measured, whole. A run that saw
 				// no files (network mode against a bundle, no source maps) must not
 				// delete the file edges a fuller run established — that would shrink
