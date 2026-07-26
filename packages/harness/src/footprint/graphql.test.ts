@@ -254,3 +254,25 @@ describe('looksLikeGraphql body size', () => {
 		expect(looksLikeGraphql('/graphql', undefined)).toBe(true)
 	})
 })
+
+// The oversized-body path can only consult the path and content type — the body
+// is precisely what it is declining to read.
+describe('looksLikeGraphql without a body', () => {
+	test('a /graphql path is enough', () => {
+		expect(looksLikeGraphql('/api/graphql', undefined)).toBe(true)
+	})
+
+	test('an application/graphql content type is enough', () => {
+		expect(looksLikeGraphql('/api/content', undefined, 'application/graphql')).toBe(true)
+	})
+
+	// A large file upload must not read as GraphQL: counting it would mark the
+	// model dimension partial for a scenario that lost no GraphQL at all.
+	test.each([
+		['/api/uploads', 'multipart/form-data; boundary=x'],
+		['/files', 'application/octet-stream'],
+		['/api/content', 'application/json'],
+	])('%s with %s is not GraphQL', (pathname, contentType) => {
+		expect(looksLikeGraphql(pathname, undefined, contentType)).toBe(false)
+	})
+})

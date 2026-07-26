@@ -291,17 +291,21 @@ export class FootprintCollector {
 		} catch {
 			return []
 		}
-		if (body && body.length > MAX_BODY_BYTES) {
-			// A mutation carrying a large variable or an upload. The endpoint stays
-			// perfectly visible; only the document — and so the models — is unread,
-			// which is the same shape of loss as a persisted query.
-			this.oversizedBodies++
-			return []
-		}
 		// The content type is half the detection: a raw `application/graphql` body
 		// carries neither a /graphql path nor a JSON "query" key, so without it such
 		// a request records no operations at all.
 		const contentType = request.headers()['content-type']
+		if (body && body.length > MAX_BODY_BYTES) {
+			// Too large to scan. Whether that COSTS us anything depends on what it
+			// was: only the path and the content type can say, since the body is the
+			// thing we are declining to read. A GraphQL endpoint means a document we
+			// lost — the same shape as a persisted query, and the models go partial.
+			// Anything else is a file upload, and counting it would mark the model
+			// dimension partial for a scenario that never lost any GraphQL at all,
+			// freezing its model edges for good.
+			if (looksLikeGraphql(pathname, undefined, contentType)) this.oversizedBodies++
+			return []
+		}
 		if (!looksLikeGraphql(pathname, body, contentType)) return []
 		const extracted = extractQueries(body, contentType)
 		this.persistedQueries += extracted.persisted
