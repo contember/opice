@@ -235,12 +235,20 @@ export function totalBytesBySource(mappings: readonly Mapping[], generatedLength
 
 /** The `//# sourceMappingURL=` of a generated file, or null. */
 export function readSourceMappingUrl(source: string): string | null {
-	// Search the tail — the comment is at the end, and scanning megabytes of
-	// bundle for it on every script is wasted work.
-	const tail = source.slice(Math.max(0, source.length - 2000))
+	// Anchored on the LAST occurrence of the marker rather than on a fixed-size
+	// tail. An INLINE map is a `data:` URI holding the whole source map — tens or
+	// hundreds of kilobytes — so a 2 KB window landed inside the base64 payload,
+	// past the `sourceMappingURL=` that introduces it, and the reference was
+	// missed entirely. `lastIndexOf` is a native scan and costs far less than the
+	// megabytes of bundle it walks.
+	const marker = source.lastIndexOf('sourceMappingURL')
+	if (marker === -1) return null
+	// A few characters back for the `//#` or `/*@` that must precede it.
+	const from = Math.max(0, marker - 8)
 	const match = /[#@]\s*sourceMappingURL\s*=\s*(\S+)/g
 	let last: RegExpExecArray | null = null
 	let current: RegExpExecArray | null
+	const tail = source.slice(from)
 	while ((current = match.exec(tail)) !== null) last = current
 	return last?.[1] ?? null
 }

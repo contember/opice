@@ -153,3 +153,26 @@ describe('source map discovery', () => {
 		expect(parseSourceMap('not json')).toBeNull()
 	})
 })
+
+describe('readSourceMappingUrl', () => {
+	test('finds an ordinary external reference', () => {
+		expect(readSourceMappingUrl('code();\n//# sourceMappingURL=app.js.map')).toBe('app.js.map')
+	})
+
+	// An inline map is a data: URI holding the entire source map. A fixed 2 KB
+	// window landed inside the base64 payload, past the marker that introduces it.
+	test('finds an inline data URI far longer than 2 KB', () => {
+		const payload = 'A'.repeat(50_000)
+		const source = `code();\n//# sourceMappingURL=data:application/json;base64,${payload}`
+		expect(readSourceMappingUrl(source)).toBe(`data:application/json;base64,${payload}`)
+	})
+
+	test('takes the LAST reference when a bundle carries several', () => {
+		const source = '//# sourceMappingURL=first.map\ncode();\n//# sourceMappingURL=second.map'
+		expect(readSourceMappingUrl(source)).toBe('second.map')
+	})
+
+	test('is null when there is no reference', () => {
+		expect(readSourceMappingUrl('just some code')).toBeNull()
+	})
+})

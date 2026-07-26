@@ -407,7 +407,15 @@ async function uploadVideo(
 	const scenario = await services.db.getScenario(scenarioId)
 	if (!scenario || scenario.runId !== runId) return notFound('scenario not found')
 	const declared = Number(request.headers.get('content-length') ?? '')
-	if (Number.isFinite(declared) && declared > MAX_VIDEO_BYTES) {
+	// R2 will not accept a stream whose length it doesn't know, so the header is
+	// REQUIRED rather than merely checked. The reporter always sends it; refusing
+	// the rest is deliberate — the alternative is buffering an undeclared body to
+	// find out how big it is, which at this cap peaks past the Worker's memory
+	// allowance and kills the invocation.
+	if (!Number.isFinite(declared) || declared <= 0) {
+		return badRequest('video upload requires a content-length header')
+	}
+	if (declared > MAX_VIDEO_BYTES) {
 		return badRequest(`video too large (${declared} bytes > ${MAX_VIDEO_BYTES})`)
 	}
 	if (!request.body) return badRequest('empty video body')
@@ -420,7 +428,11 @@ async function uploadVideo(
 		// replayed), which is the right trade here: the video is best-effort
 		// telemetry exactly like a screenshot, and a failed one is already logged
 		// without reddening the run.
-		await services.runAssets.put(key, limitStream(request.body, MAX_VIDEO_BYTES), {
+		//
+		// FixedLengthStream, not a bare TransformStream: R2 rejects a stream of
+		// unknown length outright, and `pipeThrough` erases the length the request
+		// body came with.
+		await services.runAssets.put(key, limitedBody(request.body, declared), {
 			httpMetadata: { contentType: 'video/webm' },
 		})
 		await services.db.attachVideo(scenarioId, key)
@@ -432,24 +444,40 @@ async function uploadVideo(
 }
 
 /**
- * Pass a stream through, failing it the moment it exceeds `maxBytes`.
+ * A known-length stream carrying at most `declared` bytes.
  *
- * The cap has to hold for a body that declared no length — a chunked upload can
- * claim nothing and send anything. Erroring the stream aborts the R2 write
- * rather than letting an unbounded object through.
+ * R2 needs the length up front, which `pipeThrough` on a TransformStream throws
+ * away — that is why this uses `FixedLengthStream`, whose readable side keeps it.
+ * A body that sends MORE than it declared fails the write rather than
+ * overrunning: the runtime enforces the declared length, and the count here
+ * makes the reason explicit in the log.
  */
-function limitStream(body: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {
+function limitedBody(body: ReadableStream<Uint8Array>, declared: number): ReadableStream<Uint8Array> {
+	const fixed = new FixedLengthStream(declared)
+	void pump(body, fixed.writable, declared)
+	return fixed.readable
+}
+
+async function pump(body: ReadableStream<Uint8Array>, sink: WritableStream<Uint8Array>, limit: number): Promise<void> {
+	const writer = sink.getWriter()
+	const reader = body.getReader()
 	let total = 0
-	return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-		transform(chunk, controller) {
-			total += chunk.byteLength
-			if (total > maxBytes) {
-				controller.error(new Error(`video exceeds ${maxBytes} bytes`))
-				return
-			}
-			controller.enqueue(chunk)
-		},
-	}))
+	try {
+		for (;;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			if (!value) continue
+			total += value.byteLength
+			if (total > limit) throw new Error(`video exceeds its declared ${limit} bytes`)
+			await writer.write(value)
+		}
+		await writer.close()
+	} catch (err) {
+		await writer.abort(err).catch(() => {})
+		await reader.cancel().catch(() => {})
+	} finally {
+		reader.releaseLock()
+	}
 }
 
 /** Most changed paths one impact query will consider. A diff past this is a rewrite, not a change. */
