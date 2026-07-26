@@ -275,11 +275,6 @@ export async function resolveImpact(
 	options: { base?: string; models?: string[]; includeLoaded?: boolean; label?: string } = {},
 ): Promise<ResolvedImpact | null> {
 	const label = options.label ?? 'impact'
-	const credentials = resolveImpactCredentials(config)
-	if (!credentials) {
-		warn(`${label} needs a platform credential — set OPICE_READ_DSN (preferred) or OPICE_DSN.`)
-		return null
-	}
 	const base = options.base ?? defaultBase()
 	let paths: string[]
 	try {
@@ -297,6 +292,10 @@ export async function resolveImpact(
 		return null
 	}
 	const models = options.models ?? []
+	// The diff comes FIRST, and credentials are demanded only once a query is
+	// actually needed. With nothing changed the answer is already known — "no
+	// changes reach anything" — and refusing to give it for want of a credential
+	// we were never going to use turns a clean checkout into an exit 1.
 	if (paths.length === 0 && models.length === 0) {
 		// A clean tree is an ANSWER, not a failure: nothing changed, so nothing is
 		// impacted. Distinguished from the failures below so `opice impact` can
@@ -304,6 +303,11 @@ export async function resolveImpact(
 		// pipeline under `set -e` for a query that worked perfectly.
 		console.error(`[opice] ${label}: no changes against ${base}.`)
 		return { base, paths: [], files: [], result: EMPTY_RESULT, empty: true }
+	}
+	const credentials = resolveImpactCredentials(config)
+	if (!credentials) {
+		warn(`${label} needs a platform credential — set OPICE_READ_DSN (preferred) or OPICE_DSN.`)
+		return null
 	}
 	const queryOptions = { paths, models, ...(options.includeLoaded ? { includeLoaded: true } : {}) }
 	const result = await queryImpact(credentials, queryOptions)
@@ -323,15 +327,18 @@ export async function resolveImpact(
 	console.error(`[opice] ${label}: ${paths.length} changed path(s) against ${base} → ${result.scenarios.length} scenario(s) in ${files.length} file(s).`)
 	for (const scenario of result.scenarios) console.error(`[opice]   ${explainSelection(scenario)}`)
 	// A populated index is not necessarily a COMPLETE one: a scenario that has
-	// never finished a footprint run has no edges, so a change touching only that
-	// scenario matches nothing and looks exactly like "nothing is affected". Say
-	// which it is — the selection still only adds, so this is a warning, not a
-	// refusal, but an empty answer from a partial index shouldn't read as certain.
-	if (result.index.unindexed > 0 && result.scenarios.length === 0) {
+	// never finished a footprint run has no edges, so a change touching it matches
+	// nothing. Warned whether or not other scenarios matched — a non-empty answer
+	// from a partial index is just as incomplete as an empty one, and the matched
+	// subset reads as the whole answer unless something says otherwise. The
+	// selection still only adds, so this is a warning rather than a refusal.
+	if (result.index.unindexed > 0) {
+		const shape = result.scenarios.length === 0
+			? 'this empty answer may mean "unknown" rather than "nothing is affected"'
+			: 'an affected one among them would be missing from this answer'
 		warn(
-			`${label}: ${result.index.unindexed} known scenario(s) have no footprint yet, so this empty answer `
-			+ 'may mean "unknown" rather than "nothing is affected". Re-run the suite with `opice test --footprint` '
-			+ 'on the default branch to close the gap.',
+			`${label}: ${result.index.unindexed} known scenario(s) have no footprint yet, so ${shape}. `
+			+ 'Re-run the suite with `opice test --footprint` on the default branch to close the gap.',
 		)
 	}
 	return { base, paths, files, result }
