@@ -46,10 +46,15 @@ export const COMPONENT_SCRIPT = `(() => {
     var pendingRoot = null;
     var THROTTLE_MS = 250;
     var MAX_NODES = 20000;
+    // Set once the node cap has cut a walk short. Reported alongside the names,
+    // because a capped walk means the component list is a SAMPLE — and the index
+    // replaces a scenario's component edges wholesale, so it must not treat a
+    // sample as the whole set.
+    var truncated = false;
     var flush = function () {
-      if (pending.length === 0) return;
+      if (pending.length === 0 && !truncated) return;
       var batch = pending.splice(0, pending.length);
-      try { window.${COMPONENT_BINDING} && window.${COMPONENT_BINDING}(batch); } catch (e) {}
+      try { window.${COMPONENT_BINDING} && window.${COMPONENT_BINDING}({ names: batch, truncated: truncated }); } catch (e) {}
     };
     var nameOf = function (type) {
       if (!type) return null;
@@ -67,7 +72,8 @@ export const COMPONENT_SCRIPT = `(() => {
       var node = fiber;
       // Iterative traversal — a deep tree would blow the stack, and this runs
       // inside the app's commit.
-      while (node && count < MAX_NODES) {
+      while (node) {
+        if (count >= MAX_NODES) { truncated = true; break; }
         count++;
         var type = node.elementType || node.type;
         // Only functions and objects may enter the WeakSet. React's built-ins

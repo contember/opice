@@ -82,6 +82,12 @@ export class FootprintCollector {
 	private mapperFailures = 0
 	/** Set when the coverage pass itself failed, so the file dimension can't claim completeness. */
 	private coverageFailed = false
+	/** Set once the coverage pass has returned — its verdict on bundles supersedes the module collector's. */
+	private coverageRan = false
+	/** Bundles coverage could not resolve to sources, from its own source-map pass. */
+	private unmappedBundles = 0
+	/** Set when the in-page fiber walk hit its node cap, so the component list is a sample. */
+	private componentsTruncated = false
 	private disposed = false
 
 	private constructor(
@@ -130,10 +136,15 @@ export class FootprintCollector {
 		// Component names: the binding must exist before the init script runs, or
 		// the page's first flush lands on an undefined function.
 		try {
-			await this.context.exposeBinding(COMPONENT_BINDING, (_source, names: unknown) => {
+			await this.context.exposeBinding(COMPONENT_BINDING, (_source, payload: unknown) => {
+				// A bare array is the older shape; the object carries the cap signal.
+				const names = Array.isArray(payload) ? payload : (payload as { names?: unknown })?.names
 				if (!Array.isArray(names)) return
 				for (const name of names) {
 					if (typeof name === 'string' && name) this.components.add(name)
+				}
+				if (!Array.isArray(payload) && (payload as { truncated?: unknown })?.truncated === true) {
+					this.componentsTruncated = true
 				}
 			})
 			await this.context.addInitScript(COMPONENT_SCRIPT)
@@ -339,6 +350,12 @@ export class FootprintCollector {
 		if (this.coverageStarted) {
 			try {
 				const coverage = await collectJsCoverage(page, this.context, this.options.config)
+				// Coverage is the authority on whether a bundle was resolvable: it is
+				// the pass that reads the source maps. `unmappableFiles` below only
+				// counts what the MODULE collector couldn't name, which for a bundled
+				// app is every script — including the ones coverage then maps perfectly.
+				this.coverageRan = true
+				this.unmappedBundles = coverage.unmappedBundles
 				for (const file of coverage.files) {
 					if (files.size >= MAX_FILES && !files.has(file.path)) {
 						this.truncatedFiles++
@@ -363,6 +380,11 @@ export class FootprintCollector {
 		if (this.truncatedFiles > 0) {
 			this.warnings.add(`${this.truncatedFiles} file(s) dropped — the per-scenario cap of ${MAX_FILES} was reached.`)
 		}
+		if (this.componentsTruncated) {
+			this.warnings.add(
+				'the React tree exceeded the per-walk node cap — components past it are not in this footprint.',
+			)
+		}
 		if (this.persistedQueries > 0) {
 			this.warnings.add(
 				`${this.persistedQueries} persisted GraphQL request(s) carried only a hash — their fields and models are not in this footprint.`,
@@ -383,11 +405,15 @@ export class FootprintCollector {
 		// The same facts as the warnings above, in a form a consumer can act on.
 		const partial = derivePartialDimensions({
 			truncatedFiles: this.truncatedFiles,
-			unmappableFiles: this.unmappableFiles,
+			// What the MODULE collector could not name only counts against us when
+			// nothing else could name it either. If coverage ran, its own tally of
+			// unresolvable bundles is the accurate one and this is superseded.
+			unmappableFiles: this.coverageRan ? this.unmappedBundles : this.unmappableFiles,
 			coverageFailed: this.coverageFailed,
 			truncatedRequests: this.truncatedRequests,
 			persistedQueries: this.persistedQueries,
 			mapperFailures: this.mapperFailures,
+			componentsTruncated: this.componentsTruncated,
 		})
 		if (partial.length > 0) footprint.partial = partial
 		return footprint
@@ -460,7 +486,12 @@ function message(err: unknown): string {
 export function derivePartialDimensions(signals: {
 	/** Files dropped past the per-scenario cap. */
 	truncatedFiles: number
-	/** Module requests whose source path could not be recovered — a bundle, not a dev server. */
+	/**
+	 * Files nothing could name. When coverage ran, this is ITS count of
+	 * unresolvable bundles — the module collector cannot name a bundled script by
+	 * definition, so its own tally would condemn every production app, including
+	 * the ones whose source maps resolve perfectly.
+	 */
 	unmappableFiles: number
 	/** The coverage pass was started and then failed. */
 	coverageFailed: boolean
@@ -470,6 +501,8 @@ export function derivePartialDimensions(signals: {
 	persistedQueries: number
 	/** Operations whose user-supplied `mapOperation` threw. */
 	mapperFailures: number
+	/** The in-page React walk hit its node cap, so the component list is a sample. */
+	componentsTruncated?: boolean
 }): FootprintDimension[] {
 	const partial = new Set<FootprintDimension>()
 	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
@@ -484,6 +517,7 @@ export function derivePartialDimensions(signals: {
 	// whose models — never crossed the wire. Only the model side suffers, and the
 	// same is true of a mapper that threw.
 	if (signals.persistedQueries > 0 || signals.mapperFailures > 0) partial.add('models')
+	if (signals.componentsTruncated) partial.add('components')
 	return [...partial]
 }
 

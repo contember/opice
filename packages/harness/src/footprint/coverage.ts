@@ -77,6 +77,14 @@ export async function startJsCoverage(page: Page): Promise<boolean> {
 export interface CoverageResult {
 	files: FootprintFile[]
 	warnings: string[]
+	/**
+	 * Scripts whose sources could not be recovered — bundles with no usable source
+	 * map. The caller needs this as a NUMBER, not as warning prose: it is what
+	 * separates "this app has no file-level footprint" from "coverage read the
+	 * bundle's source map and resolved it fine", and only the latter may replace
+	 * the index's file edges.
+	 */
+	unmappedBundles: number
 }
 
 /**
@@ -92,7 +100,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 	try {
 		entries = await page.coverage.stopJSCoverage()
 	} catch (err) {
-		return { files: [], warnings: [`JS coverage could not be read: ${message(err)}`] }
+		return { files: [], warnings: [`JS coverage could not be read: ${message(err)}`], unmappedBundles: 0 }
 	}
 	/** path → what we learned about it; the strongest claim wins if a file appears twice. */
 	const byPath = new Map<string, { executed: number; exercised: boolean }>()
@@ -180,7 +188,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		exercised: seen.exercised,
 	}))
 	files.sort((a, b) => a.path.localeCompare(b.path))
-	return { files, warnings }
+	return { files, warnings, unmappedBundles }
 }
 
 interface FileCoverage {

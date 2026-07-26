@@ -662,6 +662,22 @@ export function setReporter(reporter: Reporter): void {
  * the user asked for "fail if reporting fails" and is instead getting no
  * reporting at all, which strict can't catch.
  */
+/**
+ * Is this environment variable set to something meaning YES?
+ *
+ * `CI=false` is a string, and a plain truthiness test reads it as true. That is
+ * not a cosmetic bug: `source` is derived from this, and only a `ci` run of the
+ * default branch may replace the shared change-tracking index. A developer whose
+ * shell exports `CI=false` — a common way to say "I am not CI" — sitting on
+ * `main` with reporting credentials would hand everyone else their local working
+ * state as the authoritative answer.
+ */
+export function isTruthyEnv(value: string | undefined): boolean {
+	if (!value) return false
+	const normalized = value.trim().toLowerCase()
+	return normalized !== '' && normalized !== 'false' && normalized !== '0' && normalized !== 'no' && normalized !== 'off'
+}
+
 function warnStrictNoop(why: string): void {
 	console.error(
 		`[opice] OPICE_REPORT_STRICT is set but ${why} — strict reporting has no effect `
@@ -714,7 +730,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	// get the CLI's POST /finish, so they'd sit there as "running" forever).
 	// CI reports automatically; OPICE_REPORT=always forces it locally, =never
 	// silences it everywhere.
-	const isCI = !!(env['CI'] || env['GITHUB_ACTIONS'])
+	const isCI = isTruthyEnv(env['CI']) || isTruthyEnv(env['GITHUB_ACTIONS'])
 	const mode = (env['OPICE_REPORT'] ?? 'auto').toLowerCase()
 	const shouldReport = mode === 'never' ? false : mode === 'always' ? true : isCI
 	if (!shouldReport) {

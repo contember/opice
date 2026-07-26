@@ -88,3 +88,48 @@ describe('derivePartialDimensions', () => {
 		expect(partial.sort()).toEqual(['endpoints', 'files', 'models'])
 	})
 })
+
+// Regression: a production bundle WITH working source maps must still index.
+// The module collector cannot name a bundled script by definition, so taking its
+// word for it marked every such app's files partial and file-based impact
+// selection could never populate.
+describe('derivePartialDimensions — bundles with usable source maps', () => {
+	const none = {
+		truncatedFiles: 0,
+		unmappableFiles: 0,
+		coverageFailed: false,
+		truncatedRequests: 0,
+		persistedQueries: 0,
+		mapperFailures: 0,
+	}
+
+	test('a bundle coverage resolved is not partial', () => {
+		// Coverage ran and reported zero unresolvable bundles.
+		expect(derivePartialDimensions({ ...none, unmappableFiles: 0 })).toEqual([])
+	})
+
+	test('a bundle coverage could NOT resolve is partial', () => {
+		expect(derivePartialDimensions({ ...none, unmappableFiles: 7 })).toEqual(['files'])
+	})
+})
+
+describe('derivePartialDimensions — component walk cap', () => {
+	const none = {
+		truncatedFiles: 0,
+		unmappableFiles: 0,
+		coverageFailed: false,
+		truncatedRequests: 0,
+		persistedQueries: 0,
+		mapperFailures: 0,
+	}
+
+	// A React tree past the node cap stops being walked, so the names collected
+	// are a sample — and component edges are replaced wholesale.
+	test('a capped fiber walk makes components partial', () => {
+		expect(derivePartialDimensions({ ...none, componentsTruncated: true })).toEqual(['components'])
+	})
+
+	test('an uncapped walk vouches for components', () => {
+		expect(derivePartialDimensions({ ...none, componentsTruncated: false })).toEqual([])
+	})
+})
