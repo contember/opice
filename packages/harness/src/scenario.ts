@@ -254,6 +254,12 @@ let currentScenarioFailures = 0
 // Un-authored phase-1 stubs (no body, NO reason) — a genuine skeleton awaiting
 // opice-author. These trigger the "skeleton / body did NOT run" warning.
 let currentScenarioPending = 0
+// Steps whose body threw but whose failure was TOLERATED (`step.fixme` /
+// `invariant.fixme`). They don't fail the scenario — that is the point — but the
+// throw means the step stopped early, so whatever it would have touched next is
+// missing from the footprint. Counted separately so completeness can exclude it
+// without changing pass/fail.
+let currentScenarioTolerated = 0
 // Intentional `.blocked` stubs (no body, but WITH a reason — the feature or
 // environment the step needs isn't available). The body around them DID run;
 // these must NOT be mistaken for an un-authored skeleton.
@@ -347,6 +353,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			currentScenarioPending = 0
 			currentScenarioBlocked = 0
 			currentScenarioFailures = 0
+			currentScenarioTolerated = 0
 			currentScenarioStepSeq = 0
 			currentAttempt = 0
 			// Reset for EVERY scenario, both forms. The body wrapper resets it too,
@@ -442,6 +449,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 						&& currentWalkthroughCompleted
 						&& currentScenarioFailures === 0
 						&& currentScenarioPending === 0
+						&& currentScenarioTolerated === 0
 					if (!complete && !isBody) warnLegacyFootprint()
 					footprintUpload = reporter.uploadFootprint({
 						scenarioId: currentScenarioId,
@@ -533,6 +541,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				attempt++
 				currentAttempt = attempt
 				currentScenarioFailures = 0
+				currentScenarioTolerated = 0
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0

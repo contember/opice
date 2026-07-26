@@ -42,6 +42,24 @@ export function gitLines(cmd: string): string[] {
 }
 
 /**
+ * Run a git command that emits NUL-separated paths (`-z`), returning them raw.
+ *
+ * Path output must never go through {@link gitLines}: with git's default
+ * `core.quotePath=true`, a non-ASCII name comes back C-quoted —
+ * `"P\305\231ehled.tsx"` for `Přehled.tsx` — while the footprint holds the
+ * decoded name, so the file would match nothing and its scenarios would silently
+ * not run. `-z` sidesteps the quoting entirely and also survives paths
+ * containing newlines.
+ */
+export function gitPaths(cmd: string): string[] {
+	try {
+		return run(cmd).split('\0').filter(Boolean)
+	} catch {
+		return []
+	}
+}
+
+/**
  * The paths a branch changed, relative to `base`.
  *
  * Uses the three-dot form (`base...HEAD`), i.e. everything since the merge base
@@ -52,6 +70,7 @@ export function gitLines(cmd: string): string[] {
 export function changedPaths(base: string): string[] {
 	const paths = new Set<string>()
 	for (const cmd of [
+		// `-z` for the path output — see {@link gitPaths}.
 		// `--no-renames` is load-bearing, not a style choice. With rename detection
 		// on, moving a file reports only its NEW path — but the index was built
 		// from a run of the default branch, where the file still had its OLD one.
@@ -59,11 +78,11 @@ export function changedPaths(base: string): string[] {
 		// on precisely the kind of change most likely to break it. Turning
 		// detection off reports the move as a delete + an add, so both paths are
 		// queried and the old one finds the edge.
-		`git diff --name-only --no-renames ${shellQuote(base)}...HEAD`,
-		'git diff --name-only --no-renames HEAD',
-		'git ls-files --others --exclude-standard',
+		`git diff --name-only --no-renames -z ${shellQuote(base)}...HEAD`,
+		'git diff --name-only --no-renames -z HEAD',
+		'git ls-files --others --exclude-standard -z',
 	]) {
-		for (const line of gitLines(cmd)) paths.add(line)
+		for (const path of gitPaths(cmd)) paths.add(path)
 	}
 	return [...paths]
 }

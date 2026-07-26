@@ -17,7 +17,7 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { parseOpiceDsn } from './dsn'
-import { changedPaths, defaultBase, gitLines } from './git'
+import { changedPaths, defaultBase, gitLines, gitPaths } from './git'
 
 /** How the platform describes its own index, so an empty answer can be explained. */
 export interface ImpactIndexStatus {
@@ -103,7 +103,8 @@ export async function queryImpact(
 			console.error(`[opice] impact query failed: ${response.status} ${(await response.text()).trim()}`)
 			return null
 		}
-		return (await response.json()) as ImpactResult
+		// falls through to the validated parse below
+		return asImpactResult(await response.json())
 	} catch (err) {
 		console.error(`[opice] impact query failed: ${err instanceof Error ? err.message : String(err)}`)
 		return null
@@ -152,7 +153,8 @@ function repoRoot(): string | null {
 /** Every tracked file, repo-relative. Resolved once — one `git ls-files` per invocation. */
 let cachedTracked: string[] | undefined
 function trackedFiles(): string[] {
-	if (cachedTracked === undefined) cachedTracked = gitLines('git ls-files')
+	// `-z` again: a C-quoted name here would fail to match the very path it is.
+	if (cachedTracked === undefined) cachedTracked = gitPaths('git ls-files -z')
 	return cachedTracked
 }
 

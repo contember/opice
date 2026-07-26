@@ -91,7 +91,13 @@ CREATE INDEX footprint_edges_scenario ON footprint_edges(project_id, scenario_ke
 CREATE TABLE footprint_index_state (
 	project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 	scenario_key   TEXT NOT NULL,
+	-- Freshness key: the run's COMMIT time (see runs.commit_time).
 	run_started_at INTEGER NOT NULL,
+	-- Tie-break. git's %ct has one-second resolution, so two trunk commits made in
+	-- the same second are indistinguishable by it alone — and whichever workflow
+	-- happened to upload last would win, including the older commit. The wall
+	-- clock breaks that tie, and only that tie.
+	run_wall_at    INTEGER NOT NULL DEFAULT 0,
 	run_id         TEXT,
 	updated_at     INTEGER NOT NULL,
 	PRIMARY KEY (project_id, scenario_key)

@@ -482,6 +482,7 @@ async function uploadFootprint(
 				// The COMMIT's time, falling back to the run's start when a client
 				// doesn't report one — see migration 0012.
 				runStartedAt: run.commitTime ?? run.startedAt,
+				runWallAt: run.startedAt,
 				edges: toEdges(footprint),
 			})
 			// False when a NEWER run already indexed this scenario — the write was
