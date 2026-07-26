@@ -301,23 +301,26 @@ async function createStep(
 }
 
 /**
- * Largest video body we'll buffer + store. A walkthrough webm is normally a few
- * MB; this guards the Worker's memory against a pathological upload (we buffer
- * the whole body so `putWithRetry` can re-send it on a transient R2 error).
+ * Largest video body we'll store. A walkthrough webm is normally a few MB; this
+ * bounds a pathological upload. Enforced on the STREAM rather than after
+ * buffering — see {@link uploadVideo}.
  */
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 /**
- * Read a per-scenario asset body (a video, a footprint), rejecting the
- * malformed cases the same way for both.
+ * Read a per-scenario asset body that the caller needs IN MEMORY — currently the
+ * footprint, whose JSON has to be parsed and sanitized before it is stored.
  *
- * Screenshots, videos and footprints are one asset family on this worker — one
- * bucket, one `<slug>/<runId>/…` namespace, one set of scope checks — so their
- * intake behaves identically too: the scenario must belong to the run, the body
- * must be non-empty, and an over-size body is refused up front from the declared
- * `content-length` before it is ever buffered. Returns the body together with
- * the scenario it belongs to (both callers need it), or the `Response` to send
- * instead.
+ * Buffering is only acceptable because that cap is small (8 MB): the read holds
+ * the chunks and then concatenates them, so peak use is about twice the body.
+ * The video does not come through here for exactly that reason — at its 100 MB
+ * cap the same pattern peaks past the Worker's 128 MB allowance and kills a
+ * perfectly valid upload, so it streams to R2 instead.
+ *
+ * The scenario must belong to the run, the body must be non-empty, and an
+ * over-size body is refused up front from the declared `content-length` and
+ * again while reading, since a chunked upload declares nothing. Returns the body
+ * with the scenario it belongs to, or the `Response` to send instead.
  */
 async function readScenarioAssetBody(
 	request: Request,
@@ -398,17 +401,52 @@ async function uploadVideo(
 	runId: string,
 	scenarioId: string,
 ): Promise<Response> {
-	const read = await readScenarioAssetBody(request, services, runId, scenarioId, { maxBytes: MAX_VIDEO_BYTES, label: 'video' })
-	if ('response' in read) return read.response
+	const scenario = await services.db.getScenario(scenarioId)
+	if (!scenario || scenario.runId !== runId) return notFound('scenario not found')
+	const declared = Number(request.headers.get('content-length') ?? '')
+	if (Number.isFinite(declared) && declared > MAX_VIDEO_BYTES) {
+		return badRequest(`video too large (${declared} bytes > ${MAX_VIDEO_BYTES})`)
+	}
+	if (!request.body) return badRequest('empty video body')
 	const key = `${project.slug}/${runId}/video-${scenarioId}.webm`
 	try {
-		await putWithRetry(services.runAssets, key, new Uint8Array(read.body), { httpMetadata: { contentType: 'video/webm' } })
+		// STREAMED to R2, never buffered. A video may legitimately approach 100 MB,
+		// and holding the chunks plus a concatenated copy peaks at twice that —
+		// past the Worker's 128 MB allowance, so a perfectly valid upload would
+		// kill the invocation. Streaming costs the retry (a stream cannot be
+		// replayed), which is the right trade here: the video is best-effort
+		// telemetry exactly like a screenshot, and a failed one is already logged
+		// without reddening the run.
+		await services.runAssets.put(key, limitStream(request.body, MAX_VIDEO_BYTES), {
+			httpMetadata: { contentType: 'video/webm' },
+		})
 		await services.db.attachVideo(scenarioId, key)
 	} catch (err) {
 		console.error(`video upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 		return json({ videoFailed: true })
 	}
 	return json({ ok: true, videoKey: key })
+}
+
+/**
+ * Pass a stream through, failing it the moment it exceeds `maxBytes`.
+ *
+ * The cap has to hold for a body that declared no length — a chunked upload can
+ * claim nothing and send anything. Erroring the stream aborts the R2 write
+ * rather than letting an unbounded object through.
+ */
+function limitStream(body: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {
+	let total = 0
+	return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+		transform(chunk, controller) {
+			total += chunk.byteLength
+			if (total > maxBytes) {
+				controller.error(new Error(`video exceeds ${maxBytes} bytes`))
+				return
+			}
+			controller.enqueue(chunk)
+		},
+	}))
 }
 
 /** Most changed paths one impact query will consider. A diff past this is a rewrite, not a change. */

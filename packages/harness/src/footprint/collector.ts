@@ -135,11 +135,13 @@ export class FootprintCollector {
 		this.collectors.add('network')
 		this.collectors.add('graphql')
 		this.collectors.add('modules')
-		page.on('websocket', (ws) => {
-			const template = this.templateFor(ws.url())
-			if (!template) return
-			this.push({ step: this.activeStep, method: 'WS', route: template.route, ...(template.params ? { params: template.params } : {}), status: null, resourceType: 'websocket', durationMs: null })
-		})
+		// Every page, not just the first: a WebSocket opened by a popup or a new tab
+		// is invisible to a listener bound to the initial page, and the network
+		// dimension would still report itself complete without it. HTTP traffic is
+		// already context-wide (the `request` event above), so this closes the one
+		// per-page hole left.
+		this.watchWebSockets(page)
+		this.context.on('page', (opened) => this.watchWebSockets(opened))
 		if (this.options.mode !== 'full') return
 		// Component names: the binding must exist before the init script runs, or
 		// the page's first flush lands on an undefined function.
@@ -166,12 +168,34 @@ export class FootprintCollector {
 		// dimension can refuse to claim completeness in that case rather than
 		// silently omitting the popup's sources from the index.
 		this.context.on('page', () => { this.uninstrumentedPages = true })
+
 		if (await startJsCoverage(page)) {
 			this.coverageStarted = true
 			this.collectors.add('coverage')
 		} else {
 			this.warnings.add('V8 JS coverage is unavailable in this browser — file footprint falls back to loaded modules.')
 		}
+	}
+
+	/** Record every WebSocket a page opens. Safe to call more than once per page. */
+	private watchWebSockets(page: Page): void {
+		page.on('websocket', (ws) => {
+			try {
+				const template = this.templateFor(ws.url())
+				if (!template) return
+				this.push({
+					step: this.activeStep,
+					method: 'WS',
+					route: template.route,
+					...(template.params ? { params: template.params } : {}),
+					status: null,
+					resourceType: 'websocket',
+					durationMs: null,
+				})
+			} catch {
+				// An observer must never break the page it observes.
+			}
+		})
 	}
 
 	/**
