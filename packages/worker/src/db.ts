@@ -794,8 +794,6 @@ export class Db {
 		branch: string | null
 		/** The run's COMMIT time — the freshness key the guard below compares. */
 		runStartedAt: number
-		/** The run's wall-clock start, used only to break a same-second commit tie. */
-		runWallAt: number
 		edges: FootprintEdgeInput[]
 	}): Promise<{ applied: boolean }> {
 		const now = Date.now()
@@ -807,19 +805,21 @@ export class Db {
 		// The guard reads the STATE table, not the edges: a newer run that produced
 		// no edges leaves no edge row to compare against, and an older run arriving
 		// afterwards would otherwise be free to reinsert what the newer one removed.
-		// Strictly-newer on the commit time, falling back to the wall clock ONLY when
-		// the commit times are equal — git's %ct is second-resolution, so two trunk
-		// commits in the same second would otherwise be equally fresh and the last
-		// upload would win regardless of which commit it was.
+		// STRICTLY newer on the commit time — equal is refused, not broken by the
+		// wall clock. git's %ct is second-resolution, so two trunk commits can share
+		// a timestamp; ordering those by when their workflows ran would let a RERUN
+		// of the older one win simply by executing later, which is the exact failure
+		// the commit-time ordering exists to prevent. Refusing an ambiguous upload
+		// costs one scenario a refresh until the next commit; accepting it restores
+		// stale edges.
 		const notOlder = `NOT EXISTS (
 			SELECT 1 FROM footprint_index_state
-			WHERE project_id = ?1 AND scenario_key = ?2
-				AND (run_started_at > ?3 OR (run_started_at = ?3 AND run_wall_at > ?10))
+			WHERE project_id = ?1 AND scenario_key = ?2 AND run_started_at >= ?3
 		)`
 		const statements: D1PreparedStatement[] = [
 			this.d1
 				.prepare(`DELETE FROM footprint_edges WHERE project_id = ?1 AND scenario_key = ?2 AND ${notOlder}`)
-				.bind(input.projectId, input.scenarioKey, input.runStartedAt, null, null, null, null, null, null, input.runWallAt),
+				.bind(input.projectId, input.scenarioKey, input.runStartedAt),
 		]
 		// The edges travel as ONE json array parameter per statement, expanded by
 		// `json_each`, rather than as a row of placeholders each. A scenario indexes
@@ -849,19 +849,18 @@ export class Db {
 								run_id = excluded.run_id, branch = excluded.branch,
 								run_started_at = excluded.run_started_at, updated_at = excluded.updated_at`,
 					)
-					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload, input.runWallAt),
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
 			)
 		}
 		// Recorded last so it reflects a replacement that actually applied, and
 		// guarded the same way so an older run can't move the marker backwards.
 		statements.push(
 			this.d1
-				.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, run_started_at, run_wall_at, run_id, updated_at)
-					SELECT ?1, ?2, ?3, ?10, ?4, ?5 WHERE ${notOlder}
+				.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, run_started_at, run_id, updated_at)
+					SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${notOlder}
 					ON CONFLICT (project_id, scenario_key) DO UPDATE SET
-						run_started_at = excluded.run_started_at, run_wall_at = excluded.run_wall_at,
-						run_id = excluded.run_id, updated_at = excluded.updated_at`)
-				.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.runId, now, null, null, null, null, input.runWallAt),
+						run_started_at = excluded.run_started_at, run_id = excluded.run_id, updated_at = excluded.updated_at`)
+				.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.runId, now),
 		)
 		const results = await this.d1.batch(statements)
 		// The guard makes this a no-op for a run older than what's indexed, and the

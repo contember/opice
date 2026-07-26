@@ -765,6 +765,12 @@ async function runUnit(unit: RunUnit): Promise<void> {
 			// toward scenario failures and DON'T re-throw — that's the whole point
 			// of .fixme: the scenario (and the CI run) stay green, the failure
 			// surfaces as an amber warning on the dashboard.
+			//
+			// It DOES count toward footprint completeness: the body stopped where it
+			// threw, so whatever it would have touched afterwards is missing, and
+			// indexing that would replace the scenario's edges with a version of
+			// itself that skipped a step.
+			currentScenarioTolerated++
 			status = 'fixme'
 		} else {
 			status = 'failed'

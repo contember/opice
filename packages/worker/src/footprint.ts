@@ -118,6 +118,11 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 /** Flatten a footprint into the change-tracking index's edge rows. */
 export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
 	const edges: FootprintEdgeInput[] = []
+	// The scenario's OWN test file. The browser never loads it, so it appears in
+	// no collector's output — and without it, changing a test's implementation
+	// wouldn't force-run that very test, which is the most obvious selection
+	// anyone would expect `--impacted` to make.
+	if (footprint.testFile) edges.push({ kind: 'file', value: footprint.testFile, exercised: true })
 	for (const file of footprint.files) {
 		edges.push({
 			kind: 'file',
