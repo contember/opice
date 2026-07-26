@@ -138,8 +138,17 @@ export function gitPaths(...args: string[]): string[] {
  */
 export function changedPaths(base: string): string[] {
 	const paths = new Set<string>()
+	// The base diff is the one that can legitimately FAIL: a shallow CI checkout
+	// has no merge base, and a misspelled ref resolves to nothing. Swallowing that
+	// into an empty list is the worst possible answer — it reads as "the branch
+	// changed nothing", which since an empty diff is a valid success now means
+	// `--impacted` adds nothing and says everything is fine. Throwing lets the
+	// caller warn and fall back to the tier, which is what failing open means
+	// here. The other two commands cannot fail this way: they name no ref.
+	for (const path of gitPathsOrThrow('diff', '--name-only', '--no-renames', '-z', `${base}...HEAD`)) {
+		paths.add(path)
+	}
 	for (const cmd of [
-		// `-z` for the path output — see {@link gitPaths}.
 		// `--no-renames` is load-bearing, not a style choice. With rename detection
 		// on, moving a file reports only its NEW path — but the index was built
 		// from a run of the default branch, where the file still had its OLD one.
@@ -147,13 +156,21 @@ export function changedPaths(base: string): string[] {
 		// on precisely the kind of change most likely to break it. Turning
 		// detection off reports the move as a delete + an add, so both paths are
 		// queried and the old one finds the edge.
-		['diff', '--name-only', '--no-renames', '-z', `${base}...HEAD`],
 		['diff', '--name-only', '--no-renames', '-z', 'HEAD'],
 		['ls-files', '--others', '--exclude-standard', '-z'],
 	]) {
 		for (const path of gitPaths(...cmd)) paths.add(path)
 	}
 	return [...paths]
+}
+
+/**
+ * Like {@link gitPaths}, but a failing command THROWS rather than reading as an
+ * empty result. For commands where "no output" and "could not run" mean opposite
+ * things to the caller.
+ */
+export function gitPathsOrThrow(...args: string[]): string[] {
+	return run(args).split('\0').filter(Boolean)
 }
 
 /**

@@ -272,7 +272,21 @@ export async function resolveImpact(
 		return null
 	}
 	const base = options.base ?? defaultBase()
-	const paths = changedPaths(base)
+	let paths: string[]
+	try {
+		paths = changedPaths(base)
+	} catch (err) {
+		// An unreadable base — a shallow checkout with no merge base, a misspelled
+		// ref. NOT the same as "nothing changed": that is a real answer, this is no
+		// answer at all, and conflating them would let a shallow clone quietly turn
+		// `--impacted` into a no-op that reports success.
+		warn(
+			`${label} could not diff against ${base} (${err instanceof Error ? err.message.split('\n')[0] : String(err)}). `
+			+ 'A shallow CI checkout is the usual cause — fetch enough history for the merge base '
+			+ '(actions/checkout with `fetch-depth: 0`), or pass an explicit base.',
+		)
+		return null
+	}
 	const models = options.models ?? []
 	if (paths.length === 0 && models.length === 0) {
 		// A clean tree is an ANSWER, not a failure: nothing changed, so nothing is

@@ -27,6 +27,7 @@ import {
 	parseSourceMap,
 	readSourceMappingUrl,
 	totalBytesBySource,
+	UNMAPPED,
 	type CoverageRange,
 	type RawSourceMap,
 } from './sourcemap.js'
@@ -145,6 +146,15 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		if (sourceMap && source) {
 			const lineStarts = lineStartOffsets(source)
 			const mappings = decodeMappings(sourceMap.mappings, lineStarts)
+			// A map that parsed but yields no SOURCE mappings attributes nothing —
+			// an empty `mappings` string, or one made only of unmapped boundaries.
+			// Continuing here would look exactly like a bundle that resolved cleanly
+			// and happened to touch no files, and the file dimension would then
+			// declare itself complete on the strength of nothing at all.
+			if (!mappings.some((mapping) => mapping.sourceIndex !== UNMAPPED)) {
+				unmappedBundles++
+				continue
+			}
 			const executed = executedBytesBySource(mappings, covered)
 			const exercisedBySource = executedBytesBySource(mappings, exercised)
 			const totals = totalBytesBySource(mappings, source.length)

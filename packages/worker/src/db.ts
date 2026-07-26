@@ -968,6 +968,7 @@ export class Db {
 	async footprintIndexStatus(
 		projectId: number,
 		kinds: readonly FootprintEdgeKind[] = ['file'],
+		defaultBranch: string | null = null,
 	): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
 		const [indexed, missing] = await this.d1.batch<{ edges?: number; scenarios?: number; updated_at?: number | null; unindexed?: number }>([
 			// Scenario count and freshness come from the STATE table, not the edges: a
@@ -996,14 +997,24 @@ export class Db {
 			// complete, which is precisely the confusion this count exists to prevent.
 			// Runs with no commit recorded fall back to the newest run alone, since
 			// nothing groups them.
+			//
+			// And only DEFAULT-BRANCH runs, by the same rule that gates index writes.
+			// A PR run is typically focused — `--tier critical --impacted` — so its
+			// scenario list is a subset, and inventorying against it would silently
+			// omit every default-branch scenario the PR didn't run and report
+			// `unindexed: 0`. The count would then vouch for an index it never looked
+			// at. `?3` carries the project's configured trunk (NULL = main or master),
+			// mirroring `isDefaultBranch`.
 			this.d1
 				.prepare(`WITH newest AS (
 						SELECT id, commit_sha FROM runs
 						WHERE project_id = ?1 AND source = 'ci'
+							AND (CASE WHEN ?3 IS NULL THEN branch IN ('main', 'master') ELSE branch = ?3 END)
 						ORDER BY started_at DESC LIMIT 1
 					), latest AS (
 						SELECT r.id FROM runs r, newest n
 						WHERE r.project_id = ?1 AND r.source = 'ci'
+							AND (CASE WHEN ?3 IS NULL THEN r.branch IN ('main', 'master') ELSE r.branch = ?3 END)
 							AND (CASE WHEN n.commit_sha IS NULL THEN r.id = n.id ELSE r.commit_sha = n.commit_sha END)
 					)
 					SELECT COUNT(*) AS unindexed FROM scenarios s
@@ -1017,7 +1028,7 @@ export class Db {
 									AND st.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
 							)
 						)`)
-				.bind(projectId, JSON.stringify([...new Set(kinds)])),
+				.bind(projectId, JSON.stringify([...new Set(kinds)]), defaultBranch ?? null),
 		])
 		const counts = indexed?.results?.[0]
 		return {
