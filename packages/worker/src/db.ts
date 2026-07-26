@@ -974,12 +974,24 @@ export class Db {
 			// one, and the difference decides how much an empty match is worth: with
 			// everything indexed it means "nothing is affected", with a gap it means
 			// "possibly unknown". Runs report every scenario including skipped ones,
-			// so the newest authoritative run is a full inventory.
+			// so the newest authoritative COMMIT is a full inventory.
+			//
+			// The commit, not the newest run: `bun test` runs one process per test
+			// file and each process opens its own run, so a suite of N files produces
+			// N runs. Taking only the newest would inventory one file's scenarios and
+			// report every sibling file as indexed — making a partial index look
+			// complete, which is precisely the confusion this count exists to prevent.
+			// Runs with no commit recorded fall back to the newest run alone, since
+			// nothing groups them.
 			this.d1
-				.prepare(`WITH latest AS (
-						SELECT id FROM runs
+				.prepare(`WITH newest AS (
+						SELECT id, commit_sha FROM runs
 						WHERE project_id = ?1 AND source = 'ci'
 						ORDER BY started_at DESC LIMIT 1
+					), latest AS (
+						SELECT r.id FROM runs r, newest n
+						WHERE r.project_id = ?1 AND r.source = 'ci'
+							AND (CASE WHEN n.commit_sha IS NULL THEN r.id = n.id ELSE r.commit_sha = n.commit_sha END)
 					)
 					SELECT COUNT(*) AS unindexed FROM scenarios s
 					WHERE s.run_id IN (SELECT id FROM latest)

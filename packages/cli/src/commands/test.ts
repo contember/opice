@@ -5,8 +5,8 @@ import path from 'node:path'
 import { loadConfig } from '../config'
 import { parseOpiceDsn } from '../dsn'
 import { extractBoolean, extractInteger, extractList, extractOptionalValueFlag, extractValue } from '../args'
-import { detectGitMeta } from '../git'
-import { resolveImpact } from '../impact'
+import { changedPaths, defaultBase, detectGitMeta } from '../git'
+import { existsInRepo, resolveImpact } from '../impact'
 
 const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
@@ -87,7 +87,19 @@ export async function testCommand(args: string[]): Promise<number> {
 	// able to shrink what CI covers.
 	if (impactedFlag.present && !impacted) warn('--impacted added nothing — running the tier alone.')
 	const impactedFiles = impacted?.files ?? []
-	const select = [explicitSelect, impactedFiles.join(',')].filter(Boolean).join(',') || undefined
+	// A test file the PR itself CHANGED is selected from git, not from the index.
+	// The index cannot know about it: a newly added test has never run, so it has
+	// no edges, and a renamed one has edges under its OLD path — which
+	// `impactedTestFiles` then drops because that path no longer exists. Either
+	// way `--tier critical --impacted` would skip the very test the PR is about,
+	// which is the single most obvious selection anyone expects. Git knows the
+	// current path, so it answers directly, and it answers even when the platform
+	// could not be reached at all.
+	const changedTests = impactedFlag.present ? changedTestFiles(impacted?.paths) : []
+	const select = [explicitSelect, ...impactedFiles, ...changedTests].filter(Boolean).join(',') || undefined
+	if (changedTests.length > 0) {
+		console.error(`[opice] --impacted: ${changedTests.length} changed test file(s) selected directly from the diff.`)
+	}
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
 	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door. A bare
@@ -271,3 +283,26 @@ async function finishRun(handoff: Handoff): Promise<void> {
 function warn(message: string): void {
 	console.error(`[opice] warning: ${message}`)
 }
+
+/** `*.test.*` / `*.spec.*` among the changed paths, deduplicated and still present. */
+function changedTestFiles(known?: readonly string[]): string[] {
+	let paths = known
+	if (!paths) {
+		// `--impacted` could not run its query (no credentials, no platform), but
+		// the diff is local and free — the selection still only ADDS, so answering
+		// this half is strictly better than answering neither.
+		try {
+			paths = changedPaths(defaultBase())
+		} catch {
+			return []
+		}
+	}
+	// A deleted file is in the diff too; selecting it would name a test bun cannot
+	// run. `existsInRepo` rather than a bare `existsSync`: these paths are
+	// repo-relative (git runs from the root), so resolving them against the
+	// current directory would find nothing whenever CI invokes opice from a
+	// package subdirectory — and would silently drop the selection it just made.
+	return [...new Set(paths.filter((p) => TEST_FILE_RE.test(p)))].sort().filter(existsInRepo)
+}
+
+const TEST_FILE_RE = /\.(?:test|spec)\.[tj]sx?$/i

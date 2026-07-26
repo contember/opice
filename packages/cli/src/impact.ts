@@ -197,7 +197,7 @@ export function impactedTestFiles(scenarios: readonly ImpactedScenario[]): strin
  * the authority on what exists, and a suffix match finds the file whichever root
  * the path was written against.
  */
-function existsInRepo(file: string): boolean {
+export function existsInRepo(file: string): boolean {
 	const root = repoRoot()
 	if (existsSync(path.resolve(root ?? process.cwd(), file))) return true
 	if (existsSync(path.resolve(process.cwd(), file))) return true

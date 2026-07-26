@@ -120,6 +120,13 @@ export interface BrowserTestMeta {
 export const DEFAULT_WALKTHROUGH_TIMEOUT_MS = 60_000
 
 /**
+ * Timeout for the scenario teardown hook. Generous on purpose: everything it
+ * does — footprint, video, screenshots, the finish call — is best-effort
+ * telemetry, and none of it should ever be able to fail a scenario that passed.
+ */
+const TEARDOWN_TIMEOUT_MS = 150_000
+
+/**
  * The repository root above `from`, or null. Resolved once per process.
  *
  * Test paths are keys, not just labels: the change-tracking index is built on
@@ -460,7 +467,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				// caps this document runs to megabytes, so serializing it twice would
 				// be a real cost in the teardown budget.
 				const json = await writeFootprintFile(closed.footprint)
-				if (currentScenarioId) {
+				// Null when the document could not be serialized at all (a user's
+				// `mapOperation` can put anything into `models`). There is nothing to
+				// upload, and the scenario's own result is unaffected.
+				if (json !== null && currentScenarioId) {
 					// Whether the walkthrough got all the way through decides whether the
 					// platform may index this footprint. A scenario that died at step 3
 					// touched a PREFIX of what it covers, and the index replaces a
@@ -558,13 +568,16 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					+ `See the [opice] reporter error(s) above for the cause.`,
 				)
 			}
-			// Budget covers the slowest teardown path: the video upload (its own ~30s
-			// cap) and flush (~15s) run concurrently, so worst case is ~max(30s, 15s)
-			// plus teardown — comfortably inside this. Each returns as soon as its work
-			// is done, so the normal path costs nothing; the headroom just keeps a slow
-			// best-effort video PUT from tripping the hook timeout and redding an
-			// otherwise-green scenario.
-		}, 60_000)
+			// Budget covers the slowest teardown path, which is SEQUENTIAL in part:
+			// closePage() first runs the footprint's coverage pass (source-map fetching
+			// alone is budgeted 20s), and only then do the uploads start — the video
+			// PUT (~30s cap) and flush (~15s) overlap, followed by finishScenario with
+			// its retries (~30s). That is roughly 80s end to end, so the old 60s bound
+			// could fail an otherwise-green scenario during work that is entirely
+			// best-effort telemetry — the one thing footprint collection promises never
+			// to do. Each stage returns as soon as it's done, so the normal path costs
+			// nothing and this is pure headroom.
+		}, TEARDOWN_TIMEOUT_MS)
 
 		if (isBody) {
 			const body = fn as () => Promise<void>

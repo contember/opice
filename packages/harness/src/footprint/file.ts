@@ -70,14 +70,29 @@ function pathDigest(value: string): string {
  * in the reporter. A failed write still returns the JSON: the upload doesn't
  * depend on the file.
  */
-export async function writeFootprintFile(footprint: ScenarioFootprint, dir = footprintDir()): Promise<string> {
-	const json = JSON.stringify(footprint, null, 2)
+export async function writeFootprintFile(footprint: ScenarioFootprint, dir = footprintDir()): Promise<string | null> {
+	// Serialization is INSIDE the guard, not before it. A user's `mapOperation`
+	// can return anything — a cyclic object, a BigInt — and it lands in `models`
+	// verbatim, so `JSON.stringify` can throw. Outside the try that throw escapes
+	// through `afterAll` and reds an otherwise-passing scenario, breaking the
+	// collector's first invariant: it observes, it never fails a test.
+	let json: string
+	try {
+		json = JSON.stringify(footprint, null, 2)
+	} catch (err) {
+		console.warn(`[opice] footprint for "${footprint.scenario}" could not be serialized (ignored): ${message(err)}`)
+		return null
+	}
 	const target = path.join(dir, `${uniqueStem(footprintStem(footprint), usedStems)}.json`)
 	try {
 		await fs.mkdir(dir, { recursive: true })
 		await fs.writeFile(target, `${json}\n`)
 	} catch (err) {
-		console.warn(`[opice] failed to write footprint for "${footprint.scenario}" (ignored): ${err instanceof Error ? err.message : String(err)}`)
+		console.warn(`[opice] failed to write footprint for "${footprint.scenario}" (ignored): ${message(err)}`)
 	}
 	return json
+}
+
+function message(err: unknown): string {
+	return err instanceof Error ? err.message : String(err)
 }
