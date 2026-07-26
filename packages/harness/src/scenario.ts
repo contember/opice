@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { closePage, getContext, getFootprintCollector, launchPage, recordVideoStep, type ClosedScenario } from './context.js'
@@ -119,9 +120,34 @@ export interface BrowserTestMeta {
 export const DEFAULT_WALKTHROUGH_TIMEOUT_MS = 60_000
 
 /**
+ * The repository root above `from`, or null. Resolved once per process.
+ *
+ * Test paths are keys, not just labels: the change-tracking index is built on
+ * them and a `git diff` is matched against them. Recording them relative to
+ * whatever directory the run started in makes the same file look like two
+ * different ones depending on where CI invoked `bun test`.
+ */
+let cachedRepoRoot: string | null | undefined
+function repoRootAbove(from: string): string | null {
+	if (cachedRepoRoot === undefined) {
+		cachedRepoRoot = null
+		for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+			if (existsSync(path.join(dir, '.git'))) {
+				cachedRepoRoot = dir
+				break
+			}
+			const parent = path.dirname(dir)
+			if (parent === dir) break
+		}
+	}
+	return cachedRepoRoot
+}
+
+/**
  * Best-effort capture of the `*.test.ts` path that called `browserTest`, by
  * walking the stack for the first `.test.` frame. Reported so a failed
- * scenario links back to its source file. Repo-relative when possible.
+ * scenario links back to its source file. Relative to the repository root when
+ * there is one, so the same file reads the same however the run was invoked.
  */
 function captureTestFile(): string | undefined {
 	const stack = new Error().stack
@@ -131,8 +157,9 @@ function captureTestFile(): string | undefined {
 		if (match?.[1]) {
 			const abs = match[1].replace(/^file:\/\//, '')
 			try {
-				const rel = path.relative(process.cwd(), abs)
-				return rel.startsWith('..') ? abs : rel
+				const base = repoRootAbove(path.dirname(abs)) ?? process.cwd()
+				const rel = path.relative(base, abs)
+				return rel.startsWith('..') ? abs : rel.split(path.sep).join('/')
 			} catch {
 				return abs
 			}
@@ -319,6 +346,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			currentScenarioFailures = 0
 			currentScenarioStepSeq = 0
 			currentAttempt = 0
+			// Reset for EVERY scenario, both forms. The body wrapper resets it too,
+			// but the legacy registrar has no wrapper — without this it would inherit
+			// the previous scenario's completion.
+			currentWalkthroughCompleted = false
 			try {
 				currentScenarioId = await reporter.startScenario({
 					name: meta.name,
@@ -399,7 +430,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// failure is counted, yet the footprint covers only the steps that do
 					// exist. Indexing that would replace a full scenario's edges with a
 					// fragment — exactly what the completeness gate exists to prevent.
-					const complete = currentWalkthroughCompleted
+					// `isBody` is part of the gate, not just the reset: only the body form
+					// has a wrapper that can observe its own completion, so only it can
+					// ever prove a walkthrough finished. Deriving that from shared mutable
+					// state alone has already been wrong once — stating the requirement
+					// directly makes it independent of hook ordering.
+					const complete = isBody
+						&& currentWalkthroughCompleted
 						&& currentScenarioFailures === 0
 						&& currentScenarioPending === 0
 					if (!complete && !isBody) warnLegacyFootprint()

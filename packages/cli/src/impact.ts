@@ -121,18 +121,39 @@ export async function queryImpact(
  */
 export function impactedTestFiles(scenarios: readonly ImpactedScenario[]): string[] {
 	const files = [...new Set(scenarios.map((s) => s.testFile).filter((f): f is string => !!f))].sort()
-	// Resolved against the REPO ROOT, not the cwd: CI records these paths relative
-	// to the repository, and `opice` is explicitly usable from a subdirectory (that
-	// is what config discovery walks up for). Checking them against a nested cwd
-	// would find nothing and quietly reduce the selection to zero.
-	const root = repoRoot()
-	return files.filter((file) => existsSync(root ? path.resolve(root, file) : file))
+	return files.filter(existsInRepo)
 }
 
-/** The repository root, or null outside a checkout. */
+/**
+ * Does this indexed path name a file in the checkout?
+ *
+ * Three ways, because the path's own root is not knowable from the path. A
+ * footprint records it relative to the repository — but a run from a package
+ * subdirectory with an older harness recorded it relative to THAT, and neither
+ * form announces which it is. Resolving against a single root drops the other
+ * and silently empties the selection, so the tracked-file list decides: it is
+ * the authority on what exists, and a suffix match finds the file whichever root
+ * the path was written against.
+ */
+function existsInRepo(file: string): boolean {
+	const root = repoRoot()
+	if (existsSync(path.resolve(root ?? process.cwd(), file))) return true
+	if (existsSync(path.resolve(process.cwd(), file))) return true
+	return trackedFiles().some((tracked) => tracked === file || tracked.endsWith('/' + file))
+}
+
+/** The repository root, or null outside a checkout. Resolved once. */
+let cachedRoot: string | null | undefined
 function repoRoot(): string | null {
-	const [top] = gitLines('git rev-parse --show-toplevel')
-	return top ?? null
+	if (cachedRoot === undefined) cachedRoot = gitLines('git rev-parse --show-toplevel')[0] ?? null
+	return cachedRoot
+}
+
+/** Every tracked file, repo-relative. Resolved once — one `git ls-files` per invocation. */
+let cachedTracked: string[] | undefined
+function trackedFiles(): string[] {
+	if (cachedTracked === undefined) cachedTracked = gitLines('git ls-files')
+	return cachedTracked
 }
 
 /**
