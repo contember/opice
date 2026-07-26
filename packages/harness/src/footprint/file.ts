@@ -31,7 +31,7 @@ const usedStems = new Set<string>()
  * runs in its own process there is no shared set to disambiguate them — without
  * the file in the name the second silently overwrites the first's artifact.
  */
-function footprintStem(footprint: ScenarioFootprint): string {
+export function footprintStem(footprint: ScenarioFootprint): string {
 	const scenario = slugify(footprint.scenario, 'scenario')
 	if (!footprint.testFile) return scenario
 	// The FULL relative path, not just the basename: `a/index.test.ts` and
@@ -39,7 +39,26 @@ function footprintStem(footprint: ScenarioFootprint): string {
 	// basename alone they would race for the same artifact.
 	const withoutSuffix = footprint.testFile.replace(/\.(test|spec)\.[tj]sx?$/i, '')
 	const file = slugify(withoutSuffix, '')
-	return file ? `${file}--${scenario}` : scenario
+	// Slugifying is lossy — `a/b.test.ts` and `a-b.test.ts` both read `a-b` — and
+	// the two run in separate processes, so `usedStems` cannot see the clash. A
+	// short digest of the ORIGINAL path is what keeps the name injective; it is
+	// appended rather than substituted so the filename stays readable.
+	const digest = pathDigest(footprint.testFile)
+	return file ? `${file}-${digest}--${scenario}` : `${digest}--${scenario}`
+}
+
+/**
+ * A short, stable digest of a path — FNV-1a, base36. Not cryptographic: it only
+ * has to separate two paths that slugify to the same string, which a
+ * dependency-free 32-bit hash does comfortably at repository scale.
+ */
+function pathDigest(value: string): string {
+	let hash = 0x811c9dc5
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i)
+		hash = Math.imul(hash, 0x01000193) >>> 0
+	}
+	return hash.toString(36).padStart(7, '0')
 }
 
 /**

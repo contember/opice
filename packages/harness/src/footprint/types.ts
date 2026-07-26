@@ -123,4 +123,22 @@ export interface ScenarioFootprint {
 	 * visibly thin rather than quietly wrong.
 	 */
 	warnings?: string[]
+	/**
+	 * Dimensions that hit a collection cap, so the list is a SAMPLE rather than
+	 * the whole set.
+	 *
+	 * Separate from {@link warnings} because a consumer has to ACT on it: the
+	 * change-tracking index replaces a scenario's edges wholesale, and replacing
+	 * them from a truncated list silently drops whatever fell off the end. The
+	 * warning says the same thing in prose, which no machine can read.
+	 */
+	truncated?: FootprintDimension[]
 }
+
+/**
+ * A dimension of collection that can independently be complete, partial or
+ * absent. Coarser than {@link FootprintCollectorKind}: several collectors feed
+ * one dimension (both `modules` and `coverage` produce files), and it is the
+ * dimension that a consumer reasons about.
+ */
+export type FootprintDimension = 'files' | 'requests'

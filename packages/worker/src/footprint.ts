@@ -67,6 +67,16 @@ export interface ScenarioFootprint {
 	endpoints: FootprintEndpoint[]
 	models: FootprintModel[]
 	warnings?: string[]
+	/** Dimensions the harness had to truncate — see {@link indexableKinds}. */
+	truncated?: FootprintDimension[]
+}
+
+export type FootprintDimension = 'files' | 'requests'
+
+const DIMENSIONS: readonly FootprintDimension[] = ['files', 'requests']
+
+function isDimension(value: unknown): value is FootprintDimension {
+	return typeof value === 'string' && (DIMENSIONS as readonly string[]).includes(value)
 }
 
 /**
@@ -112,33 +122,87 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 		endpoints: asArray(raw['endpoints']).flatMap(toEndpoint),
 		models: asArray(raw['models']).flatMap(toModel),
 		...(Array.isArray(raw['warnings']) ? { warnings: raw['warnings'].filter(isNonEmptyString) } : {}),
+		...(Array.isArray(raw['truncated']) ? { truncated: raw['truncated'].filter(isDimension) } : {}),
 	}
 }
 
-/** Flatten a footprint into the change-tracking index's edge rows. */
-export function toEdges(footprint: ScenarioFootprint): FootprintEdgeInput[] {
+/**
+ * Flatten a footprint into the change-tracking index's edge rows.
+ *
+ * `kinds` limits which dimensions are emitted — see {@link indexableKinds} for
+ * why a run may only speak for some of them. Omit it for every kind.
+ */
+export function toEdges(footprint: ScenarioFootprint, kinds?: readonly FootprintEdgeKind[]): FootprintEdgeInput[] {
+	const allows = (kind: FootprintEdgeKind) => !kinds || kinds.includes(kind)
 	const edges: FootprintEdgeInput[] = []
 	// The scenario's OWN test file. The browser never loads it, so it appears in
 	// no collector's output — and without it, changing a test's implementation
 	// wouldn't force-run that very test, which is the most obvious selection
 	// anyone would expect `--impacted` to make.
+	//
+	// Emitted even when the file dimension is NOT being replaced: it follows from
+	// the scenario's identity rather than from a collector, so every run knows it
+	// equally well, and a network-only run must not be the reason a test stops
+	// selecting itself. The insert upserts, so re-stating it costs nothing.
 	if (footprint.testFile) edges.push({ kind: 'file', value: footprint.testFile, exercised: true })
-	for (const file of footprint.files) {
-		edges.push({
-			kind: 'file',
-			value: file.path,
-			// Only an explicit `false` demotes a file to "loaded but never called".
-			// Absent means the harness could not measure it — a stylesheet, a popup's
-			// module, a run whose coverage failed — and filtering those out of impact
-			// selection would be acting on a gap in our instrumentation as if it were
-			// a fact about the scenario.
-			exercised: file.exercised !== false,
-		})
+	if (allows('file')) {
+		for (const file of footprint.files) {
+			edges.push({
+				kind: 'file',
+				value: file.path,
+				// Only an explicit `false` demotes a file to "loaded but never called".
+				// Absent means the harness could not measure it — a stylesheet, a popup's
+				// module, a run whose coverage failed — and filtering those out of impact
+				// selection would be acting on a gap in our instrumentation as if it were
+				// a fact about the scenario.
+				exercised: file.exercised !== false,
+			})
+		}
 	}
-	for (const component of footprint.components) edges.push({ kind: 'component', value: component })
-	for (const endpoint of footprint.endpoints) edges.push({ kind: 'endpoint', value: endpoint.route })
-	for (const model of footprint.models) edges.push({ kind: 'model', value: model.name, writes: model.write })
+	if (allows('component')) {
+		for (const component of footprint.components) edges.push({ kind: 'component', value: component })
+	}
+	if (allows('endpoint')) {
+		for (const endpoint of footprint.endpoints) edges.push({ kind: 'endpoint', value: endpoint.route })
+	}
+	if (allows('model')) {
+		for (const model of footprint.models) edges.push({ kind: 'model', value: model.name, writes: model.write })
+	}
 	return edges
+}
+
+/**
+ * The edge kinds this footprint is entitled to REPLACE.
+ *
+ * Edges are replaced per scenario, wholesale — so "the walkthrough finished" is
+ * necessary but not sufficient. Collection degrades one dimension at a time and
+ * for ordinary reasons: `--footprint=network` against a production bundle sees
+ * no module URLs and no coverage, so it observes zero files while observing
+ * every endpoint perfectly well. Letting that run replace the file edges would
+ * delete a previous full run's file coverage and leave a populated, confident
+ * -looking index that no longer selects the scenario for any source change —
+ * `--impacted` silently narrowing CI, which is the one failure this whole
+ * feature is built to avoid.
+ *
+ * So each dimension is replaced only by a run that actually measured it, and
+ * measured it whole: a dimension the harness truncated is a SAMPLE, and
+ * replacing a complete set with a sample drops whatever fell off the end.
+ * Dimensions this run can't speak for are left exactly as they were — the
+ * previous run's answer is stale at worst, whereas deleting it is wrong.
+ */
+export function indexableKinds(footprint: ScenarioFootprint): FootprintEdgeKind[] {
+	const ran = new Set(footprint.collected)
+	const truncated = new Set(footprint.truncated ?? [])
+	const kinds: FootprintEdgeKind[] = []
+	// Files come from either collector; `coverage` additionally decides exercised
+	// vs merely loaded, but `modules` alone is a complete file list.
+	if ((ran.has('modules') || ran.has('coverage')) && !truncated.has('files')) kinds.push('file')
+	if (ran.has('components')) kinds.push('component')
+	// Endpoints and models are both derived from the request stream, so a
+	// truncated request list makes both a sample.
+	if (ran.has('network') && !truncated.has('requests')) kinds.push('endpoint')
+	if (ran.has('graphql') && !truncated.has('requests')) kinds.push('model')
+	return kinds
 }
 
 /** One row destined for `footprint_edges`. */

@@ -27,6 +27,7 @@ import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, toFoot
 import { moduleUrlToSourcePath } from './modules.js'
 import type {
 	FootprintCollectorKind,
+	FootprintDimension,
 	FootprintEndpoint,
 	FootprintFile,
 	FootprintModel,
@@ -349,6 +350,12 @@ export class FootprintCollector {
 			models: aggregateModels(this.requests),
 		}
 		if (this.warnings.size > 0) footprint.warnings = [...this.warnings]
+		// The same two facts as the warnings above, in a form a consumer can act
+		// on: the index must not replace a dimension from a truncated sample.
+		const truncated: FootprintDimension[] = []
+		if (this.truncatedFiles > 0) truncated.push('files')
+		if (this.truncatedRequests > 0) truncated.push('requests')
+		if (truncated.length > 0) footprint.truncated = truncated
 		return footprint
 	}
 

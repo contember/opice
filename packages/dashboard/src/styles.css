@@ -1585,6 +1585,9 @@ main.wide { max-width: 1360px; }
 .step.blocked .step-name { color: var(--run); }
 .step.blocked .duration { color: var(--run); }
 
+/* The trunk name as read-only text, for an operator without project.write. */
+.pd-branch { color: var(--muted); }
+
 /* Editing a project's trunk name inline in the subtitle row. */
 .pd-branch-edit { display: inline-flex; align-items: center; gap: 6px; }
 .pd-branch-edit input {

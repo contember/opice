@@ -220,12 +220,16 @@ const projects = rpc.router({
 
 	get: rpc.procedure
 		.input(z.object({ slug: z.string() }))
-		.output(ProjectSchema)
+		// `canWrite` rides along with the project because the page needs it to
+		// decide what to RENDER. project.read is enough to open this page, but the
+		// settings on it need project.write, and a viewer offered a control that
+		// can only fail is a worse answer than one that isn't there.
+		.output(ProjectSchema.extend({ canWrite: z.boolean() }))
 		.handler(async ({ ctx, input }) => {
 			const project = await ctx.services.db.getProjectBySlug(input.slug)
 			if (!project) notFound(`Project not found: ${input.slug}`)
 			assertAccess(opCanReadProject(ctx.auth, project.slug))
-			return project
+			return { ...project, canWrite: opCanWriteProject(ctx.auth, project.slug) }
 		}),
 
 	// Create a project + mint two project-scoped propustka SERVICE TOKENS: an ingest (report.write)

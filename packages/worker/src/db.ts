@@ -795,6 +795,12 @@ export class Db {
 		/** The run's COMMIT time — the freshness key the guard below compares. */
 		runStartedAt: number
 		edges: FootprintEdgeInput[]
+		/**
+		 * The edge kinds this run may REPLACE (see `indexableKinds`). Kinds absent
+		 * here are left untouched: the run couldn't measure them, and deleting a
+		 * previous run's answer is worse than letting it go stale.
+		 */
+		kinds: readonly FootprintEdgeKind[]
 	}): Promise<{ applied: boolean }> {
 		const now = Date.now()
 		// Every statement is guarded on the incoming run being at least as new as
@@ -812,15 +818,31 @@ export class Db {
 		// the commit-time ordering exists to prevent. Refusing an ambiguous upload
 		// costs one scenario a refresh until the next commit; accepting it restores
 		// stale edges.
-		const notOlder = `NOT EXISTS (
-			SELECT 1 FROM footprint_index_state
-			WHERE project_id = ?1 AND scenario_key = ?2 AND run_started_at >= ?3
+		// Correlated on the KIND, so each dimension orders independently: a run that
+		// only measured endpoints cannot be refused because a newer run already
+		// wrote the file edges, and cannot block one either.
+		const notOlder = (kind: string) => `NOT EXISTS (
+			SELECT 1 FROM footprint_index_state s
+			WHERE s.project_id = ?1 AND s.scenario_key = ?2 AND s.kind = ${kind} AND s.run_started_at >= ?3
 		)`
-		const statements: D1PreparedStatement[] = [
-			this.d1
-				.prepare(`DELETE FROM footprint_edges WHERE project_id = ?1 AND scenario_key = ?2 AND ${notOlder}`)
-				.bind(input.projectId, input.scenarioKey, input.runStartedAt),
-		]
+		// The delete is scoped to the kinds this run can speak for. A run that
+		// observed endpoints but no files replaces the endpoint edges and leaves the
+		// file edges from whichever run last measured them — the alternative is a
+		// degraded run quietly deleting coverage nobody asked it to touch.
+		const kindList = [...new Set(input.kinds)]
+		const kindPlaceholders = kindList.map((_, i) => `?${i + 4}`).join(', ')
+		const statements: D1PreparedStatement[] = []
+		if (kindList.length > 0) {
+			statements.push(
+				this.d1
+					.prepare(
+						`DELETE FROM footprint_edges
+							WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})
+								AND ${notOlder('footprint_edges.kind')}`,
+					)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, ...kindList),
+			)
+		}
 		// The edges travel as ONE json array parameter per statement, expanded by
 		// `json_each`, rather than as a row of placeholders each. A scenario indexes
 		// well over a thousand edges; at nine rows per INSERT that was ~180 queries
@@ -843,7 +865,7 @@ export class Db {
 								json_extract(e.value, '$.w'), json_extract(e.value, '$.x'),
 								?6, ?7, ?3, ?8
 							FROM json_each(?9) AS e
-							WHERE ${notOlder}
+							WHERE ${notOlder("json_extract(e.value, '$.k')")}
 							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
 								writes = excluded.writes, exercised = excluded.exercised,
 								run_id = excluded.run_id, branch = excluded.branch,
@@ -852,24 +874,30 @@ export class Db {
 					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload),
 			)
 		}
-		// Recorded last so it reflects a replacement that actually applied, and
-		// guarded the same way so an older run can't move the marker backwards.
-		statements.push(
-			this.d1
-				.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, run_started_at, run_id, updated_at)
-					SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${notOlder}
-					ON CONFLICT (project_id, scenario_key) DO UPDATE SET
-						run_started_at = excluded.run_started_at, run_id = excluded.run_id, updated_at = excluded.updated_at`)
-				.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.runId, now),
-		)
+		// One marker per replaced kind, recorded last so each reflects a replacement
+		// that actually applied, and guarded the same way so an older run can't move
+		// a marker backwards. Only the kinds this run measured get one — a dimension
+		// it stayed silent about keeps whatever freshness it already had.
+		for (const kind of kindList) {
+			statements.push(
+				this.d1
+					.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, kind, run_started_at, run_id, updated_at)
+						SELECT ?1, ?2, ?4, ?3, ?5, ?6 WHERE ${notOlder('?4')}
+						ON CONFLICT (project_id, scenario_key, kind) DO UPDATE SET
+							run_started_at = excluded.run_started_at, run_id = excluded.run_id, updated_at = excluded.updated_at`)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, kind, input.runId, now),
+			)
+		}
 		const results = await this.d1.batch(statements)
-		// The guard makes this a no-op for a run older than what's indexed, and the
+		// The guard makes these no-ops for a run older than what's indexed, and the
 		// caller reports whether the index was actually written — saying "indexed"
 		// when a stale upload changed nothing would be a lie a CI log can't check.
-		// The marker statement is the reliable signal: it is written on every
-		// accepted replacement, including one that legitimately has no edges.
-		const marker = results[results.length - 1]
-		return { applied: (marker?.meta.changes ?? 0) > 0 }
+		// The markers are the reliable signal: one is written for every kind whose
+		// replacement was accepted, including a kind that legitimately has no edges.
+		// A run with no indexable kinds at all writes none, and is not "indexed".
+		const markers = results.slice(results.length - kindList.length)
+		const applied = kindList.length > 0 && markers.some((r) => (r?.meta.changes ?? 0) > 0)
+		return { applied }
 	}
 
 	/**
@@ -927,7 +955,10 @@ export class Db {
 			this.d1
 				.prepare(`SELECT
 						(SELECT COUNT(*) FROM footprint_edges WHERE project_id = ?1) AS edges,
-						(SELECT COUNT(*) FROM footprint_index_state WHERE project_id = ?1) AS scenarios,
+						-- DISTINCT: the state table holds one row per scenario × edge KIND, so
+					-- a plain COUNT would report a project as several times larger than
+					-- it is and make a partial index look complete.
+					(SELECT COUNT(DISTINCT scenario_key) FROM footprint_index_state WHERE project_id = ?1) AS scenarios,
 						(SELECT MAX(updated_at) FROM footprint_index_state WHERE project_id = ?1) AS updated_at`)
 				.bind(projectId),
 			// Scenarios the project has REPORTED but which carry no edges. A count

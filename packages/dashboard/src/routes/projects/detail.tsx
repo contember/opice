@@ -50,7 +50,7 @@ function ProjectPage({ slug }: { slug: string }) {
 					<span className="sep">·</span>
 					<span>added {fmtRelative(project.data.createdAt)}</span>
 					<span className="sep">·</span>
-					<DefaultBranch slug={slug} current={project.data.defaultBranch} />
+					<DefaultBranch slug={slug} current={project.data.defaultBranch} canWrite={project.data.canWrite} />
 				</div>
 			</div>
 
@@ -99,7 +99,7 @@ function ProjectPage({ slug }: { slug: string }) {
  * `opice test --impacted` reports an empty index forever. Blank means
  * "main or master", which covers nearly everyone.
  */
-function DefaultBranch({ slug, current }: { slug: string; current: string | null }) {
+function DefaultBranch({ slug, current, canWrite }: { slug: string; current: string | null; canWrite: boolean }) {
 	const [editing, setEditing] = useState(false)
 	const [value, setValue] = useState(current ?? '')
 	const queryClient = useQueryClient()
@@ -111,6 +111,16 @@ function DefaultBranch({ slug, current }: { slug: string; current: string | null
 		},
 	})
 
+	// A reader can open this page with project.read, but changing the trunk needs
+	// project.write. Show them the value as plain text rather than a control whose
+	// only possible outcome is an authorization error on save.
+	if (!canWrite) {
+		return (
+			<span className="pd-branch" title="Only runs of this branch write the change-tracking index">
+				trunk: {current ?? 'main or master'}
+			</span>
+		)
+	}
 	if (!editing) {
 		return (
 			<button type="button" className="btn-link" onClick={() => setEditing(true)} title="Only runs of this branch write the change-tracking index">

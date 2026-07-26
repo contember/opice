@@ -91,6 +91,14 @@ CREATE INDEX footprint_edges_scenario ON footprint_edges(project_id, scenario_ke
 CREATE TABLE footprint_index_state (
 	project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 	scenario_key   TEXT NOT NULL,
+	-- Freshness is tracked PER EDGE KIND, not per scenario, because collection
+	-- degrades one dimension at a time: a `--footprint=network` run measures
+	-- endpoints perfectly and files not at all, so it may only speak for the
+	-- endpoint edges. A single per-scenario marker would let that run claim the
+	-- whole scenario as freshly indexed at its commit, and a full run of the SAME
+	-- commit arriving afterwards would be refused as not-newer — leaving the file
+	-- edges permanently unwritten. Per kind, each dimension orders independently.
+	kind           TEXT NOT NULL,
 	-- Freshness key: the run's COMMIT time (see runs.commit_time).
 	run_started_at INTEGER NOT NULL,
 	-- Comparison is STRICTLY newer: git's %ct is second-resolution, so two trunk
@@ -100,5 +108,5 @@ CREATE TABLE footprint_index_state (
 	-- commit-time ordering exists to prevent.
 	run_id         TEXT,
 	updated_at     INTEGER NOT NULL,
-	PRIMARY KEY (project_id, scenario_key)
+	PRIMARY KEY (project_id, scenario_key, kind)
 );

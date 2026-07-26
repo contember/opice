@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
  */
 export function detectGitMeta(): { branch?: string; commit?: string; commitTime?: string } {
 	const fromEnv = {
-		branch: process.env['OPICE_BRANCH'] ?? process.env['GITHUB_REF_NAME'],
+		branch: process.env['OPICE_BRANCH'] ?? ciBranch(),
 		commit: process.env['OPICE_COMMIT'] ?? process.env['GITHUB_SHA'],
 		commitTime: process.env['OPICE_COMMIT_TIME'],
 	}
@@ -15,7 +15,11 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 	// workflow gives it a fresh start time but not a fresh commit, and without
 	// this the rerun would outrank a newer commit and restore stale edges.
 	try {
-		const branch = fromEnv.branch ?? run(['rev-parse', '--abbrev-ref', 'HEAD'])
+		// `--abbrev-ref` answers the literal string `HEAD` in a detached checkout,
+		// which is not a branch name. Reporting it as one is worse than reporting
+		// nothing: `isDefaultBranch` rejects it, so the footprint index never fills
+		// and `--impacted` stays useless with no visible cause.
+		const branch = fromEnv.branch ?? nonEmptyBranch(run(['rev-parse', '--abbrev-ref', 'HEAD']))
 		const commit = fromEnv.commit ?? run(['rev-parse', 'HEAD'])
 		const commitTime = fromEnv.commitTime ?? run(['show', '-s', '--format=%ct', 'HEAD'])
 		return {
@@ -26,6 +30,36 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 	} catch {
 		return fromEnv
 	}
+}
+
+/**
+ * The branch name this CI provider reports, if any.
+ *
+ * Most CI systems check out a detached HEAD, so git itself cannot name the
+ * branch — only the provider can, and each spells it differently. Without this
+ * the branch reads as `HEAD`, `isDefaultBranch` rejects it, and the change
+ * tracking index silently never fills on anything but GitHub Actions. Ordered
+ * most-specific first; a merge-request variable is deliberately NOT consulted,
+ * since a PR build is not a default-branch build.
+ */
+function ciBranch(): string | undefined {
+	const env = process.env
+	return nonEmptyBranch(
+		env['GITHUB_REF_NAME'] // GitHub Actions
+		?? env['CI_COMMIT_BRANCH'] // GitLab CI
+		?? env['BUILDKITE_BRANCH'] // Buildkite
+		?? env['CIRCLE_BRANCH'] // CircleCI
+		?? env['BRANCH_NAME'] // Jenkins multibranch
+		?? env['DRONE_BRANCH'] // Drone
+		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
+		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
+	)
+}
+
+/** A branch name, or undefined for the empty string and git's detached-HEAD placeholder. */
+function nonEmptyBranch(value: string | undefined): string | undefined {
+	const trimmed = value?.trim()
+	return trimmed && trimmed !== 'HEAD' ? trimmed : undefined
 }
 
 /**

@@ -1,6 +1,6 @@
 import { withVideoUrl } from '../asset-url'
 import { isDefaultBranch } from '../db'
-import { matchImpact, normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
+import { indexableKinds, matchImpact, normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
@@ -469,8 +469,11 @@ async function uploadFootprint(
 	// entirely, and treating that silence as "complete" would let it replace a
 	// scenario's valid edges with whatever it managed to collect.
 	const complete = new URL(request.url).searchParams.get('complete') === 'true'
+	// A completed walkthrough still only speaks for the dimensions it actually
+	// measured; with none of them there is nothing to index.
+	const kinds = indexableKinds(footprint)
 	let indexed = false
-	if (complete && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
+	if (complete && kinds.length > 0 && run.source === 'ci' && isDefaultBranch(project, run.branch)) {
 		try {
 			const replaced = await services.db.replaceFootprintEdges({
 				projectId: project.id,
@@ -482,7 +485,12 @@ async function uploadFootprint(
 				// The COMMIT's time, falling back to the run's start when a client
 				// doesn't report one — see migration 0012.
 				runStartedAt: run.commitTime ?? run.startedAt,
-				edges: toEdges(footprint),
+				// Only the dimensions this run actually measured, whole. A run that saw
+				// no files (network mode against a bundle, no source maps) must not
+				// delete the file edges a fuller run established — that would shrink
+				// `--impacted` silently, which is worse than not indexing at all.
+				kinds,
+				edges: toEdges(footprint, kinds),
 			})
 			// False when a NEWER run already indexed this scenario — the write was
 			// correctly refused rather than having failed.
