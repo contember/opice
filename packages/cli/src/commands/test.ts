@@ -59,7 +59,12 @@ export async function testCommand(args: string[]): Promise<number> {
 	// Canonical use: a PR runs `--tier critical --select <changed test files>` so a
 	// touched standard/extended scenario runs without the whole suite.
 	const { values: selectValues, rest: afterSelect } = extractList(afterStrict, 'select')
-	const explicitSelect = (selectValues.join(',') || undefined) ?? process.env['OPICE_SELECT']
+	// Kept as a LIST rather than re-joined: a comma is legal in a path, so a round
+	// trip through a comma-joined string would split `tests/foo,bar.test.ts` into
+	// two entries that match nothing — silently dropping the very test the
+	// selection names. `extractList` already split the flag's own commas, which is
+	// the documented hand-typed form.
+	const explicitSelect = selectValues.length > 0 ? selectValues : splitSelectValue(process.env['OPICE_SELECT'])
 
 	// `--impacted [BASE]` → ask the platform which scenarios the working tree's
 	// changes reach (from their recorded footprints) and fold those test files
@@ -102,7 +107,11 @@ export async function testCommand(args: string[]): Promise<number> {
 	const changedTests = impactedFlag.present
 		? changedTestFiles(impacted?.paths, impactedFlag.value)
 		: []
-	const select = [explicitSelect, ...impactedFiles, ...changedTests].filter(Boolean).join(',') || undefined
+	// JSON, not a comma join: a comma is legal in a path, and joining would split
+	// `tests/foo,bar.test.ts` into two entries matching nothing — silently
+	// dropping the very test the selection was for. `splitSelect` reads both.
+	const selected = [...explicitSelect, ...impactedFiles, ...changedTests]
+	const select = selected.length > 0 ? JSON.stringify([...new Set(selected)]) : undefined
 	if (changedTests.length > 0) {
 		console.error(`[opice] --impacted: ${changedTests.length} changed test file(s) selected directly from the diff.`)
 	}
@@ -319,3 +328,27 @@ function changedTestFiles(known?: readonly string[], base?: string): string[] {
 }
 
 const TEST_FILE_RE = /\.(?:test|spec)\.[tj]sx?$/i
+
+/**
+ * Read an `OPICE_SELECT` value — a JSON array, or the legacy comma list.
+ *
+ * Mirrors `splitSelect` in `@opice/harness`, duplicated because the CLI does not
+ * depend on the harness (it wraps `bun test`; the harness is the user's own
+ * dependency). The JSON form is what this command emits, since it is the only
+ * encoding that survives a path containing a comma.
+ */
+function splitSelectValue(raw: string | undefined): string[] {
+	if (!raw) return []
+	const trimmed = raw.trim()
+	if (trimmed.startsWith('[')) {
+		try {
+			const parsed: unknown = JSON.parse(trimmed)
+			if (Array.isArray(parsed)) {
+				return parsed.filter((e): e is string => typeof e === 'string').map((e) => e.trim()).filter(Boolean)
+			}
+		} catch {
+			// Not JSON after all — fall through to the plain list.
+		}
+	}
+	return trimmed.split(',').map((e) => e.trim()).filter(Boolean)
+}

@@ -99,3 +99,27 @@ describe('decideScenarioRun (the no-double-run gate)', () => {
 		expect(gate).toEqual({ run: true, reason: 'tier' })
 	})
 })
+
+describe('splitSelect encodings', () => {
+	// A comma is legal in a path. Comma-joining turned `tests/foo,bar.test.ts`
+	// into two entries matching nothing, silently dropping the selected test.
+	test('reads a JSON array, commas intact', () => {
+		expect(splitSelect('["tests/foo,bar.test.ts","b.test.ts"]')).toEqual(['tests/foo,bar.test.ts', 'b.test.ts'])
+	})
+
+	test('still reads the hand-typed comma list', () => {
+		expect(splitSelect('a.test.ts, b.test.ts')).toEqual(['a.test.ts', 'b.test.ts'])
+	})
+
+	test('falls back to the comma list for malformed JSON', () => {
+		expect(splitSelect('[not json')).toEqual(['[not json'])
+	})
+
+	test('drops non-strings inside the array', () => {
+		expect(splitSelect('["a.test.ts",null,7,"b.test.ts"]')).toEqual(['a.test.ts', 'b.test.ts'])
+	})
+
+	test.each(['', '   ', undefined])('is empty for %p', (value) => {
+		expect(splitSelect(value)).toEqual([])
+	})
+})
