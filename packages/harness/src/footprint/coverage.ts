@@ -85,6 +85,13 @@ export interface CoverageResult {
 	 * the index's file edges.
 	 */
 	unmappedBundles: number
+	/**
+	 * The coverage pass could not be read at all. Distinct from `unmappedBundles:
+	 * 0`, which says "every bundle resolved" — a failure resolved nothing, and the
+	 * caller must not read the empty file list as an authoritative "touches no
+	 * files" and let it replace the index.
+	 */
+	failed: boolean
 }
 
 /**
@@ -100,7 +107,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 	try {
 		entries = await page.coverage.stopJSCoverage()
 	} catch (err) {
-		return { files: [], warnings: [`JS coverage could not be read: ${message(err)}`], unmappedBundles: 0 }
+		return { files: [], warnings: [`JS coverage could not be read: ${message(err)}`], unmappedBundles: 0, failed: true }
 	}
 	/** path → what we learned about it; the strongest claim wins if a file appears twice. */
 	const byPath = new Map<string, { executed: number; exercised: boolean }>()
@@ -188,7 +195,7 @@ export async function collectJsCoverage(page: Page, context: BrowserContext, con
 		exercised: seen.exercised,
 	}))
 	files.sort((a, b) => a.path.localeCompare(b.path))
-	return { files, warnings, unmappedBundles }
+	return { files, warnings, unmappedBundles, failed: false }
 }
 
 interface FileCoverage {

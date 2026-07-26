@@ -127,6 +127,28 @@ export function normalizeFootprint(input: unknown): ScenarioFootprint {
 }
 
 /**
+ * Split a route into its path and its query parameter NAMES, dropping every
+ * value and the fragment.
+ *
+ * The harness already does this, so for a current reporter it is a no-op — and
+ * that is the point. `normalizeFootprint` is where an arriving payload becomes
+ * trusted: the blob it produces is stored in R2 and served to dashboard
+ * operators and anonymous share-link holders, so "the collector wouldn't send
+ * that" is not a property this side may assume. An older harness, a hand-rolled
+ * client, or a `normalizeUrl` from a version predating its scrubbing can all put
+ * `?token=…` into a route, and the promise that a footprint carries no query
+ * values has to hold at the boundary that publishes it.
+ */
+export function stripQuery(route: string): { route: string; params: string[] } {
+	const withoutFragment = route.split('#')[0] ?? ''
+	const queryStart = withoutFragment.indexOf('?')
+	if (queryStart === -1) return { route: withoutFragment, params: [] }
+	const path = withoutFragment.slice(0, queryStart)
+	const names = [...new Set([...new URLSearchParams(withoutFragment.slice(queryStart + 1)).keys()])].sort()
+	return { route: path, params: names }
+}
+
+/**
  * Flatten a footprint into the change-tracking index's edge rows.
  *
  * `kinds` limits which dimensions are emitted — see {@link indexableKinds} for
@@ -410,12 +432,13 @@ function toRequest(value: unknown): FootprintRequest[] {
 	const step = record['step']
 	const status = record['status']
 	const durationMs = record['durationMs']
-	const params = asArray(record['params']).filter(isNonEmptyString)
+	const stripped = stripQuery(route)
+	const params = [...new Set([...asArray(record['params']).filter(isNonEmptyString), ...stripped.params])].sort()
 	const operations = asArray(record['operations']).flatMap(toOperation)
 	return [{
 		step: typeof step === 'number' && Number.isFinite(step) ? step : null,
 		method,
-		route,
+		route: stripped.route,
 		...(params.length > 0 ? { params } : {}),
 		status: typeof status === 'number' && Number.isFinite(status) ? status : null,
 		resourceType: isNonEmptyString(record['resourceType']) ? record['resourceType'] : 'other',
@@ -445,7 +468,7 @@ function toEndpoint(value: unknown): FootprintEndpoint[] {
 	if (!isNonEmptyString(route)) return []
 	const count = record['count']
 	return [{
-		route,
+		route: stripQuery(route).route,
 		methods: asArray(record['methods']).filter(isNonEmptyString),
 		count: typeof count === 'number' && Number.isFinite(count) ? count : 0,
 	}]

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { indexableKinds, toEdges, type ScenarioFootprint } from './footprint'
+import { indexableKinds, normalizeFootprint, stripQuery, toEdges, type ScenarioFootprint } from './footprint'
 
 function footprint(overrides: Partial<ScenarioFootprint> = {}): ScenarioFootprint {
 	return {
@@ -101,5 +101,42 @@ describe('toEdges', () => {
 		const edges = toEdges(footprint({ files: [{ path: 'a.ts', exercised: false, source: 'module' }, { path: 'b.ts', source: 'module' }] }))
 		expect(edges.find((e) => e.value === 'a.ts')?.exercised).toBe(false)
 		expect(edges.find((e) => e.value === 'b.ts')?.exercised).toBe(true)
+	})
+})
+
+// The worker is where an arriving payload becomes trusted — the blob it writes
+// is served to operators and to anonymous share-link holders. "The collector
+// wouldn't send that" is not a property this side may assume.
+describe('stripQuery', () => {
+	test('leaves a clean route alone', () => {
+		expect(stripQuery('/api/orders/:id')).toEqual({ route: '/api/orders/:id', params: [] })
+	})
+
+	test('drops values, keeps names', () => {
+		expect(stripQuery('/reset?token=sk-live-SECRET&email=a@b.test'))
+			.toEqual({ route: '/reset', params: ['email', 'token'] })
+	})
+
+	test('drops the fragment', () => {
+		expect(stripQuery('/app#/invoices/8f3c')).toEqual({ route: '/app', params: [] })
+	})
+})
+
+describe('normalizeFootprint sanitizes routes', () => {
+	const withRoute = (route: string) => normalizeFootprint({
+		scenario: 's',
+		requests: [{ step: 0, method: 'GET', route, status: 200, resourceType: 'fetch', durationMs: 1 }],
+		endpoints: [{ route, methods: ['GET'], count: 1 }],
+	})
+
+	test('a legacy reporter cannot publish query values', () => {
+		const result = withRoute('/reset?token=sk-live-SECRET')
+		expect(result.requests[0]?.route).toBe('/reset')
+		expect(result.endpoints[0]?.route).toBe('/reset')
+		expect(JSON.stringify(result)).not.toContain('sk-live-SECRET')
+	})
+
+	test('recovered parameter names are folded into params', () => {
+		expect(withRoute('/search?q=hunter2').requests[0]?.params).toEqual(['q'])
 	})
 })

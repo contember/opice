@@ -545,9 +545,17 @@ export class Db {
 			.prepare(`WITH ranked AS (
 				SELECT r.id, ROW_NUMBER() OVER (
 					PARTITION BY r.project_id
-					ORDER BY (CASE WHEN r.branch IN ('main', 'master') THEN 0 ELSE 1 END), r.started_at DESC
+					-- Rank against the project's CONFIGURED trunk, falling back to
+					-- main/master only when it has none. Hardcoding main/master meant a
+					-- project on \`develop\` pinned its headline to whatever ancient
+					-- \`main\` run it happened to have, forever — and a custom trunk is
+					-- exactly what \`projects.default_branch\` exists to support.
+					ORDER BY (CASE
+						WHEN p.default_branch IS NOT NULL THEN (CASE WHEN r.branch = p.default_branch THEN 0 ELSE 1 END)
+						ELSE (CASE WHEN r.branch IN ('main', 'master') THEN 0 ELSE 1 END)
+					END), r.started_at DESC
 				) AS rn
-				FROM runs r
+				FROM runs r JOIN projects p ON p.id = r.project_id
 			)
 			SELECT r.*,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NULL) AS live_total,

@@ -133,3 +133,26 @@ describe('derivePartialDimensions — component walk cap', () => {
 		expect(derivePartialDimensions({ ...none, componentsTruncated: false })).toEqual([])
 	})
 })
+
+describe('derivePartialDimensions — unreadable coverage and oversized bodies', () => {
+	const none = {
+		truncatedFiles: 0,
+		unmappableFiles: 0,
+		coverageFailed: false,
+		truncatedRequests: 0,
+		persistedQueries: 0,
+		mapperFailures: 0,
+	}
+
+	// A pass that could not be READ resolved nothing, which is not the same as
+	// "every bundle resolved" — taking its empty file list as authoritative would
+	// let it wipe the index.
+	test('an unreadable coverage pass makes files partial', () => {
+		expect(derivePartialDimensions({ ...none, coverageFailed: true, unmappableFiles: 0 })).toEqual(['files'])
+	})
+
+	// The endpoint was visible; only the document was too large to scan.
+	test('an oversized GraphQL body costs the models alone', () => {
+		expect(derivePartialDimensions({ ...none, oversizedBodies: 1 })).toEqual(['models'])
+	})
+})

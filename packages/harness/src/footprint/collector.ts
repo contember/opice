@@ -88,6 +88,8 @@ export class FootprintCollector {
 	private unmappedBundles = 0
 	/** Set when the in-page fiber walk hit its node cap, so the component list is a sample. */
 	private componentsTruncated = false
+	/** GraphQL request bodies too large to scan, so their operations are unknown. */
+	private oversizedBodies = 0
 	private disposed = false
 
 	private constructor(
@@ -246,7 +248,13 @@ export class FootprintCollector {
 		} catch {
 			return []
 		}
-		if (body && body.length > MAX_BODY_BYTES) return []
+		if (body && body.length > MAX_BODY_BYTES) {
+			// A mutation carrying a large variable or an upload. The endpoint stays
+			// perfectly visible; only the document — and so the models — is unread,
+			// which is the same shape of loss as a persisted query.
+			this.oversizedBodies++
+			return []
+		}
 		// The content type is half the detection: a raw `application/graphql` body
 		// carries neither a /graphql path nor a JSON "query" key, so without it such
 		// a request records no operations at all.
@@ -354,7 +362,11 @@ export class FootprintCollector {
 				// the pass that reads the source maps. `unmappableFiles` below only
 				// counts what the MODULE collector couldn't name, which for a bundled
 				// app is every script — including the ones coverage then maps perfectly.
-				this.coverageRan = true
+				// `failed` is not the same as "resolved nothing": a pass that could not
+				// be read at all resolved no bundles either, and taking its empty file
+				// list as authoritative would let it wipe the index.
+				if (coverage.failed) this.coverageFailed = true
+				else this.coverageRan = true
 				this.unmappedBundles = coverage.unmappedBundles
 				for (const file of coverage.files) {
 					if (files.size >= MAX_FILES && !files.has(file.path)) {
@@ -379,6 +391,11 @@ export class FootprintCollector {
 		}
 		if (this.truncatedFiles > 0) {
 			this.warnings.add(`${this.truncatedFiles} file(s) dropped — the per-scenario cap of ${MAX_FILES} was reached.`)
+		}
+		if (this.oversizedBodies > 0) {
+			this.warnings.add(
+				`${this.oversizedBodies} GraphQL request(s) had a body too large to scan — their fields and models are not in this footprint.`,
+			)
 		}
 		if (this.componentsTruncated) {
 			this.warnings.add(
@@ -414,6 +431,7 @@ export class FootprintCollector {
 			persistedQueries: this.persistedQueries,
 			mapperFailures: this.mapperFailures,
 			componentsTruncated: this.componentsTruncated,
+			oversizedBodies: this.oversizedBodies,
 		})
 		if (partial.length > 0) footprint.partial = partial
 		return footprint
@@ -503,6 +521,8 @@ export function derivePartialDimensions(signals: {
 	mapperFailures: number
 	/** The in-page React walk hit its node cap, so the component list is a sample. */
 	componentsTruncated?: boolean
+	/** GraphQL bodies too large to scan — their operations, and so their models, are unknown. */
+	oversizedBodies?: number
 }): FootprintDimension[] {
 	const partial = new Set<FootprintDimension>()
 	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
@@ -516,7 +536,7 @@ export function derivePartialDimensions(signals: {
 	// A persisted query is a perfectly visible endpoint whose document — and so
 	// whose models — never crossed the wire. Only the model side suffers, and the
 	// same is true of a mapper that threw.
-	if (signals.persistedQueries > 0 || signals.mapperFailures > 0) partial.add('models')
+	if (signals.persistedQueries > 0 || signals.mapperFailures > 0 || (signals.oversizedBodies ?? 0) > 0) partial.add('models')
 	if (signals.componentsTruncated) partial.add('components')
 	return [...partial]
 }
