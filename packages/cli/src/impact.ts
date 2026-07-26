@@ -207,7 +207,7 @@ function existsInRepo(file: string): boolean {
 /** The repository root, or null outside a checkout. Resolved once. */
 let cachedRoot: string | null | undefined
 function repoRoot(): string | null {
-	if (cachedRoot === undefined) cachedRoot = gitLines('git rev-parse --show-toplevel')[0] ?? null
+	if (cachedRoot === undefined) cachedRoot = gitLines('rev-parse', '--show-toplevel')[0] ?? null
 	return cachedRoot
 }
 
@@ -215,7 +215,7 @@ function repoRoot(): string | null {
 let cachedTracked: string[] | undefined
 function trackedFiles(): string[] {
 	// `-z` again: a C-quoted name here would fail to match the very path it is.
-	if (cachedTracked === undefined) cachedTracked = gitPaths('git ls-files -z')
+	if (cachedTracked === undefined) cachedTracked = gitPaths('ls-files', '-z')
 	return cachedTracked
 }
 

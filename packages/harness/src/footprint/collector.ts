@@ -281,7 +281,7 @@ export class FootprintCollector {
 			try {
 				const custom = override(url)
 				if (custom === null) return null
-				if (custom !== undefined) return { route: custom }
+				if (custom !== undefined) return splitCustomRoute(custom)
 			} catch (err) {
 				this.warnings.add(`normalizeUrl threw (falling back to the built-in templating): ${message(err)}`)
 			}
@@ -406,4 +406,27 @@ function safeOrigin(url: string | undefined): string | null {
 
 function message(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Split a custom `normalizeUrl` result into a route and its query parameter NAMES.
+ *
+ * `normalizeUrl` replaces the path templating — that is its job, and what it
+ * returns is taken as the route. It does not, however, get to opt out of the one
+ * rule that holds everywhere: query values never enter a footprint. They carry
+ * tokens, emails and search terms, and the footprint is uploaded and rendered on
+ * a dashboard. An override written to fix one path (`url.replace(/\/orders\/\d+/, …)`)
+ * has no reason to think about the `?token=` still hanging off the end, so this
+ * strips it for them. Parameter names survive, as they do for built-in templating.
+ *
+ * The fragment goes too: it never reaches a server, and client routers put real
+ * ids in it.
+ */
+export function splitCustomRoute(custom: string): { route: string; params?: string[] } {
+	const withoutFragment = custom.split('#')[0] ?? ''
+	const queryStart = withoutFragment.indexOf('?')
+	if (queryStart === -1) return { route: withoutFragment }
+	const route = withoutFragment.slice(0, queryStart)
+	const names = [...new Set([...new URLSearchParams(withoutFragment.slice(queryStart + 1)).keys()])].sort()
+	return names.length > 0 ? { route, params: names } : { route }
 }

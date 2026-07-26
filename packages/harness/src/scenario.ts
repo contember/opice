@@ -144,20 +144,52 @@ function repoRootAbove(from: string): string | null {
 }
 
 /**
+ * The test-file path inside one stack frame.
+ *
+ * A frame ends in `:line:col`, so the path is everything before that — and it
+ * may legitimately contain spaces (`/Users/me/My Project/…`) and colons (a
+ * Windows drive letter). An earlier form excluded both, which cost the file on
+ * any checkout with a space in its path, not only on Windows. So the extension
+ * anchors the match instead: take the longest run before `.test.ts`/`.spec.ts`
+ * that starts at a recognisable root, and require the frame to continue with
+ * `:` or `)` so a partial word can't match.
+ */
+export const TEST_FRAME_RE = /((?:file:\/\/\/?)?(?:[A-Za-z]:[\\/]|\/)[^)]*?\.(?:test|spec)\.[tj]sx?)(?=[:)]|\s*$)/
+
+/** A matched frame path → a real filesystem path. */
+export function normalizeFramePath(raw: string): string {
+	const isUrl = raw.startsWith('file://')
+	let p = raw.replace(/^file:\/\//, '')
+	// `file:///C:/x` unwraps to `/C:/x`; the leading slash is part of the URL, not the path.
+	if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1)
+	// Only a URL is percent-encoded — a bare path containing `%20` means that literally.
+	if (isUrl) {
+		try {
+			p = decodeURIComponent(p)
+		} catch {
+			// Malformed escapes: keep the raw form rather than losing the file.
+		}
+	}
+	return p
+}
+
+/**
  * Best-effort capture of the `*.test.ts` / `*.spec.ts` path that called
  * `browserTest`, by walking the stack for the first such frame. Both spellings
  * matter: bun runs either, and a scenario whose file isn't captured is indexed
  * with no test file at all, so `--impacted` can never force-run it. Reported so a failed
  * scenario links back to its source file. Relative to the repository root when
  * there is one, so the same file reads the same however the run was invoked.
+ *
+ * See {@link TEST_FRAME_RE} for how a frame is parsed.
  */
 function captureTestFile(): { relative: string; absolute: string } | undefined {
 	const stack = new Error().stack
 	if (!stack) return undefined
 	for (const line of stack.split('\n')) {
-		const match = line.match(/\(?((?:file:\/\/)?\/[^\s():]+\.(?:test|spec)\.[tj]sx?)/)
+		const match = line.match(TEST_FRAME_RE)
 		if (match?.[1]) {
-			const abs = match[1].replace(/^file:\/\//, '')
+			const abs = normalizeFramePath(match[1])
 			try {
 				const base = repoRootAbove(path.dirname(abs)) ?? process.cwd()
 				const rel = path.relative(base, abs)

@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 
 /**
  * Best-effort git metadata for the current working tree. Returns the values
@@ -15,9 +15,9 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 	// workflow gives it a fresh start time but not a fresh commit, and without
 	// this the rerun would outrank a newer commit and restore stale edges.
 	try {
-		const branch = fromEnv.branch ?? run('git rev-parse --abbrev-ref HEAD')
-		const commit = fromEnv.commit ?? run('git rev-parse HEAD')
-		const commitTime = fromEnv.commitTime ?? run('git show -s --format=%ct HEAD')
+		const branch = fromEnv.branch ?? run(['rev-parse', '--abbrev-ref', 'HEAD'])
+		const commit = fromEnv.commit ?? run(['rev-parse', 'HEAD'])
+		const commitTime = fromEnv.commitTime ?? run(['show', '-s', '--format=%ct', 'HEAD'])
 		return {
 			...(branch ? { branch } : {}),
 			...(commit ? { commit } : {}),
@@ -28,14 +28,24 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 	}
 }
 
-function run(cmd: string): string {
-	return execSync(cmd, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+/**
+ * Run git with an argument VECTOR, never a command string.
+ *
+ * `execFileSync` spawns git directly, so no shell parses these arguments and
+ * nothing here needs quoting. The previous string form did, and its quoting was
+ * POSIX-only: `cmd.exe` treats single quotes as literal characters, so a ref
+ * arrived as `'origin/main'` — quotes and all — and every ref-taking command
+ * silently failed on Windows. Passing argv removes the question rather than
+ * answering it per platform, and takes the shell-injection surface with it.
+ */
+function run(args: readonly string[]): string {
+	return execFileSync('git', [...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
 }
 
 /** Run a git command, returning its non-empty output lines; [] if it fails. */
-export function gitLines(cmd: string): string[] {
+export function gitLines(...args: string[]): string[] {
 	try {
-		return run(cmd).split('\n').map((line) => line.trim()).filter(Boolean)
+		return run(args).split('\n').map((line) => line.trim()).filter(Boolean)
 	} catch {
 		return []
 	}
@@ -51,9 +61,9 @@ export function gitLines(cmd: string): string[] {
  * not run. `-z` sidesteps the quoting entirely and also survives paths
  * containing newlines.
  */
-export function gitPaths(cmd: string): string[] {
+export function gitPaths(...args: string[]): string[] {
 	try {
-		return run(cmd).split('\0').filter(Boolean)
+		return run(args).split('\0').filter(Boolean)
 	} catch {
 		return []
 	}
@@ -78,11 +88,11 @@ export function changedPaths(base: string): string[] {
 		// on precisely the kind of change most likely to break it. Turning
 		// detection off reports the move as a delete + an add, so both paths are
 		// queried and the old one finds the edge.
-		`git diff --name-only --no-renames -z ${shellQuote(base)}...HEAD`,
-		'git diff --name-only --no-renames -z HEAD',
-		'git ls-files --others --exclude-standard -z',
+		['diff', '--name-only', '--no-renames', '-z', `${base}...HEAD`],
+		['diff', '--name-only', '--no-renames', '-z', 'HEAD'],
+		['ls-files', '--others', '--exclude-standard', '-z'],
 	]) {
-		for (const path of gitPaths(cmd)) paths.add(path)
+		for (const path of gitPaths(...cmd)) paths.add(path)
 	}
 	return [...paths]
 }
@@ -120,23 +130,18 @@ export function defaultBase(): string {
 
 /** `origin`'s default branch from the LOCAL symbolic ref — no network. */
 function symbolicDefaultBranch(): string | undefined {
-	const [symbolic] = gitLines('git symbolic-ref --quiet refs/remotes/origin/HEAD')
+	const [symbolic] = gitLines('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD')
 	return symbolic ? symbolic.replace(/^refs\/remotes\//, '') : undefined
 }
 
 /** Does this ref resolve in the local repository? */
 function exists(ref: string): boolean {
-	return gitLines(`git rev-parse --verify --quiet ${shellQuote(ref)}`).length > 0
+	return gitLines('rev-parse', '--verify', '--quiet', ref).length > 0
 }
 
 /** `origin`'s default branch, asked over the network. See {@link symbolicDefaultBranch} for the free path. */
 function remoteDefaultBranch(): string | undefined {
-	const line = gitLines('git remote show origin').find((l) => l.includes('HEAD branch:'))
+	const line = gitLines('remote', 'show', 'origin').find((l) => l.includes('HEAD branch:'))
 	const name = line?.split('HEAD branch:')[1]?.trim()
 	return name && name !== '(unknown)' ? `origin/${name}` : undefined
-}
-
-/** Single-quote a ref for the shell. Refs can contain `/` and `-`, never a quote we'd need to escape. */
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, `'\\''`)}'`
 }
