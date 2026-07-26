@@ -41,9 +41,11 @@ export const COMPONENT_SCRIPT = `(() => {
     var pending = [];
     var lastWalk = 0;
     var scheduled = false;
-    // The most recent root, so a commit that lands inside the throttle window is
-    // walked when the window closes rather than dropped.
-    var pendingRoot = null;
+    // EVERY root committed inside the throttle window, not just the last. An app
+    // can mount several independent React roots (a widget, a portal, a legacy
+    // island), and keeping only the newest meant the others were never walked —
+    // their components missing while the dimension still read as complete.
+    var pendingRoots = [];
     var THROTTLE_MS = 250;
     var MAX_NODES = 20000;
     // Set once the node cap has cut a walk short. Reported alongside the names,
@@ -97,8 +99,15 @@ export const COMPONENT_SCRIPT = `(() => {
     var runWalk = function () {
       scheduled = false;
       lastWalk = Date.now();
-      var root = pendingRoot;
-      try { if (root && root.current) walk(root.current); } catch (e) {}
+      // Walked, not drained: a root stays mounted across commits, and forgetting
+      // it would mean a later commit to a root that didn't re-announce itself
+      // goes unwalked.
+      for (var i = 0; i < pendingRoots.length; i++) {
+        try {
+          var root = pendingRoots[i];
+          if (root && root.current) walk(root.current);
+        } catch (e) {}
+      }
     };
     var hook = {
       renderers: new Map(),
@@ -115,7 +124,7 @@ export const COMPONENT_SCRIPT = `(() => {
         // traversal on its own main thread, several times a second, for the whole
         // scenario. Defer to a timer so the commit costs only this bookkeeping.
         try {
-          if (root) pendingRoot = root;
+          if (root && pendingRoots.indexOf(root) === -1) pendingRoots.push(root);
           if (scheduled) return;
           scheduled = true;
           // Trailing, not leading-only: a commit arriving inside the throttle
@@ -145,8 +154,12 @@ export const COMPONENT_SCRIPT = `(() => {
     // — so the collector calls this directly before it finishes.
     var finalSweep = function () {
       try {
-        var root = pendingRoot;
-        if (root && root.current) walk(root.current);
+        for (var i = 0; i < pendingRoots.length; i++) {
+          try {
+            var root = pendingRoots[i];
+            if (root && root.current) walk(root.current);
+          } catch (e) {}
+        }
         flush();
       } catch (e) {}
     };

@@ -406,10 +406,19 @@ export class FootprintCollector {
 		// with the context closing, not a navigation, so the page's own `pagehide`
 		// sweep would never fire.
 		if (this.collectors.has('components')) {
-			try {
-				await page.evaluate('window.__opiceFootprintSweep && window.__opiceFootprintSweep()')
-			} catch {
-				// Page already closed or navigating — the names we have are what we have.
+			// EVERY open page, not just the scenario's first. A popup runs its own
+			// copy of the init script with its own throttle timer, and that timer is
+			// cancelled when the context closes — so without sweeping it, whatever
+			// its last interaction rendered never arrives, while the component
+			// dimension still reports itself complete.
+			const pages = new Set<Page>([page, ...this.context.pages()])
+			for (const open of pages) {
+				try {
+					await open.evaluate('window.__opiceFootprintSweep && window.__opiceFootprintSweep()')
+				} catch {
+					// Closed, navigating, or never ran the script — the names we have
+					// are the names we have.
+				}
 			}
 		}
 		const files = new Map<string, FootprintFile>(this.modules)

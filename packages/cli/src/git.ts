@@ -20,9 +20,9 @@ export function detectGitMeta(): { branch?: string; commit?: string; commitTime?
 		// which is not a branch name. Reporting it as one is worse than reporting
 		// nothing: `isDefaultBranch` rejects it, so the footprint index never fills
 		// and `--impacted` stays useless with no visible cause.
-		const branch = fromEnv.branch ?? nonEmptyBranch(run(['rev-parse', '--abbrev-ref', 'HEAD']))
-		const commit = fromEnv.commit ?? run(['rev-parse', 'HEAD'])
-		const commitTime = fromEnv.commitTime ?? run(['show', '-s', '--format=%ct', 'HEAD'])
+		const branch = fromEnv.branch ?? nonEmptyBranch(runScalar(['rev-parse', '--abbrev-ref', 'HEAD']))
+		const commit = fromEnv.commit ?? runScalar(['rev-parse', 'HEAD'])
+		const commitTime = fromEnv.commitTime ?? runScalar(['show', '-s', '--format=%ct', 'HEAD'])
 		// Depth is a better revision key than the timestamp, but only from a full
 		// checkout: on a shallow clone `rev-list --count` answers the depth of the
 		// CLONE (1 for the CI default), which would rank every run identically.
@@ -64,8 +64,8 @@ function ciBranch(): string | undefined {
 
 /** The commit's depth on its branch, or undefined when the checkout is shallow. */
 function gitDepth(): string | undefined {
-	if (run(['rev-parse', '--is-shallow-repository']) !== 'false') return undefined
-	const count = run(['rev-list', '--count', 'HEAD'])
+	if (runScalar(['rev-parse', '--is-shallow-repository']) !== 'false') return undefined
+	const count = runScalar(['rev-list', '--count', 'HEAD'])
 	return Number(count) > 0 ? count : undefined
 }
 
@@ -94,7 +94,16 @@ function run(args: readonly string[]): string {
 	// and its scenario would not be selected. `-C` also pins the `diff.relative`
 	// output paths to the root, which is the shape the index is keyed on.
 	const prefix = root ? ['-C', root] : []
-	return execFileSync('git', [...prefix, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+	// RAW, untrimmed. A repository path may legitimately begin with a space or a
+	// newline, and trimming here would eat the first one in `-z` output before it
+	// was ever split — producing a path that matches no footprint and silently
+	// drops its scenarios. Callers that want a single scalar trim it themselves.
+	return execFileSync('git', [...prefix, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+}
+
+/** Run git and return its output as one trimmed scalar — for single-value queries. */
+function runScalar(args: readonly string[]): string {
+	return run(args).trim()
 }
 
 /**
