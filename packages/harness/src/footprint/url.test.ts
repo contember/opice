@@ -123,3 +123,31 @@ describe('opaque runs', () => {
 		expect(route(`${APP}/documentation/notifications`)).toBe('/documentation/notifications')
 	})
 })
+
+describe('redactSegment', () => {
+	// Shape alone cannot tell `/customers/acme` from `/settings/billing`. The app
+	// knows the position, so it supplies the rule; the built-ins stay unchanged.
+	const afterCustomers = (_s: string, { index, segments }: { index: number; segments: readonly string[] }) =>
+		segments[index - 1] === 'customers'
+
+	test('collapses the segment the app points at', () => {
+		expect(toRouteTemplate(`${APP}/customers/acme/orders`, APP, afterCustomers)?.route)
+			.toBe('/customers/:id/orders')
+	})
+
+	test('leaves every other segment to the built-in rules', () => {
+		expect(toRouteTemplate(`${APP}/settings/billing`, APP, afterCustomers)?.route)
+			.toBe('/settings/billing')
+	})
+
+	test('can only add redaction — false never resurrects a built-in id', () => {
+		const never = () => false
+		expect(toRouteTemplate(`${APP}/invoices/8f3c9b2a1d4e5f60/lines`, APP, never)?.route)
+			.toBe('/invoices/:id/lines')
+	})
+
+	test('a throwing predicate redacts rather than losing the request', () => {
+		const boom = () => { throw new Error('nope') }
+		expect(toRouteTemplate(`${APP}/customers/acme`, APP, boom)?.route).toBe('/:id/:id')
+	})
+})

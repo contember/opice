@@ -40,6 +40,7 @@ export function NewProject() {
 		setCreated(null)
 		setSlug('')
 		setName('')
+		setDefaultBranch('')
 		mutation.reset()
 	}
 

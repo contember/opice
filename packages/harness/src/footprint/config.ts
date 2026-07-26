@@ -54,6 +54,26 @@ export interface FootprintConfig {
 	/** Replace the built-in URL → route templating. Return null to drop a request entirely. */
 	normalizeUrl?: (url: string) => string | null
 	/**
+	 * Additionally collapse a path segment to `:id`. Runs after the built-in id
+	 * shapes, and can only ADD redaction — returning false never keeps a segment
+	 * the built-ins would have collapsed.
+	 *
+	 * For apps whose ids are human-readable. `/customers/acme/orders` is
+	 * indistinguishable from `/settings/billing/history` by shape alone, so the
+	 * built-in heuristic keeps both — the right call for the common case, but
+	 * wrong when that slug is a real customer name and the footprint is rendered
+	 * on a dashboard. The position is the signal, and only the app knows it:
+	 *
+	 * ```ts
+	 * redactSegment: (segment, { index, segments }) => segments[index - 1] === 'customers'
+	 * ```
+	 *
+	 * Prefer this over {@link normalizeUrl} for the purpose — `normalizeUrl`
+	 * replaces templating wholesale, so redacting one segment with it means
+	 * reimplementing the rest (and losing query parameter names).
+	 */
+	redactSegment?: (segment: string, context: { index: number; segments: readonly string[] }) => boolean
+	/**
 	 * Map a GraphQL operation to the models it touches, replacing the built-in
 	 * verb+Entity heuristic. Return null to fall back to it.
 	 */

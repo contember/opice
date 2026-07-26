@@ -112,7 +112,11 @@ const MIN_OPAQUE_RUN = 12
  * Returns null for URLs that carry no route at all (`data:`, `blob:`) — those
  * are noise in a footprint.
  */
-export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTemplate | null {
+export function toRouteTemplate(
+	rawUrl: string,
+	appOrigin?: string,
+	redactSegment?: (segment: string, context: { index: number; segments: readonly string[] }) => boolean,
+): RouteTemplate | null {
 	let url: URL
 	try {
 		url = new URL(rawUrl)
@@ -123,7 +127,22 @@ export function toRouteTemplate(rawUrl: string, appOrigin?: string): RouteTempla
 	const segments = url.pathname.split('/').filter(Boolean)
 	const templated = segments.map((segment, i) => {
 		if (hasOpaqueRun(segment)) return ':id'
-		return isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment) ? ':id' : segment
+		if (isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment)) return ':id'
+		// The app's own positional rule, last: shape alone cannot tell a slug id
+		// (`/customers/acme`) from a route name (`/settings/billing`), so a repo
+		// that has the former says so here. It can only collapse further — a
+		// segment already templated above never reaches this.
+		if (redactSegment) {
+			try {
+				if (redactSegment(segment, { index: i, segments })) return ':id'
+			} catch {
+				// A throwing predicate must not lose the request. Redact anyway: the
+				// caller asked for a rule here and couldn't answer, and `:id` is the
+				// side that cannot leak.
+				return ':id'
+			}
+		}
+		return segment
 	})
 	const path = '/' + templated.join('/')
 	const sameOrigin = appOrigin !== undefined && url.origin === appOrigin

@@ -440,6 +440,11 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// failure is counted, yet the footprint covers only the steps that do
 					// exist. Indexing that would replace a full scenario's edges with a
 					// fragment — exactly what the completeness gate exists to prevent.
+						// `blocked` stubs are the same hole under a different name: they also
+						// have no body, so a scenario waiting on an unbuilt feature likewise
+						// covers only a prefix. The two are counted separately (one is a todo,
+						// the other a feature that doesn't exist yet), but for indexing the
+						// distinction doesn't matter — neither one ran.
 					// `isBody` is part of the gate, not just the reset: only the body form
 					// has a wrapper that can observe its own completion, so only it can
 					// ever prove a walkthrough finished. Deriving that from shared mutable
@@ -449,6 +454,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 						&& currentWalkthroughCompleted
 						&& currentScenarioFailures === 0
 						&& currentScenarioPending === 0
+						&& currentScenarioBlocked === 0
 						&& currentScenarioTolerated === 0
 					if (!complete && !isBody) warnLegacyFootprint()
 					footprintUpload = reporter.uploadFootprint({

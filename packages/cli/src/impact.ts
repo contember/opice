@@ -103,12 +103,73 @@ export async function queryImpact(
 			console.error(`[opice] impact query failed: ${response.status} ${(await response.text()).trim()}`)
 			return null
 		}
-		// falls through to the validated parse below
-		return asImpactResult(await response.json())
+		const parsed = asImpactResult(await response.json())
+		if (!parsed) {
+			console.error('[opice] impact query returned a response this CLI does not understand — ignoring it.')
+			return null
+		}
+		return parsed
 	} catch (err) {
 		console.error(`[opice] impact query failed: ${err instanceof Error ? err.message : String(err)}`)
 		return null
 	}
+}
+
+/**
+ * Validate a platform response into an {@link ImpactResult}, or null if it isn't one.
+ *
+ * The payload decides which tests a PR runs, so it is checked rather than cast.
+ * A cast would let a proxy's HTML error page, an older platform's shape, or a
+ * truncated body reach {@link impactedTestFiles} as `undefined.map` — a crash in
+ * the one code path whose whole contract is to fail open. Unknown fields are
+ * dropped and malformed scenarios are skipped individually: a single bad row
+ * shouldn't discard an otherwise usable selection.
+ */
+export function asImpactResult(payload: unknown): ImpactResult | null {
+	if (!isRecord(payload) || !Array.isArray(payload['scenarios'])) return null
+	const rawIndex = payload['index']
+	if (!isRecord(rawIndex)) return null
+	const index: ImpactIndexStatus = {
+		edges: num(rawIndex['edges']),
+		scenarios: num(rawIndex['scenarios']),
+		updatedAt: typeof rawIndex['updatedAt'] === 'number' ? rawIndex['updatedAt'] : null,
+		unindexed: num(rawIndex['unindexed']),
+	}
+	const scenarios = payload['scenarios'].flatMap((raw) => {
+		if (!isRecord(raw)) return []
+		const scenarioKey = raw['scenarioKey']
+		const scenarioName = raw['scenarioName']
+		if (typeof scenarioKey !== 'string' || typeof scenarioName !== 'string') return []
+		const testFile = raw['testFile']
+		const reasons = Array.isArray(raw['reasons']) ? raw['reasons'].flatMap(asReason) : []
+		return [{
+			scenarioKey,
+			scenarioName,
+			testFile: typeof testFile === 'string' ? testFile : null,
+			reasons,
+			reasonCount: typeof raw['reasonCount'] === 'number' ? raw['reasonCount'] : reasons.length,
+			updatedAt: num(raw['updatedAt']),
+		}]
+	})
+	return { scenarios, index }
+}
+
+const REASON_KINDS = new Set(['file', 'component', 'endpoint', 'model'])
+
+function asReason(raw: unknown): ImpactReason[] {
+	if (!isRecord(raw)) return []
+	const { kind, value, matched } = raw
+	if (typeof kind !== 'string' || !REASON_KINDS.has(kind)) return []
+	if (typeof value !== 'string' || typeof matched !== 'string') return []
+	return [{ kind: kind as ImpactReason['kind'], value, matched }]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function num(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
 /**

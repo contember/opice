@@ -287,7 +287,7 @@ export class FootprintCollector {
 			}
 		}
 		const appOrigin = this.isAppOrigin(url) ? safeOrigin(url) ?? undefined : undefined
-		return toRouteTemplate(url, appOrigin)
+		return toRouteTemplate(url, appOrigin, this.options.config.redactSegment)
 	}
 
 	/**
