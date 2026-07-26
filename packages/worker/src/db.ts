@@ -1047,20 +1047,32 @@ export class Db {
 						-- ANCESTOR, and a scenario the real newer revision added would be
 						-- missing from it — so unindexed reads 0 and an empty impact
 						-- result looks authoritative.
-						-- Depth only when EVERY candidate has one. The guard in
-						-- replaceFootprintEdges compares a mixed pair by timestamp, so
-						-- ranking all depth-bearing runs above all null-depth ones would
-						-- disagree with it: a repo that switched to shallow checkouts
-						-- would keep choosing its last full-checkout run forever while
-						-- the edges moved on, and every scenario added since would be
-						-- missing from the inventory. Homogeneous metadata gets the
-						-- better key; mixed metadata gets the one both sides share.
-						ORDER BY (CASE WHEN (
-								SELECT COUNT(*) FROM runs d
-								WHERE d.project_id = ?1 AND d.source = 'ci'
-									AND (CASE WHEN ?3 IS NULL THEN d.branch IN ('main', 'master') ELSE d.branch = ?3 END)
-									AND d.commit_depth IS NULL
-							) = 0 THEN commit_depth ELSE NULL END) DESC,
+						-- Depth is the better key, but it cannot simply outrank the
+						-- timestamp: replaceFootprintEdges compares a mixed pair BY TIME,
+						-- so ranking every depth-bearing run above every null-depth one
+						-- would disagree with it — a repo that moved to shallow checkouts
+						-- would keep inventorying its last full-checkout run forever while
+						-- the edges advanced past it.
+						--
+						-- Nor can it be "only when every run has a depth": one ancient
+						-- shallow run would then disable depth ordering for good, even
+						-- after every current run reports one.
+						--
+						-- So depth decides UNLESS a null-depth run is genuinely newer by
+						-- the clock. Old shallow history is simply older and stops
+						-- mattering; a newer shallow run correctly takes over.
+						ORDER BY (CASE WHEN NOT EXISTS (
+								SELECT 1 FROM runs n
+								WHERE n.project_id = ?1 AND n.source = 'ci'
+									AND (CASE WHEN ?3 IS NULL THEN n.branch IN ('main', 'master') ELSE n.branch = ?3 END)
+									AND n.commit_depth IS NULL
+									AND n.commit_time > (
+										SELECT MAX(d.commit_time) FROM runs d
+										WHERE d.project_id = ?1 AND d.source = 'ci'
+											AND (CASE WHEN ?3 IS NULL THEN d.branch IN ('main', 'master') ELSE d.branch = ?3 END)
+											AND d.commit_depth IS NOT NULL
+									)
+							) THEN commit_depth ELSE NULL END) DESC,
 							(commit_time IS NULL), commit_time DESC, started_at DESC
 						LIMIT 1
 					), latest AS (
