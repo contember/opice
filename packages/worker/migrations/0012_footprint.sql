@@ -81,6 +81,12 @@ CREATE TABLE footprint_edges (
 	-- older commit revert the index to stale paths. The replace is guarded on it.
 	run_started_at INTEGER NOT NULL DEFAULT 0,
 	updated_at    INTEGER NOT NULL,
+	-- When a run last REPORTED this scenario, whether or not the write applied.
+	-- Retention is measured on this, not on updated_at: a project whose trunk has
+	-- not moved keeps re-reporting the same revision, every one of those writes is
+	-- correctly refused as not-newer, and updated_at therefore never advances — so
+	-- pruning on it would delete an index that is being actively maintained.
+	last_seen_at  INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (project_id, scenario_key, kind, value)
 );
 
@@ -120,5 +126,7 @@ CREATE TABLE footprint_index_state (
 	-- one — a depth and a timestamp are not comparable quantities.
 	run_depth      INTEGER,
 	updated_at     INTEGER NOT NULL,
+	/* See footprint_edges.last_seen_at. */
+	last_seen_at   INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (project_id, scenario_key, kind)
 );

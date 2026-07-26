@@ -51,6 +51,20 @@ const SOURCE_MAP_CONCURRENCY = 4
 const SOURCE_MAP_TOTAL_BUDGET_MS = 20_000
 
 /**
+ * Total decoded source-map bytes held at once, across all of them.
+ *
+ * The per-map cap bounds ONE map; it does not bound the set, and the prefetch
+ * deliberately holds them all so the decode loop below doesn't pay a round trip
+ * per script. A production build with 30 chunks each carrying a several-MB map
+ * would retain hundreds of megabytes inside the test process during teardown —
+ * enough to OOM the runner and fail a passing test over telemetry that is
+ * documented as unable to do that. Maps past the budget are simply not fetched;
+ * their scripts degrade to "no source map", which already reads as an unresolved
+ * bundle and keeps the file dimension partial.
+ */
+const SOURCE_MAP_TOTAL_CACHE_BYTES = 96 * 1024 * 1024
+
+/**
  * Source maps skipped this run because they are index maps (`sections`), which
  * this decoder doesn't handle. Collected per collection pass and reported as a
  * warning — an unattributed bundle must not read as "touches no files".
@@ -351,15 +365,16 @@ async function prefetchSourceMaps(
 	const pending = [...urls]
 	const deadline = Date.now() + SOURCE_MAP_TOTAL_BUDGET_MS
 	const skipped: string[] = []
+	let cachedBytes = 0
 	const workers = Array.from({ length: Math.min(SOURCE_MAP_CONCURRENCY, pending.length) }, async () => {
 		for (let url = pending.pop(); url !== undefined; url = pending.pop()) {
-			// Stop SCHEDULING once the budget is spent — the request in flight still
-			// has its own timeout, so the worst case stays bounded.
-			if (Date.now() >= deadline) {
+			// Stop SCHEDULING once either budget is spent — the request in flight
+			// still has its own timeout, so the worst case stays bounded.
+			if (Date.now() >= deadline || cachedBytes >= SOURCE_MAP_TOTAL_CACHE_BYTES) {
 				skipped.push(url)
 				continue
 			}
-			await fetchSourceMap(url, context, cache)
+			cachedBytes += (await fetchSourceMap(url, context, cache)).bytes
 		}
 	})
 	await Promise.all(workers)
@@ -396,7 +411,7 @@ async function resolveSourceMap(
 	} catch {
 		return null
 	}
-	const map = await fetchSourceMap(absolute, context, cache)
+	const { map } = await fetchSourceMap(absolute, context, cache)
 	return map ? { map, url: absolute } : null
 }
 
@@ -405,10 +420,11 @@ async function fetchSourceMap(
 	url: string,
 	context: BrowserContext,
 	cache: Map<string, RawSourceMap | null>,
-): Promise<RawSourceMap | null> {
+): Promise<{ map: RawSourceMap | null; bytes: number }> {
 	const cached = cache.get(url)
-	if (cached !== undefined) return cached
+	if (cached !== undefined) return { map: cached, bytes: 0 }
 	let map: RawSourceMap | null = null
+	let bytes = 0
 	try {
 		const response = await context.request.get(url, { timeout: SOURCE_MAP_TIMEOUT_MS, failOnStatusCode: false })
 		if (response.ok()) {
@@ -418,12 +434,15 @@ async function fetchSourceMap(
 			const declared = Number(response.headers()['content-length'] ?? '')
 			if (Number.isFinite(declared) && declared > MAX_SOURCE_MAP_BYTES) {
 				cache.set(url, null)
-				return null
+				return { map: null, bytes: 0 }
 			}
 			const body = await response.body()
 			if (body.byteLength <= MAX_SOURCE_MAP_BYTES) {
 				const text = body.toString('utf-8')
 				map = parseSourceMap(text)
+				// What the CACHE will hold. Charged against the aggregate budget so a
+				// build with many large maps cannot retain all of them at once.
+				if (map) bytes = body.byteLength
 				if (!map && isIndexSourceMap(text)) indexMaps.add(url)
 			}
 		}
@@ -432,7 +451,7 @@ async function fetchSourceMap(
 		map = null
 	}
 	cache.set(url, map)
-	return map
+	return { map, bytes }
 }
 
 function message(err: unknown): string {

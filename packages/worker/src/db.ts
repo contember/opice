@@ -917,6 +917,21 @@ export class Db {
 					.bind(input.projectId, input.scenarioKey, input.runStartedAt, kind, input.runId, now, input.runDepth ?? null),
 			)
 		}
+		// Unconditional, and outside every freshness guard: this records that the
+		// scenario was REPORTED, which is what retention should measure. A refused
+		// write still means the scenario is alive and running.
+		if (kindList.length > 0) {
+			statements.push(
+				this.d1
+					.prepare(`UPDATE footprint_edges SET last_seen_at = ?3
+						WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})`)
+					.bind(input.projectId, input.scenarioKey, now, ...kindList),
+				this.d1
+					.prepare(`UPDATE footprint_index_state SET last_seen_at = ?3
+						WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})`)
+					.bind(input.projectId, input.scenarioKey, now, ...kindList),
+			)
+		}
 		const results = await this.d1.batch(statements)
 		// The guard makes these no-ops for a run older than what's indexed, and the
 		// caller reports whether the index was actually written — saying "indexed"
@@ -924,7 +939,10 @@ export class Db {
 		// The markers are the reliable signal: one is written for every kind whose
 		// replacement was accepted, including a kind that legitimately has no edges.
 		// A run with no indexable kinds at all writes none, and is not "indexed".
-		const markers = results.slice(results.length - kindList.length)
+		// The two touch statements above sit at the end, so the markers are the
+		// slice before them.
+		const touches = kindList.length > 0 ? 2 : 0
+		const markers = results.slice(results.length - touches - kindList.length, results.length - touches)
 		const applied = kindList.length > 0 && markers.some((r) => (r?.meta.changes ?? 0) > 0)
 		return { applied }
 	}
@@ -968,9 +986,14 @@ export class Db {
 	 */
 	async pruneStaleFootprintEdges(now = Date.now()): Promise<number> {
 		const cutoff = now - EDGE_RETENTION_MS
+		// On LAST SEEN, not on updated_at. A project whose trunk hasn't moved keeps
+		// re-reporting the same revision; every one of those writes is correctly
+		// refused as not-newer, so updated_at never advances — and pruning on it
+		// would delete an index that is being actively maintained, leaving
+		// `--impacted` blind until some later commit rebuilt it.
 		const [edges] = await this.d1.batch([
-			this.d1.prepare('DELETE FROM footprint_edges WHERE updated_at < ?').bind(cutoff),
-			this.d1.prepare('DELETE FROM footprint_index_state WHERE updated_at < ?').bind(cutoff),
+			this.d1.prepare('DELETE FROM footprint_edges WHERE MAX(updated_at, last_seen_at) < ?').bind(cutoff),
+			this.d1.prepare('DELETE FROM footprint_index_state WHERE MAX(updated_at, last_seen_at) < ?').bind(cutoff),
 		])
 		return edges?.meta.changes ?? 0
 	}
