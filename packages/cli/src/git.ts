@@ -73,7 +73,32 @@ function nonEmptyBranch(value: string | undefined): string | undefined {
  * answering it per platform, and takes the shell-injection surface with it.
  */
 function run(args: readonly string[]): string {
-	return execFileSync('git', [...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+	const root = repoTop()
+	// Run FROM THE REPOSITORY ROOT, not the current directory. `git ls-files` is
+	// scoped to the directory it runs in, so `opice impact` invoked from
+	// `packages/web` in a monorepo silently omitted every untracked file in a
+	// sibling package — a newly added source file would then match no footprint
+	// and its scenario would not be selected. `-C` also pins the `diff.relative`
+	// output paths to the root, which is the shape the index is keyed on.
+	const prefix = root ? ['-C', root] : []
+	return execFileSync('git', [...prefix, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+}
+
+/**
+ * The repository root, resolved once, WITHOUT the `-C` prefix above — this is
+ * the call that discovers it. Null outside a checkout, in which case commands
+ * run wherever they were invoked and fail on their own terms.
+ */
+let cachedTop: string | null | undefined
+function repoTop(): string | null {
+	if (cachedTop === undefined) {
+		try {
+			cachedTop = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
+		} catch {
+			cachedTop = null
+		}
+	}
+	return cachedTop
 }
 
 /** Run a git command, returning its non-empty output lines; [] if it fails. */

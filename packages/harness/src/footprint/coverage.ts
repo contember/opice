@@ -201,28 +201,47 @@ function record(byPath: Map<string, FileCoverage>, path: string, executed: numbe
 }
 
 /**
- * Ranges belonging to **named functions** — the code a scenario *called*, as
- * opposed to the module top level, which merely ran because something imported
- * the file.
+ * Ranges belonging to code the scenario *called*, as opposed to the module top
+ * level, which merely ran because something imported the file.
  *
  * This distinction is what stops file-level footprint from saturating. Measured
  * on a real Contember admin: a single navigation scenario "executed" ~1300
  * source files at >50% of their bytes, because the admin evaluates its schema
  * and component library on load. Every scenario looked like it touched
  * everything, which would make impact selection useless — a change to any file
- * would select every test. V8 already knows the difference: the top level is
- * reported as a function with an empty name, so anything with a name is code
- * somebody actually called.
+ * would select every test.
+ *
+ * What is excluded is the SCRIPT ROOT: V8 reports a script's top level as a
+ * function with no name whose range starts at offset 0. Excluding every unnamed
+ * function instead — which this used to do — overshoots, because V8 also leaves
+ * the name empty for ordinary callbacks (`addEventListener('click', () => …)`,
+ * an inline `onClick`). A file whose behaviour runs through those was reported
+ * `exercised: false` and, since the default impact query matches exercised files
+ * only, its scenario silently went unselected.
+ *
+ * Erring in this direction is deliberate. The two mistakes are not symmetric:
+ * counting a file that was only loaded costs a few extra tests in CI, while
+ * missing one the scenario really used means the change that breaks it does not
+ * run it. `--impacted` is additive by design for exactly this reason.
  */
-function exercisedRanges(functions: readonly { functionName: string; ranges: readonly { startOffset: number; endOffset: number; count: number }[] }[]): CoverageRange[] {
+export function exercisedRanges(functions: readonly { functionName: string; ranges: readonly { startOffset: number; endOffset: number; count: number }[] }[]): CoverageRange[] {
 	const ranges: CoverageRange[] = []
 	for (const fn of functions) {
-		if (!fn.functionName) continue
+		if (isScriptRoot(fn)) continue
 		for (const range of fn.ranges) {
 			ranges.push({ start: range.startOffset, end: range.endOffset, count: range.count })
 		}
 	}
 	return ranges
+}
+
+/**
+ * The whole-script wrapper: unnamed AND starting at offset 0. A function's first
+ * range is its own body, so the one that opens the script is the top level.
+ * Anything nested — named or not — begins later.
+ */
+function isScriptRoot(fn: { functionName: string; ranges: readonly { startOffset: number }[] }): boolean {
+	return !fn.functionName && fn.ranges[0]?.startOffset === 0
 }
 
 function round(value: number): number {
