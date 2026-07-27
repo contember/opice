@@ -24,6 +24,7 @@
 
 import { readFileSync } from 'node:fs'
 import type { GqlFieldNode, ParsedOperation } from '../graphql.js'
+import { blankOutTypeScriptLiterals, findBlockEnd } from '../graphql/scan.js'
 import type { Dependency, FootprintPlugin, RequestObservation } from './types.js'
 import { listFiles } from './walk.js'
 
@@ -208,7 +209,7 @@ export function readEntityGraph(dirs: readonly string[]): Map<string, Entity> {
 		for (const file of listFiles(dir, { extensions: ['.ts', '.tsx'] })) {
 			let source: string
 			try {
-				source = blankOutLiterals(readFileSync(file, 'utf8'))
+				source = blankOutTypeScriptLiterals(readFileSync(file, 'utf8'))
 			} catch {
 				continue
 			}
@@ -248,58 +249,7 @@ function parseEntities(source: string, file: string): Entity[] {
 
 /** Index of the class body's closing brace, or the end of the source for a truncated file. */
 function matchBrace(source: string, open: number): number {
-	let depth = 0
-	for (let i = open; i < source.length; i++) {
-		if (source[i] === '{') depth++
-		else if (source[i] === '}') {
-			depth--
-			if (depth === 0) return i
-		}
-	}
-	return source.length
-}
-
-/**
- * Blank out strings, template literals and comments so a `{` inside one can't
- * unbalance the brace matching. Characters are replaced 1:1, so every offset
- * still addresses the same character.
- */
-function blankOutLiterals(text: string): string {
-	const out = text.split('')
-	let i = 0
-	while (i < text.length) {
-		const ch = text[i]
-		if (ch === '/' && text[i + 1] === '/') {
-			while (i < text.length && text[i] !== '\n') out[i++] = ' '
-			continue
-		}
-		if (ch === '/' && text[i + 1] === '*') {
-			const end = text.indexOf('*/', i + 2)
-			const stop = end === -1 ? text.length : end + 2
-			for (let k = i; k < stop; k++) if (text[k] !== '\n') out[k] = ' '
-			i = stop
-			continue
-		}
-		if (ch === '"' || ch === "'" || ch === '`') {
-			const quote = ch
-			let j = i + 1
-			while (j < text.length) {
-				if (text[j] === '\\') {
-					j += 2
-					continue
-				}
-				if (text[j] === quote) {
-					j++
-					break
-				}
-				j++
-			}
-			for (let k = i; k < Math.min(j, text.length); k++) if (text[k] !== '\n') out[k] = ' '
-			i = j
-			continue
-		}
-		i++
-	}
-	return out.join('')
+	const end = findBlockEnd(source, open, '{', '}')
+	return end === -1 ? source.length : end
 }
 
