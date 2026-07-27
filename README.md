@@ -110,6 +110,8 @@ opice test --tier critical --impacted
 
 It composes with tiers and `--select` as a union and **only ever adds**: with no index, no credentials or an unreachable platform, it warns and runs the tier alone. A selection mechanism that can subtract coverage when it breaks is worse than none.
 
+**Plugins** teach it what your repo knows. The general move is *observation → dependency*, and the browser can only get so far on its own: it sees `POST /api/invoices/:id`, not the route file behind it, and it sees a GraphQL query naming one entity, not the three relations it reads through. A plugin closes that gap from the repo's own source — `fileRoutes({ dir: 'app/routes' })` maps a request to the file that serves it, `contemberSchema({ dir: 'packages/api/model' })` walks a query's selection and filter arguments through your real entity graph. Both name **files**, which is what a diff matches. See `docs/design/footprint-plugins.md`.
+
 The index is written only by CI runs of the default branch — a feature branch is a state nobody else is on, and since a scenario's edges are replaced wholesale, letting one write would hand every other developer an answer computed from someone's half-built work. So: collect footprints on the nightly trunk run, read them on every PR.
 
 Footprints never contain request bodies, headers, cookies, GraphQL variables or query values — only shapes: methods, route templates, status codes, operation and field names.
