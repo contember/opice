@@ -14,7 +14,8 @@ import type { FootprintEdge, FootprintEdgeKind, FootprintSummary, ImpactedScenar
 
 export interface FootprintFile {
 	path: string
-	source: 'module' | 'coverage'
+	/** 'plugin' — named by a harness plugin's resolver rather than measured in the page. */
+	source: 'module' | 'coverage' | 'plugin'
 	executed?: number
 	/** Whether V8 saw code in the file CALLED. Absent = not measurable, not "no". */
 	exercised?: boolean
@@ -313,7 +314,20 @@ export function matchImpact(edges: readonly FootprintEdge[], query: ImpactQuery)
 		if (bucket) bucket.push(path)
 		else byLastSegment.set(segment, [path])
 		const base = basenameWithoutExtension(path)
-		if (base) byBasename.set(base.toLowerCase(), path)
+		if (base) {
+			byBasename.set(base.toLowerCase(), path)
+			// Also without word separators, because the two ends of this comparison
+			// spell the same thing differently: a schema file is `education-program-session.ts`
+			// and the entity it defines is `EducationProgramSession`. Measured on a real
+			// Contember repo, 203 of 304 entities (67%) live in a multi-word file, so the
+			// exact-basename form matched only the single-word minority — a schema change
+			// selected nothing through the model dimension for two thirds of the schema.
+			// Collisions only ever ADD a selection, which is the safe direction here.
+			const squashed = base.toLowerCase().replace(/[-_.]/g, '')
+			if (squashed && squashed !== base.toLowerCase() && !byBasename.has(squashed)) {
+				byBasename.set(squashed, path)
+			}
+		}
 	}
 	const namedModels = new Map<string, string>(models.map((m) => [m.toLowerCase(), m]))
 
@@ -397,9 +411,10 @@ function toFile(value: unknown): FootprintFile[] {
 	if (!isNonEmptyString(path)) return []
 	const executed = record['executed']
 	const exercised = record['exercised']
+	const source = record['source']
 	return [{
 		path,
-		source: record['source'] === 'coverage' ? 'coverage' : 'module',
+		source: source === 'coverage' || source === 'plugin' ? source : 'module',
 		...(typeof executed === 'number' && Number.isFinite(executed) ? { executed } : {}),
 		...(typeof exercised === 'boolean' ? { exercised } : {}),
 	}]

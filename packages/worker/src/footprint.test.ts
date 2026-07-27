@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { indexableKinds, normalizeFootprint, stripQuery, toEdges, type ScenarioFootprint } from './footprint'
+import { indexableKinds, matchImpact, normalizeFootprint, stripQuery, toEdges, type ScenarioFootprint } from './footprint'
 
 function footprint(overrides: Partial<ScenarioFootprint> = {}): ScenarioFootprint {
 	return {
@@ -138,5 +138,41 @@ describe('normalizeFootprint sanitizes routes', () => {
 
 	test('recovered parameter names are folded into params', () => {
 		expect(withRoute('/search?q=hunter2').requests[0]?.params).toEqual(['q'])
+	})
+})
+
+describe('matchImpact name matching', () => {
+	const edge = (kind: 'model' | 'file', value: string) => ({
+		scenarioKey: 'tests/a.test.ts::a',
+		testFile: 'tests/a.test.ts',
+		scenarioName: 'a',
+		kind,
+		value,
+		exercised: true,
+		writes: false,
+		updatedAt: 1,
+	})
+
+	test('a model edge matches its schema file across naming styles', () => {
+		// The two ends spell the same thing differently: Contember defines
+		// `EducationProgramSession` in `education-program-session.ts`. Measured on a
+		// real repo, 203 of 304 entities live in a multi-word file, so exact-basename
+		// matching reached only the single-word minority.
+		const path = 'packages/api/model/edu/education-program-session.ts'
+		expect(matchImpact([edge('model', 'EducationProgramSession')], { paths: [path] })).toHaveLength(1)
+	})
+
+	test('still matches the single-word case it always did', () => {
+		expect(matchImpact([edge('model', 'Contract')], { paths: ['packages/api/model/contract.ts'] })).toHaveLength(1)
+	})
+
+	test('does not match an unrelated entity', () => {
+		expect(matchImpact([edge('model', 'Invoice')], { paths: ['packages/api/model/contract.ts'] })).toEqual([])
+	})
+
+	test('a file edge naming the schema file matches exactly, without the heuristic', () => {
+		const path = 'packages/api/model/edu/education-program-session.ts'
+		const matched = matchImpact([edge('file', path)], { paths: [path] })
+		expect(matched[0]?.reasons[0]).toMatchObject({ kind: 'file', value: path })
 	})
 })
