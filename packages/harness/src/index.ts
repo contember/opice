@@ -24,8 +24,34 @@ export { decideScenarioRun, isScenarioSelected, normalizeSelectPath, parseSelect
 export type { RunReason, ScenarioGate } from './select.js'
 
 export { getReporter, setReporter, configureFromEnv } from './reporter.js'
-export type { Reporter, ReporterConfig, StepEvent, ScenarioStart, ScenarioSkip, ScenarioFinish, VideoUpload } from './reporter.js'
+export type {
+	FootprintUpload,
+	Reporter,
+	ReporterConfig,
+	ScenarioFinish,
+	ScenarioSkip,
+	ScenarioStart,
+	StepEvent,
+	VideoUpload,
+} from './reporter.js'
 export { FileReporter } from './file-reporter.js'
+
+// Footprint — what a scenario touched in the browser (opt-in, OPICE_FOOTPRINT).
+// Types only: a repo writes a `browser-footprint.ts` against `FootprintConfig`
+// (and reads `ParsedOperation` in its `mapOperation`), but nothing outside the
+// harness calls the collector — the platform mirrors the wire shape and
+// validates on arrival rather than importing it.
+export type {
+	FootprintConfig,
+	FootprintEndpoint,
+	FootprintFile,
+	FootprintMode,
+	FootprintModel,
+	FootprintOperation,
+	FootprintRequest,
+	ParsedOperation,
+	ScenarioFootprint,
+} from './footprint/index.js'
 
 export { parseOpiceDsn } from './dsn.js'
 export type { OpiceDsn } from './dsn.js'

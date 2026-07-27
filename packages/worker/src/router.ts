@@ -46,6 +46,8 @@ export const ProjectSchema = z.object({
 	id: z.number(),
 	slug: z.string(),
 	name: z.string(),
+	/** Branch allowed to write the impact index; null = main or master. */
+	defaultBranch: z.string().nullable(),
 	createdAt: z.number(),
 })
 
@@ -54,6 +56,7 @@ export const RunSchema = z.object({
 	projectId: z.number(),
 	branch: z.string().nullable(),
 	commitSha: z.string().nullable(),
+	commitTime: z.number().nullable(),
 	status: RunStatusSchema,
 	source: z.enum(['ci', 'local']).nullable(),
 	tier: z.string().nullable(),
@@ -75,6 +78,61 @@ const RunWithProjectSchema = RunSchema.extend({
 const RunPageSchema = z.object({ runs: z.array(RunSchema), hasMore: z.boolean() })
 const RunWithProjectPageSchema = z.object({ runs: z.array(RunWithProjectSchema), hasMore: z.boolean() })
 
+/** Compact footprint counts carried on every scenario read. */
+export const FootprintSummarySchema = z.object({
+	files: z.number(),
+	components: z.number(),
+	endpoints: z.number(),
+	models: z.number(),
+	requests: z.number(),
+	warnings: z.number(),
+})
+
+const FootprintOperationSchema = z.object({
+	type: z.string(),
+	name: z.string().optional(),
+	rootFields: z.array(z.string()),
+	models: z.array(z.object({ name: z.string(), write: z.boolean() })),
+})
+
+/**
+ * One recorded request. Everything but the method and route has a default, so an
+ * older blob still reads. Unknown keys are STRIPPED rather than passed through:
+ * the stored document is written by `normalizeFootprint`'s allow-list, and
+ * echoing anything beyond it would defeat that at the read end.
+ */
+const FootprintRequestSchema = z.object({
+	step: z.number().nullable().default(null),
+	method: z.string(),
+	route: z.string(),
+	params: z.array(z.string()).optional(),
+	status: z.number().nullable().default(null),
+	resourceType: z.string().default('other'),
+	durationMs: z.number().nullable().default(null),
+	operations: z.array(FootprintOperationSchema).optional(),
+})
+
+/** The full footprint blob, as stored in R2. */
+export const ScenarioFootprintSchema = z.object({
+	scenario: z.string(),
+	testFile: z.string().optional(),
+	collected: z.array(z.string()),
+	files: z.array(z.object({
+		path: z.string(),
+		source: z.string(),
+		executed: z.number().optional(),
+		/** Whether V8 saw code in the file CALLED. Absent = not measurable, not "no". */
+		exercised: z.boolean().optional(),
+	})),
+	components: z.array(z.string()),
+	requests: z.array(FootprintRequestSchema),
+	endpoints: z.array(z.object({ route: z.string(), methods: z.array(z.string()), count: z.number() })),
+	models: z.array(z.object({ name: z.string(), write: z.boolean() })),
+	warnings: z.array(z.string()).optional(),
+})
+
+export type ScenarioFootprintDto = z.infer<typeof ScenarioFootprintSchema>
+
 export const ScenarioSchema = z.object({
 	id: z.string(),
 	runId: z.string(),
@@ -94,6 +152,12 @@ export const ScenarioSchema = z.object({
 	finishedAt: z.number().nullable(),
 	/** URL of the scenario's walkthrough video (opt-in OPICE_VIDEO), or null. */
 	videoUrl: z.string().nullable(),
+	/**
+	 * Counts from the scenario's footprint (opt-in OPICE_FOOTPRINT), or null when
+	 * it wasn't collected. The full detail lives in R2 and is fetched on demand
+	 * via `scenarios.footprint` — a list view only ever needs the counts.
+	 */
+	footprint: FootprintSummarySchema.nullable(),
 })
 
 export const StepSchema = z.object({
@@ -156,12 +220,16 @@ const projects = rpc.router({
 
 	get: rpc.procedure
 		.input(z.object({ slug: z.string() }))
-		.output(ProjectSchema)
+		// `canWrite` rides along with the project because the page needs it to
+		// decide what to RENDER. project.read is enough to open this page, but the
+		// settings on it need project.write, and a viewer offered a control that
+		// can only fail is a worse answer than one that isn't there.
+		.output(ProjectSchema.extend({ canWrite: z.boolean() }))
 		.handler(async ({ ctx, input }) => {
 			const project = await ctx.services.db.getProjectBySlug(input.slug)
 			if (!project) notFound(`Project not found: ${input.slug}`)
 			assertAccess(opCanReadProject(ctx.auth, project.slug))
-			return project
+			return { ...project, canWrite: opCanWriteProject(ctx.auth, project.slug) }
 		}),
 
 	// Create a project + mint two project-scoped propustka SERVICE TOKENS: an ingest (report.write)
@@ -172,16 +240,44 @@ const projects = rpc.router({
 		.input(z.object({
 			slug: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase letters, numbers and dashes'),
 			name: z.string().trim().min(1).max(120),
+			/** Trunk name, when it isn't main or master — the branch allowed to write the impact index. */
+			defaultBranch: z.string().trim().min(1).max(255).optional(),
 		}))
 		.output(z.object({ slug: z.string(), name: z.string(), apiKey: z.string(), readApiKey: z.string() }))
 		.handler(async ({ ctx, input }) => {
 			assertAccess(opCanWriteProject(ctx.auth))
 			if (await ctx.services.db.getProjectBySlug(input.slug)) conflict(`Project already exists: ${input.slug}`)
-			const project = await ctx.services.db.createProject({ slug: input.slug, name: input.name })
+			const project = await ctx.services.db.createProject({
+				slug: input.slug,
+				name: input.name,
+				...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
+			})
 			const apiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'ingest')
 			const readApiKey = await mintServiceTokenDsn(ctx, project.id, project.slug, 'read')
 			await ctx.auth.audit({ action: 'project.create', resourceType: 'project', resourceId: project.slug, metadata: { name: project.name } })
 			return { slug: project.slug, name: project.name, apiKey, readApiKey }
+		}),
+
+	/**
+	 * Set the branch allowed to write the change-tracking index. Null restores the
+	 * main-or-master default. Without this a project whose trunk is named anything
+	 * else could never build an index at all.
+	 */
+	setDefaultBranch: rpc.procedure
+		.input(z.object({ slug: z.string(), defaultBranch: z.string().trim().min(1).max(255).nullable() }))
+		.output(z.object({ ok: z.literal(true) }))
+		.handler(async ({ ctx, input }) => {
+			const project = await ctx.services.db.getProjectBySlug(input.slug)
+			if (!project) notFound(`Project not found: ${input.slug}`)
+			assertAccess(opCanWriteProject(ctx.auth, project.slug))
+			await ctx.services.db.setProjectDefaultBranch(project.id, input.defaultBranch)
+			await ctx.auth.audit({
+				action: 'project.update',
+				resourceType: 'project',
+				resourceId: project.slug,
+				metadata: { defaultBranch: input.defaultBranch },
+			})
+			return { ok: true }
 		}),
 
 	// The project's live DSN capabilities (ingest + read), for a "keys" view — revocable.
@@ -283,6 +379,27 @@ const scenarios = rpc.router({
 			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
 			return mapSteps(await ctx.services.db.listStepsForScenario(input.scenarioId))
 		}),
+
+	/**
+	 * The scenario's full footprint, read from R2 on demand.
+	 *
+	 * Not folded into the scenario read: a footprint is orders of magnitude
+	 * bigger than the row that points at it, and a run page listing fifty
+	 * scenarios would otherwise pull fifty blobs to render fifty badges. The
+	 * counts on the row cover the list; this covers the panel you opened.
+	 */
+	footprint: rpc.procedure
+		.input(z.object({ scenarioId: z.string() }))
+		.output(ScenarioFootprintSchema.nullable())
+		.handler(async ({ ctx, input }) => {
+			const scenario = await ctx.services.db.getScenario(input.scenarioId)
+			if (!scenario) notFound(`Scenario not found: ${input.scenarioId}`)
+			const run = await ctx.services.db.getRun(scenario.runId)
+			if (!run) notFound(`Run not found: ${scenario.runId}`)
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && opCanReadReports(ctx.auth, slug))
+			return readFootprintBlob(ctx.services, scenario.footprintKey)
+		})
 })
 
 // Run-scoped, read-only share links — propustka capability tokens. Any operator with
@@ -340,6 +457,34 @@ async function projectSlugForRun(services: Services, projectId: number): Promise
 
 function mapSteps(rows: Awaited<ReturnType<Services['db']['listStepsForScenario']>>) {
 	return rows.map(s => ({ ...s, screenshotUrl: s.screenshotKey ? `/screenshots/${s.screenshotKey}` : null }))
+}
+
+/**
+ * Read a footprint blob out of R2. Shared by the operator and share routers.
+ *
+ * A missing or unparseable object reads as `null`, not an error: the scenario
+ * row is the record that a footprint was collected, and the blob is best-effort
+ * telemetry that may have failed to store. A 500 here would break a run page
+ * over a panel that was always optional.
+ */
+export async function readFootprintBlob(services: Services, key: string | null): Promise<ScenarioFootprintDto | null> {
+	if (!key) return null
+	try {
+		const object = await services.runAssets.get(key)
+		if (!object) return null
+		// Parse rather than cast. The blob was written by this worker, but a stored
+		// object outlives the code that wrote it — this is where a footprint from
+		// six months and three harness versions ago arrives.
+		const parsed = ScenarioFootprintSchema.safeParse(JSON.parse(await object.text()))
+		if (!parsed.success) {
+			console.error(`footprint blob has an unexpected shape (${key}): ${parsed.error.message}`)
+			return null
+		}
+		return parsed.data
+	} catch (err) {
+		console.error(`footprint blob unreadable (${key}): ${err instanceof Error ? err.message : String(err)}`)
+		return null
+	}
 }
 
 interface MintInput {

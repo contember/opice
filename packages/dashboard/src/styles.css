@@ -1417,6 +1417,111 @@ main.wide { max-width: 1360px; }
 .s-meta .meta-chip.role::before { content: '@'; color: var(--text-faint); }
 .s-meta .meta-chip.tier::before { content: 'tier '; color: var(--text-faint); }
 
+/* ── Footprint: what the scenario touched (opt-in OPICE_FOOTPRINT) ────────── */
+
+/* Sits between the metadata chips and the walkthrough, as context for the steps
+   below it: models and endpoints first (what it did to the system), files and
+   components after (where the code was). */
+.s-footprint {
+	margin: 8px 16px 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface-2);
+}
+.s-footprint-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 10px;
+}
+.s-footprint-title {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-faint);
+}
+.fp-count { font-size: 11.5px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.fp-count.muted { color: var(--text-faint); }
+
+.fp-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.fp-chip {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.4;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	color: var(--text-mute);
+	background: var(--bg);
+}
+/* A written model is the strongest claim in a footprint — a change to it can
+   break this scenario's data, not just its rendering. Marked, not merely listed. */
+.fp-chip.model.write {
+	color: var(--accent);
+	background: var(--accent-tint);
+	border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.fp-chip.model.write::after { content: ' ✎'; color: var(--text-faint); }
+
+.fp-details { margin-top: 8px; }
+.fp-details > summary {
+	cursor: pointer;
+	font-size: 11.5px;
+	color: var(--text-mute);
+	list-style: none;
+}
+.fp-details > summary::-webkit-details-marker { display: none; }
+.fp-details > summary::before { content: '▸ '; color: var(--text-faint); }
+.fp-details[open] > summary::before { content: '▾ '; }
+.fp-details-body { margin-top: 6px; max-height: 260px; overflow-y: auto; }
+
+.fp-line {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 2px 0;
+	font-size: 11.5px;
+	color: var(--text-mute);
+}
+.fp-line code { font-size: 11.5px; word-break: break-all; }
+.fp-method {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	color: var(--text-faint);
+	flex: none;
+	min-width: 34px;
+}
+.fp-times { color: var(--text-faint); font-variant-numeric: tabular-nums; margin-left: auto; flex: none; }
+
+/* Collection warnings — a thin footprint should LOOK thin rather than read as
+   "this scenario touches nothing". */
+.fp-warnings { margin-top: 8px; }
+.fp-warning {
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--text-soft);
+	padding: 2px 0 2px 10px;
+	border-left: 2px solid color-mix(in srgb, var(--text-soft) 35%, transparent);
+}
+
+/* The API calls one step made, under that step. */
+.step-requests { margin-bottom: 6px; }
+.step-request {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 1px 0;
+	font-size: 11.5px;
+	color: var(--text-mute);
+}
+.step-request code { font-size: 11.5px; word-break: break-all; }
+.step-request-ops { color: var(--text-faint); font-family: var(--font-mono); font-size: 10.5px; }
+.step-request-status { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.step-request-status.bad { color: var(--fail); }
+
 /* Scenario walkthrough video (opt-in OPICE_VIDEO) — a tutorial-grade recording
    of the whole walkthrough, shown above the step list. */
 .s-video { padding: 8px 16px 4px; }
@@ -1479,3 +1584,30 @@ main.wide { max-width: 1360px; }
 .status-inline.blocked { color: var(--run); background: var(--run-soft); border-color: color-mix(in srgb, var(--run) 30%, transparent); }
 .step.blocked .step-name { color: var(--run); }
 .step.blocked .duration { color: var(--run); }
+
+/* The trunk name as read-only text, for an operator without project.write. */
+.pd-branch { color: var(--muted); }
+
+/* Editing a project's trunk name inline in the subtitle row. */
+.pd-branch-edit { display: inline-flex; align-items: center; gap: 6px; }
+.pd-branch-edit input {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	padding: 1px 6px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	background: var(--bg);
+	color: var(--text);
+	width: 12ch;
+}
+.error-inline { color: var(--fail); font-size: 11.5px; }
+.btn-link {
+	background: none;
+	border: 0;
+	padding: 0;
+	font: inherit;
+	color: var(--accent);
+	cursor: pointer;
+}
+.btn-link:hover { text-decoration: underline; }
+.btn-link:disabled { color: var(--text-faint); cursor: default; text-decoration: none; }

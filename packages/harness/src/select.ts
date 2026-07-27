@@ -24,10 +24,30 @@ export function parseSelectList(env: NodeJS.ProcessEnv = process.env): string[] 
 	return splitSelect(env['OPICE_SELECT'])
 }
 
-/** Split a comma-separated select value into trimmed, non-empty entries. */
+/**
+ * Split a select value into trimmed, non-empty entries.
+ *
+ * Two encodings, told apart by the leading `[`. A JSON array is unambiguous and
+ * is what the CLI emits: a comma is a legal character in a path, so
+ * `tests/foo,bar.test.ts` comma-joined comes back as two entries that match
+ * nothing, and the test `--impacted` set out to force-run is silently skipped.
+ * The comma list stays supported because `--select a,b` is the documented way to
+ * type one by hand, and nobody is going to type a path with a comma in it.
+ */
 export function splitSelect(raw: string | undefined): string[] {
 	if (!raw) return []
-	return raw
+	const trimmed = raw.trim()
+	if (trimmed.startsWith('[')) {
+		try {
+			const parsed: unknown = JSON.parse(trimmed)
+			if (Array.isArray(parsed)) {
+				return parsed.filter((entry): entry is string => typeof entry === 'string').map((entry) => entry.trim()).filter(Boolean)
+			}
+		} catch {
+			// Not JSON after all — fall through and treat it as a plain list.
+		}
+	}
+	return trimmed
 		.split(',')
 		.map((entry) => entry.trim())
 		.filter(Boolean)

@@ -20,3 +20,6 @@ bun-debug.log*
 # Test artifacts
 /tmp/
 coverage/
+# Local run output: HTML report + screenshots, footprint JSON, walkthrough videos.
+.opice/
+opice-videos/

@@ -50,6 +50,7 @@ function RunPage({ slug, runId }: { slug: string; runId: string }) {
 				scenarios={scenarios.data}
 				scenariosLoading={scenarios.isLoading}
 				loadSteps={scenarioId => rpc.scenarios.steps({ scenarioId })}
+				loadFootprint={scenarioId => rpc.scenarios.footprint({ scenarioId })}
 			/>
 
 			<ShareManager slug={slug} runId={r.id} />

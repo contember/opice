@@ -1,0 +1,132 @@
+-- Scenario footprint + the change-tracking index.
+--
+-- A footprint records what a scenario touched in the browser: source files,
+-- React components, API endpoints and GraphQL models (opt-in, OPICE_FOOTPRINT).
+-- It is stored in TWO places, because it answers two different questions.
+--
+--  1. "What did THIS run's scenario touch?" — the full blob, in R2 under the
+--     same `<slug>/<runId>/...` namespace as screenshots and videos, so the
+--     existing key-scope checks guard it unchanged. `footprint_r2_key` points
+--     at it; `footprint_summary` holds the counts a list view needs so the
+--     dashboard needn't fetch the blob to badge a scenario.
+--
+--  2. "Which scenarios touch file X?" — `footprint_edges`, the queryable index
+--     behind `opice test --impacted`. Note what it is NOT keyed on: the run. An
+--     edge belongs to a SCENARIO (test file + name), and a newer run REPLACES
+--     that scenario's edges rather than adding to them. That is what keeps the
+--     index O(scenarios x files) forever instead of growing without bound —
+--     a 50-scenario project stays around 10k rows whether it has run ten times
+--     or ten thousand.
+--
+-- Only CI runs ON THE DEFAULT BRANCH write edges. Two different ways a bad
+-- writer would corrupt everyone else's selection:
+--   * a local run happens against a half-built app on someone's laptop;
+--   * a feature branch is, by definition, a state nobody else is on — a
+--     scenario there may touch a half-built set of files, and since edges are
+--     replaced per scenario, that branch's view would become the answer given
+--     to every other developer asking what their change affects.
+-- The default branch is the one state that is true for everybody, so it is the
+-- only one allowed to write. This also matches the recommended setup, where the
+-- nightly full-tier run on trunk collects footprints and PRs only read them.
+
+ALTER TABLE scenarios ADD COLUMN footprint_r2_key TEXT;   -- R2 key of the full footprint blob; NULL when not collected
+ALTER TABLE scenarios ADD COLUMN footprint_summary TEXT;  -- compact JSON counts (FootprintSummary)
+
+-- Which branch may rewrite the change-tracking index (see below). NULL means
+-- "main or master", which is right for almost every repo; set it explicitly for
+-- a project whose trunk is called something else.
+ALTER TABLE projects ADD COLUMN default_branch TEXT;
+
+-- Commit timestamp (ms) of the run's revision. The change-tracking index orders
+-- replacements by this rather than by when the workflow started: re-running an
+-- old pipeline produces a fresh start time but not a fresh commit, and ordering
+-- by the clock would let that rerun restore stale edges over a newer commit's.
+ALTER TABLE runs ADD COLUMN commit_time INTEGER;
+-- The commit's DEPTH on its branch (`git rev-list --count HEAD`), when the
+-- checkout has enough history to know it. A better revision key than the
+-- timestamp: git's %ct has second resolution, so two trunk commits can share
+-- one, and committer dates can invert outright across runners with skewed
+-- clocks. Depth only ever increases as the trunk advances. NULL on a shallow
+-- clone — where the count would be the clone's depth, not the commit's, and
+-- believing it would rank a newer run BELOW an older one.
+ALTER TABLE runs ADD COLUMN commit_depth INTEGER;
+
+CREATE TABLE footprint_edges (
+	project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	-- `<test_file>::<name>` — the scenario's identity ACROSS runs. Two scenarios
+	-- with the same name in different files stay distinct; a scenario that moves
+	-- file gets a new key and its old edges age out on the next full run.
+	scenario_key  TEXT NOT NULL,
+	test_file     TEXT,
+	scenario_name TEXT NOT NULL,
+	kind          TEXT NOT NULL CHECK (kind IN ('file', 'component', 'endpoint', 'model')),
+	value         TEXT NOT NULL,
+	-- File edges: 1 when the scenario CALLED code in the file, 0 when it merely
+	-- loaded it. Without this the file dimension saturates and stops selecting
+	-- anything: measured on a real Contember admin, one navigation scenario
+	-- "executed" ~1300 files at >50% of their bytes, because the app evaluates its
+	-- schema and component library on import. Counting only what was called cuts
+	-- that to ~200 and makes two scenarios distinguishable again. A footprint
+	-- collected WITHOUT coverage has no way to tell the two apart, so its file
+	-- edges are all recorded as exercised — the strongest claim its data supports.
+	exercised     INTEGER NOT NULL DEFAULT 1,
+	-- Model edges: 1 when reached through a mutation. A write is a far stronger
+	-- impact signal than a read, and worth seeing on the dashboard as such.
+	writes        INTEGER NOT NULL DEFAULT 0,
+	run_id        TEXT,
+	branch        TEXT,
+	-- When the run that wrote this edge STARTED. Two default-branch workflows can
+	-- overlap (or an old one be re-run), and edges are replaced wholesale, so
+	-- without this whichever upload merely arrived last would win — letting an
+	-- older commit revert the index to stale paths. The replace is guarded on it.
+	run_started_at INTEGER NOT NULL DEFAULT 0,
+	updated_at    INTEGER NOT NULL,
+	-- When a run last REPORTED this scenario, whether or not the write applied.
+	-- Retention is measured on this, not on updated_at: a project whose trunk has
+	-- not moved keeps re-reporting the same revision, every one of those writes is
+	-- correctly refused as not-newer, and updated_at therefore never advances — so
+	-- pruning on it would delete an index that is being actively maintained.
+	last_seen_at  INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (project_id, scenario_key, kind, value)
+);
+
+-- The lookup `--impacted` runs: given a kind and a value, which scenarios?
+CREATE INDEX footprint_edges_lookup ON footprint_edges(project_id, kind, value);
+-- Replacing one scenario's edges wholesale on a new run.
+CREATE INDEX footprint_edges_scenario ON footprint_edges(project_id, scenario_key);
+
+-- Freshness marker per scenario, written on every accepted replacement.
+--
+-- The edge rows carry `run_started_at` too, but they cannot be the authority: a
+-- newer run that legitimately produces NO edges deletes the old rows and leaves
+-- nothing behind, and an older overlapping run arriving afterwards would then
+-- see no newer row and happily reinsert its stale edges. This table remembers
+-- that the newer run happened.
+CREATE TABLE footprint_index_state (
+	project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	scenario_key   TEXT NOT NULL,
+	-- Freshness is tracked PER EDGE KIND, not per scenario, because collection
+	-- degrades one dimension at a time: a `--footprint=network` run measures
+	-- endpoints perfectly and files not at all, so it may only speak for the
+	-- endpoint edges. A single per-scenario marker would let that run claim the
+	-- whole scenario as freshly indexed at its commit, and a full run of the SAME
+	-- commit arriving afterwards would be refused as not-newer — leaving the file
+	-- edges permanently unwritten. Per kind, each dimension orders independently.
+	kind           TEXT NOT NULL,
+	-- Freshness key: the run's COMMIT time (see runs.commit_time).
+	run_started_at INTEGER NOT NULL,
+	-- Comparison is STRICTLY newer: git's %ct is second-resolution, so two trunk
+	-- commits can share a timestamp, and an equal one is refused rather than
+	-- ordered by anything else. Ordering by when the workflows ran would let a
+	-- RERUN of the older commit win by executing later — the exact failure
+	-- commit-time ordering exists to prevent.
+	run_id         TEXT,
+	-- The depth of the revision that wrote this row, when it was known. Compared
+	-- in preference to run_started_at, and only against another row that also has
+	-- one — a depth and a timestamp are not comparable quantities.
+	run_depth      INTEGER,
+	updated_at     INTEGER NOT NULL,
+	/* See footprint_edges.last_seen_at. */
+	last_seen_at   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (project_id, scenario_key, kind)
+);

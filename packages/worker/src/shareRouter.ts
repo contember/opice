@@ -2,7 +2,7 @@ import type { Capability } from '@propustka/client'
 import { z } from 'zod'
 import { withVideoUrl } from './asset-url'
 import { capCanListRuns, capCanReadProject, capCanReadRun } from './principal'
-import { ProjectSchema, RunSchema, ScenarioSchema, StepSchema } from './router'
+import { ProjectSchema, readFootprintBlob, RunSchema, ScenarioFootprintSchema, ScenarioSchema, StepSchema } from './router'
 import { initRpc, RpcDispatchError } from './rpc'
 import type { Services } from './services'
 
@@ -103,6 +103,25 @@ const scenarios = rpc.router({
 			assertAccess(slug != null && capCanReadRun(ctx.cap, slug, run.id))
 			const rows = await ctx.services.db.listStepsForScenario(input.scenarioId)
 			return rows.map(s => ({ ...s, screenshotUrl: s.screenshotKey ? `/s/screenshots/${s.screenshotKey}` : null }))
+		}),
+
+	/**
+	 * The scenario's footprint, for a share viewer. Scoped to the shared run like
+	 * everything else here — a run-share link reads that run's footprints and
+	 * nothing else. There is deliberately no `touching` counterpart: that query
+	 * spans the whole project's index, which is more than a run share grants.
+	 */
+	footprint: rpc.procedure
+		.input(z.object({ scenarioId: z.string() }))
+		.output(ScenarioFootprintSchema.nullable())
+		.handler(async ({ ctx, input }) => {
+			const scenario = await ctx.services.db.getScenario(input.scenarioId)
+			if (!scenario) notFound(`Scenario not found: ${input.scenarioId}`)
+			const run = await ctx.services.db.getRun(scenario.runId)
+			if (!run) notFound(`Run not found: ${scenario.runId}`)
+			const slug = await projectSlugForRun(ctx.services, run.projectId)
+			assertAccess(slug != null && capCanReadRun(ctx.cap, slug, run.id))
+			return readFootprintBlob(ctx.services, scenario.footprintKey)
 		}),
 })
 

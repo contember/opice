@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadConfig } from '../config'
 import { parseOpiceDsn } from '../dsn'
-import { detectGitMeta } from '../git'
+import { extractBoolean, extractInteger, extractList, extractOptionalValueFlag, extractValue } from '../args'
+import { changedPaths, defaultBase, detectGitMeta } from '../git'
+import { existsInRepo, resolveImpact } from '../impact'
 
 const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
@@ -40,7 +42,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	// CLI flag wins over OPICE_TIER, which wins over opice.config.json's `tier`.
 	// The harness reads OPICE_TIER and skips (and reports as `skipped`) any
 	// scenario above the selected tier.
-	const { tier, rest: afterTier } = extractTier(args)
+	const { value: tier, rest: afterTier } = extractValue(args, 'tier')
 	const resolvedTier = tier ?? process.env['OPICE_TIER'] ?? config?.tier
 
 	// `--fail-on-report-error` turns a swallowed reporting failure into a non-zero
@@ -48,7 +50,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	// OPICE_REPORT_STRICT, which wins over opice.config.json's `failOnReportError`.
 	// We propagate it to the harness via OPICE_REPORT_STRICT (it fails the run from
 	// a scenario's afterAll) AND honour it here for the POST /finish finalize.
-	const { strict: strictFlag, rest: afterStrict } = extractStrict(afterTier)
+	const { present: strictFlag, rest: afterStrict } = extractBoolean(afterTier, 'fail-on-report-error')
 	const strict = strictFlag || isTruthy(process.env['OPICE_REPORT_STRICT']) || config?.failOnReportError === true
 
 	// `--select FILE[,FILE...]` (repeatable) → run these scenarios IN ADDITION to
@@ -56,14 +58,75 @@ export async function testCommand(args: string[]): Promise<number> {
 	// run twice). The harness reads OPICE_SELECT; CLI flag wins over the env var.
 	// Canonical use: a PR runs `--tier critical --select <changed test files>` so a
 	// touched standard/extended scenario runs without the whole suite.
-	const { select: selectFlag, rest: afterSelect } = extractSelect(afterStrict)
-	const select = selectFlag ?? process.env['OPICE_SELECT']
+	const { values: selectValues, rest: afterSelect } = extractList(afterStrict, 'select')
+	// Kept as a LIST rather than re-joined: a comma is legal in a path, so a round
+	// trip through a comma-joined string would split `tests/foo,bar.test.ts` into
+	// two entries that match nothing — silently dropping the very test the
+	// selection names. `extractList` already split the flag's own commas, which is
+	// the documented hand-typed form.
+	const explicitSelect = selectValues.length > 0 ? selectValues : splitSelectValue(process.env['OPICE_SELECT'])
+
+	// `--impacted [BASE]` → ask the platform which scenarios the working tree's
+	// changes reach (from their recorded footprints) and fold those test files
+	// into the selection. Composes with --tier and --select: all three are a
+	// union, so the always-on tier still runs and nothing is ever subtracted.
+	// Fails OPEN — an unreachable platform or an empty index adds nothing and
+	// leaves the tier exactly as it was.
+	// No `isValue`: a bare `--impacted` NEVER consumes the following token. A git
+	// ref and a bun test-name filter are indistinguishable — `opice test
+	// --impacted login` would otherwise diff against a ref called `login` AND
+	// drop the filter bun was meant to receive, changing both halves of the run.
+	// Use `--impacted=<ref>` to name a base. Same rule as `--video`, above.
+	const impactedFlag = extractOptionalValueFlag(afterSelect, 'impacted')
+	const afterImpacted = impactedFlag.rest
+	const impacted = impactedFlag.present
+		? await resolveImpact(
+			{ ...(project ? { project } : {}), ...(endpoint ? { endpoint } : {}) },
+			{ ...(impactedFlag.value ? { base: impactedFlag.value } : {}), label: '--impacted' },
+		)
+		: null
+	// Fails open by construction: when the query can't be answered (no
+	// credentials, no index, an unreachable platform — each already warned about
+	// by resolveImpact) the selection is simply empty and the tier runs alone.
+	// That is a correct, if less targeted, run; a dashboard outage must never be
+	// able to shrink what CI covers.
+	const impactedFiles = impacted?.files ?? []
+	// A test file the PR itself CHANGED is selected from git, not from the index.
+	// The index cannot know about it: a newly added test has never run, so it has
+	// no edges, and a renamed one has edges under its OLD path — which
+	// `impactedTestFiles` then drops because that path no longer exists. Either
+	// way `--tier critical --impacted` would skip the very test the PR is about,
+	// which is the single most obvious selection anyone expects. Git knows the
+	// current path, so it answers directly, and it answers even when the platform
+	// could not be reached at all.
+	// The explicit base rides along: when the platform query fails, the fallback
+	// diff must still be against the ref the caller ASKED for. Recomputing against
+	// `defaultBase()` would answer a different question and could miss a test that
+	// only changed relative to the custom base — defeating the fallback exactly
+	// when it is the only thing left.
+	const changedTests = impactedFlag.present
+		? changedTestFiles(impacted?.paths, impactedFlag.value)
+		: []
+	// JSON, not a comma join: a comma is legal in a path, and joining would split
+	// `tests/foo,bar.test.ts` into two entries matching nothing — silently
+	// dropping the very test the selection was for. `splitSelect` reads both.
+	const selected = [...explicitSelect, ...impactedFiles, ...changedTests]
+	const select = selected.length > 0 ? JSON.stringify([...new Set(selected)]) : undefined
+	if (changedTests.length > 0) {
+		console.error(`[opice] --impacted: ${changedTests.length} changed test file(s) selected directly from the diff.`)
+	}
+	// Warned only once the fallback is known to have added nothing either. Saying
+	// "running the tier alone" and then listing directly selected tests two lines
+	// later contradicts itself, and a warning nobody can trust is worse than none.
+	if (impactedFlag.present && !impacted && changedTests.length === 0) {
+		warn('--impacted added nothing — running the tier alone.')
+	}
 
 	// `--report [file]` → a local HTML report (no platform creds). The harness
 	// reporter reads OPICE_REPORT_FILE; the flag is the friendly door. A bare
 	// `--report` only consumes a following token when it *looks like* a report
 	// path (ends in .html/.htm) so it never swallows a bun test-file arg.
-	const report = extractOptionalValueFlag(afterSelect, 'report', looksLikeReportPath)
+	const report = extractOptionalValueFlag(afterImpacted, 'report', looksLikeReportPath)
 	const afterReport = report.rest
 	const reportFile = (report.present ? (report.value ?? DEFAULT_REPORT_FILE) : undefined) ?? process.env['OPICE_REPORT_FILE']
 
@@ -79,6 +142,17 @@ export async function testCommand(args: string[]): Promise<number> {
 	const afterVideo = videoFlag.rest
 	const videoEnabled = videoFlag.present || isTruthy(process.env['OPICE_VIDEO'])
 	const videoDir = videoFlag.value ?? process.env['OPICE_VIDEO_DIR']
+
+	// `--footprint[=network|full]` → record what each scenario touches (files,
+	// components, endpoints, GraphQL models). A bare `--footprint` means `full`.
+	// Like `--video`, the bare form never consumes the next token — a mode name is
+	// indistinguishable from a bun test-file arg, so use `--footprint=network`.
+	// CLI flag wins over OPICE_FOOTPRINT, which wins over opice.config.json.
+	const footprintFlag = extractOptionalValueFlag(afterVideo, 'footprint')
+	const afterFootprint = footprintFlag.rest
+	const footprint = footprintFlag.present
+		? (footprintFlag.value ?? 'full')
+		: (process.env['OPICE_FOOTPRINT'] ?? config?.footprint)
 	// `bun test` runs one process per file; give them a fresh shared dir to
 	// aggregate into so a multi-file run yields one complete report (the harness
 	// FileReporter reads OPICE_REPORT_PARTS_DIR). Unique per run ⇒ no stale parts.
@@ -102,6 +176,8 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(clientSecret ? { OPICE_CLIENT_SECRET: clientSecret } : {}),
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
+		...(git.commitTime ? { OPICE_COMMIT_TIME: git.commitTime } : {}),
+		...(git.commitDepth ? { OPICE_COMMIT_DEPTH: git.commitDepth } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
 		...(select ? { OPICE_SELECT: select } : {}),
 		...(strict ? { OPICE_REPORT_STRICT: '1' } : {}),
@@ -109,12 +185,13 @@ export async function testCommand(args: string[]): Promise<number> {
 		...(reportPartsDir ? { OPICE_REPORT_PARTS_DIR: reportPartsDir } : {}),
 		...(videoEnabled ? { OPICE_VIDEO: '1' } : {}),
 		...(videoDir ? { OPICE_VIDEO_DIR: videoDir } : {}),
+		...(footprint ? { OPICE_FOOTPRINT: footprint } : {}),
 	}
 
 	// `--retries=N` (opice's spelling) → bun's `--retry=N`, the global default
 	// retry budget for every scenario. CLI flag wins over opice.config.json's
 	// `retries`. A per-scenario `walkthrough`/meta `retries` overrides both.
-	const { retries, rest } = extractRetries(afterVideo)
+	const { value: retries, rest } = extractInteger(afterFootprint, 'retries')
 	const resolvedRetries = retries ?? config?.retries
 	const bunArgs = ['test', ...rest]
 	// Don't clobber an explicit `--retry` the caller passed through to bun.
@@ -171,145 +248,6 @@ function looksLikeReportPath(s: string): boolean {
 	return /\.html?$/i.test(s)
 }
 
-/**
- * Pull an opice optional-value flag (`--name` / `--name=value`) out of the arg
- * list — these aren't bun flags, so they must be stripped before the remainder
- * passes to `bun test`. Returns whether the flag was present, its value (if any),
- * and the remaining args.
- *
- * The `--name=value` form always sets the value. The bare `--name value` form
- * only consumes the following token when `isValue(token)` says it's a value and
- * not a passthrough (a leading `-`, or a bun test-file/name arg). Omit `isValue`
- * to make bare `--name` NEVER consume the next token — the safe default when a
- * value is indistinguishable from a bun positional (use the `=` form for those).
- */
-function extractOptionalValueFlag(
-	args: string[],
-	name: string,
-	isValue?: (token: string) => boolean,
-): { present: boolean; value: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	const eq = `--${name}=`
-	let present = false
-	let value: string | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith(eq)) {
-			present = true
-			value = arg.slice(eq.length) || undefined
-		} else if (arg === `--${name}`) {
-			present = true
-			const next = args[i + 1]
-			if (isValue && next !== undefined && !next.startsWith('-') && isValue(next)) {
-				value = next
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { present, value, rest }
-}
-
-function extractRetries(args: string[]): { retries: number | undefined; rest: string[] } {
-	const rest: string[] = []
-	let retries: number | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--retries=')) {
-			const n = Number(arg.slice('--retries='.length))
-			if (Number.isInteger(n) && n >= 0) retries = n
-		} else if (arg === '--retries') {
-			const n = Number(args[i + 1])
-			if (Number.isInteger(n) && n >= 0) {
-				retries = n
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { retries, rest }
-}
-
-/**
- * Pull opice's `--tier=NAME` / `--tier NAME` out of the arg list (it's an opice
- * concept, not a bun flag) and return the selected tier plus the remaining args.
- * The value is passed straight through to the harness via OPICE_TIER, which
- * validates it — so an unrecognized value isn't rejected here.
- */
-function extractTier(args: string[]): { tier: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	let tier: string | undefined
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--tier=')) {
-			tier = arg.slice('--tier='.length)
-		} else if (arg === '--tier') {
-			const next = args[i + 1]
-			if (next !== undefined) {
-				tier = next
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	return { tier, rest }
-}
-
-/**
- * Pull opice's `--select=FILE[,FILE...]` / `--select FILE[,FILE...]` out of the
- * arg list (it's an opice concept, not a bun flag — passing the files straight to
- * `bun test` would run ONLY them and lose the tier's always-on core). The flag is
- * repeatable and each occurrence may carry a comma list; all entries accumulate
- * into one comma-joined value passed to the harness via OPICE_SELECT. Returns the
- * joined selection (or undefined when absent) and the remaining args.
- */
-function extractSelect(args: string[]): { select: string | undefined; rest: string[] } {
-	const rest: string[] = []
-	const entries: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
-		if (arg === undefined) continue
-		if (arg.startsWith('--select=')) {
-			entries.push(arg.slice('--select='.length))
-		} else if (arg === '--select') {
-			const next = args[i + 1]
-			if (next !== undefined && !next.startsWith('-')) {
-				entries.push(next)
-				i++ // consume the value
-			}
-		} else {
-			rest.push(arg)
-		}
-	}
-	const joined = entries
-		.flatMap((e) => e.split(','))
-		.map((e) => e.trim())
-		.filter(Boolean)
-		.join(',')
-	return { select: joined || undefined, rest }
-}
-
-/** Returns true if finalizing any run failed (so strict mode can escalate). */
-/**
- * Pull opice's `--fail-on-report-error` boolean flag out of the arg list (it's
- * an opice concept, not a bun flag) and return whether it was present plus the
- * remaining args.
- */
-function extractStrict(args: string[]): { strict: boolean; rest: string[] } {
-	const rest: string[] = []
-	let strict = false
-	for (const arg of args) {
-		if (arg === '--fail-on-report-error') strict = true
-		else rest.push(arg)
-	}
-	return { strict, rest }
-}
 
 function isTruthy(value: string | undefined): boolean {
 	if (!value) return false
@@ -366,4 +304,51 @@ async function finishRun(handoff: Handoff): Promise<void> {
 
 function warn(message: string): void {
 	console.error(`[opice] warning: ${message}`)
+}
+
+/** `*.test.*` / `*.spec.*` among the changed paths, deduplicated and still present. */
+function changedTestFiles(known?: readonly string[], base?: string): string[] {
+	let paths = known
+	if (!paths) {
+		// `--impacted` could not run its query (no credentials, no platform), but
+		// the diff is local and free — the selection still only ADDS, so answering
+		// this half is strictly better than answering neither.
+		try {
+			paths = changedPaths(base ?? defaultBase())
+		} catch {
+			return []
+		}
+	}
+	// A deleted file is in the diff too; selecting it would name a test bun cannot
+	// run. `existsInRepo` rather than a bare `existsSync`: these paths are
+	// repo-relative (git runs from the root), so resolving them against the
+	// current directory would find nothing whenever CI invokes opice from a
+	// package subdirectory — and would silently drop the selection it just made.
+	return [...new Set(paths.filter((p) => TEST_FILE_RE.test(p)))].sort().filter(existsInRepo)
+}
+
+const TEST_FILE_RE = /\.(?:test|spec)\.[tj]sx?$/i
+
+/**
+ * Read an `OPICE_SELECT` value — a JSON array, or the legacy comma list.
+ *
+ * Mirrors `splitSelect` in `@opice/harness`, duplicated because the CLI does not
+ * depend on the harness (it wraps `bun test`; the harness is the user's own
+ * dependency). The JSON form is what this command emits, since it is the only
+ * encoding that survives a path containing a comma.
+ */
+function splitSelectValue(raw: string | undefined): string[] {
+	if (!raw) return []
+	const trimmed = raw.trim()
+	if (trimmed.startsWith('[')) {
+		try {
+			const parsed: unknown = JSON.parse(trimmed)
+			if (Array.isArray(parsed)) {
+				return parsed.filter((e): e is string => typeof e === 'string').map((e) => e.trim()).filter(Boolean)
+			}
+		} catch {
+			// Not JSON after all — fall through to the plain list.
+		}
+	}
+	return trimmed.split(',').map((e) => e.trim()).filter(Boolean)
 }

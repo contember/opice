@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
+import { closePage, getContext, getFootprintCollector, launchPage, recordVideoStep, type ClosedScenario } from './context.js'
 import { screenshot } from './element.js'
+import { writeFootprintFile } from './footprint/file.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { decideScenarioRun, parseSelectList } from './select.js'
 import { loadUserSetup } from './setup.js'
@@ -118,22 +120,89 @@ export interface BrowserTestMeta {
 export const DEFAULT_WALKTHROUGH_TIMEOUT_MS = 60_000
 
 /**
- * Best-effort capture of the `*.test.ts` path that called `browserTest`, by
- * walking the stack for the first `.test.` frame. Reported so a failed
- * scenario links back to its source file. Repo-relative when possible.
+ * Timeout for the scenario teardown hook. Generous on purpose: everything it
+ * does — footprint, video, screenshots, the finish call — is best-effort
+ * telemetry, and none of it should ever be able to fail a scenario that passed.
  */
-function captureTestFile(): string | undefined {
+const TEARDOWN_TIMEOUT_MS = 150_000
+
+/**
+ * The repository root above `from`, or null. Resolved once per process.
+ *
+ * Test paths are keys, not just labels: the change-tracking index is built on
+ * them and a `git diff` is matched against them. Recording them relative to
+ * whatever directory the run started in makes the same file look like two
+ * different ones depending on where CI invoked `bun test`.
+ */
+let cachedRepoRoot: string | null | undefined
+function repoRootAbove(from: string): string | null {
+	if (cachedRepoRoot === undefined) {
+		cachedRepoRoot = null
+		for (let dir = path.resolve(from); ; dir = path.dirname(dir)) {
+			if (existsSync(path.join(dir, '.git'))) {
+				cachedRepoRoot = dir
+				break
+			}
+			const parent = path.dirname(dir)
+			if (parent === dir) break
+		}
+	}
+	return cachedRepoRoot
+}
+
+/**
+ * The test-file path inside one stack frame.
+ *
+ * A frame ends in `:line:col`, so the path is everything before that — and it
+ * may legitimately contain spaces (`/Users/me/My Project/…`) and colons (a
+ * Windows drive letter). An earlier form excluded both, which cost the file on
+ * any checkout with a space in its path, not only on Windows. So the extension
+ * anchors the match instead: take the longest run before `.test.ts`/`.spec.ts`
+ * that starts at a recognisable root, and require the frame to continue with
+ * `:` or `)` so a partial word can't match.
+ */
+export const TEST_FRAME_RE = /((?:file:\/\/\/?)?(?:[A-Za-z]:[\\/]|\/)[^)]*?\.(?:test|spec)\.[tj]sx?)(?=[:)]|\s*$)/
+
+/** A matched frame path → a real filesystem path. */
+export function normalizeFramePath(raw: string): string {
+	const isUrl = raw.startsWith('file://')
+	let p = raw.replace(/^file:\/\//, '')
+	// `file:///C:/x` unwraps to `/C:/x`; the leading slash is part of the URL, not the path.
+	if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1)
+	// Only a URL is percent-encoded — a bare path containing `%20` means that literally.
+	if (isUrl) {
+		try {
+			p = decodeURIComponent(p)
+		} catch {
+			// Malformed escapes: keep the raw form rather than losing the file.
+		}
+	}
+	return p
+}
+
+/**
+ * Best-effort capture of the `*.test.ts` / `*.spec.ts` path that called
+ * `browserTest`, by walking the stack for the first such frame. Both spellings
+ * matter: bun runs either, and a scenario whose file isn't captured is indexed
+ * with no test file at all, so `--impacted` can never force-run it. Reported so a failed
+ * scenario links back to its source file. Relative to the repository root when
+ * there is one, so the same file reads the same however the run was invoked.
+ *
+ * See {@link TEST_FRAME_RE} for how a frame is parsed.
+ */
+function captureTestFile(): { relative: string; absolute: string } | undefined {
 	const stack = new Error().stack
 	if (!stack) return undefined
 	for (const line of stack.split('\n')) {
-		const match = line.match(/\(?((?:file:\/\/)?\/[^\s():]+\.test\.[tj]sx?)/)
+		const match = line.match(TEST_FRAME_RE)
 		if (match?.[1]) {
-			const abs = match[1].replace(/^file:\/\//, '')
+			const abs = normalizeFramePath(match[1])
 			try {
-				const rel = path.relative(process.cwd(), abs)
-				return rel.startsWith('..') ? abs : rel
+				const base = repoRootAbove(path.dirname(abs)) ?? process.cwd()
+				const rel = path.relative(base, abs)
+				return { relative: rel.startsWith('..') ? abs : rel.split(path.sep).join('/'), absolute: abs }
 			} catch {
-				return abs
+				return { relative: abs, absolute: abs }
 			}
 		}
 	}
@@ -201,12 +270,35 @@ function noteSelected(name: string): void {
 	})
 }
 
+/**
+ * The legacy registrar form can't prove its walkthrough finished, so its
+ * footprints are never indexed for change tracking. Said once per process rather
+ * than per scenario — it's a property of the form, not of any one test.
+ */
+let warnedLegacyFootprint = false
+function warnLegacyFootprint(): void {
+	if (warnedLegacyFootprint) return
+	warnedLegacyFootprint = true
+	console.warn(
+		'[opice] footprints from the legacy (sync registrar) browserTest form are stored but NOT indexed for '
+		+ 'change tracking: nothing here observes whether its own test() blocks passed, and indexing a '
+		+ 'walkthrough that died part-way would replace a scenario\'s valid edges with a prefix. '
+		+ 'Convert the scenario to the async body form to have it indexed.',
+	)
+}
+
 let currentScenarioId: string | null = null
 let currentScenarioStart: number = 0
 let currentScenarioFailures = 0
 // Un-authored phase-1 stubs (no body, NO reason) — a genuine skeleton awaiting
 // opice-author. These trigger the "skeleton / body did NOT run" warning.
 let currentScenarioPending = 0
+// Steps whose body threw but whose failure was TOLERATED (`step.fixme` /
+// `invariant.fixme`). They don't fail the scenario — that is the point — but the
+// throw means the step stopped early, so whatever it would have touched next is
+// missing from the footprint. Counted separately so completeness can exclude it
+// without changing pass/fail.
+let currentScenarioTolerated = 0
 // Intentional `.blocked` stubs (no body, but WITH a reason — the feature or
 // environment the step needs isn't available). The body around them DID run;
 // these must NOT be mistaken for an un-authored skeleton.
@@ -221,6 +313,19 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
+// Did the walkthrough body run to completion this attempt?
+//
+// `currentScenarioFailures` is NOT a substitute: it only counts failures raised
+// inside `step`/`invariant` and setup, so a bare `await expect(...)` in the body
+// — or any helper that throws outside a step — leaves it at zero while the
+// walkthrough is very much unfinished. That matters because completeness decides
+// whether the platform may replace this scenario's change-tracking edges with
+// what was collected, and a prefix would delete the valid ones.
+//
+// It starts false and is set only by the body form after `body()` returns. The
+// legacy registrar form registers its own `test()` blocks, whose outcome nothing
+// here observes, so it never claims completeness — see `warnLegacyFootprint`.
+let currentWalkthroughCompleted = false
 
 /**
  * Register a top-level browser test scenario. Two forms, picked automatically:
@@ -259,7 +364,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		throw new Error('opice: browserTest requires a `name` in its metadata — browserTest({ name: "…" }, fn).')
 	}
 	const reporter = getReporter()
-	const testFile = captureTestFile()
+	const captured = captureTestFile()
+	const testFile = captured?.relative
 	const { describe, beforeAll, afterAll, test } = bunTest()
 	// An async fn is the walkthrough body (browserTest owns its test()); a sync
 	// fn is the legacy registrar (it registers its own test()/hooks).
@@ -286,8 +392,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			currentScenarioPending = 0
 			currentScenarioBlocked = 0
 			currentScenarioFailures = 0
+			currentScenarioTolerated = 0
 			currentScenarioStepSeq = 0
 			currentAttempt = 0
+			// Reset for EVERY scenario, both forms. The body wrapper resets it too,
+			// but the legacy registrar has no wrapper — without this it would inherit
+			// the previous scenario's completion.
+			currentWalkthroughCompleted = false
 			try {
 				currentScenarioId = await reporter.startScenario({
 					name: meta.name,
@@ -306,7 +417,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				if (meta.setup) await meta.setup()
 				// Body form opens the browser per attempt (in the test wrapper);
 				// the legacy registrar shares one browser, launched here once.
-				if (!isBody) await openScenario(meta)
+				if (!isBody) await openScenario(meta, captured)
 			} catch (e) {
 				// Setup failed before any step ran. bun:test does NOT run afterAll
 				// when beforeAll throws, so the scenario started above would otherwise
@@ -331,9 +442,9 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		}, 30_000)
 
 		afterAll(async () => {
-			let videoPath: string | undefined
+			let closed: ClosedScenario = {}
 			try {
-				videoPath = await closePage()
+				closed = await closePage()
 			} catch {
 				// ignore close errors
 			}
@@ -343,9 +454,58 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// rather than run back-to-back. It's awaited together with flush() below
 			// (still before the process can exit). Best-effort: uploadVideo swallows
 			// its own failures, so this promise never rejects.
-			const videoUpload = videoPath && currentScenarioId
-				? reporter.uploadVideo({ scenarioId: currentScenarioId, filePath: videoPath })
+			const videoUpload = closed.video && currentScenarioId
+				? reporter.uploadVideo({ scenarioId: currentScenarioId, filePath: closed.video })
 				: Promise.resolve()
+			// The footprint (opt-in, OPICE_FOOTPRINT) is always written to disk when
+			// collected — with or without a platform — so a local run yields a usable
+			// artifact on its own. The upload is the platform's copy, kicked off here
+			// and awaited with the rest below. Both are best-effort.
+			let footprintUpload: Promise<unknown> = Promise.resolve()
+			if (closed.footprint) {
+				// Written once and uploaded from the same string — at the collector's
+				// caps this document runs to megabytes, so serializing it twice would
+				// be a real cost in the teardown budget.
+				const json = await writeFootprintFile(closed.footprint)
+				// Null when the document could not be serialized at all (a user's
+				// `mapOperation` can put anything into `models`). There is nothing to
+				// upload, and the scenario's own result is unaffected.
+				if (json !== null && currentScenarioId) {
+					// Whether the walkthrough got all the way through decides whether the
+					// platform may index this footprint. A scenario that died at step 3
+					// touched a PREFIX of what it covers, and the index replaces a
+					// scenario's edges wholesale — indexing a prefix would delete the
+					// valid ones and quietly stop selecting this scenario for the files
+					// it never reached. The blob is stored either way.
+					// A scenario carrying an un-authored (pending) stub is a skeleton: the
+					// stub returns without running anything, so the body completes and no
+					// failure is counted, yet the footprint covers only the steps that do
+					// exist. Indexing that would replace a full scenario's edges with a
+					// fragment — exactly what the completeness gate exists to prevent.
+						// `blocked` stubs are the same hole under a different name: they also
+						// have no body, so a scenario waiting on an unbuilt feature likewise
+						// covers only a prefix. The two are counted separately (one is a todo,
+						// the other a feature that doesn't exist yet), but for indexing the
+						// distinction doesn't matter — neither one ran.
+					// `isBody` is part of the gate, not just the reset: only the body form
+					// has a wrapper that can observe its own completion, so only it can
+					// ever prove a walkthrough finished. Deriving that from shared mutable
+					// state alone has already been wrong once — stating the requirement
+					// directly makes it independent of hook ordering.
+					const complete = isBody
+						&& currentWalkthroughCompleted
+						&& currentScenarioFailures === 0
+						&& currentScenarioPending === 0
+						&& currentScenarioBlocked === 0
+						&& currentScenarioTolerated === 0
+					if (!complete && !isBody) warnLegacyFootprint()
+					footprintUpload = reporter.uploadFootprint({
+						scenarioId: currentScenarioId,
+						body: json,
+						complete,
+					})
+				}
+			}
 			// Best-effort data cleanup, symmetric to meta.setup. Runs once after the
 			// browser is closed; a failure is logged but never reds an otherwise-green
 			// run (cleanup is hygiene, not an assertion).
@@ -375,12 +535,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			}
 			if (currentScenarioId) {
 				// Drain pending step records (incl. their screenshot uploads) AND the
-				// scenario's video upload before marking the scenario done. step() fires
-				// recordStep fire-and-forget and the video PUT was kicked off above; the
-				// test process would otherwise exit while those requests were still in
-				// flight. Both run concurrently — they share no ordering dependency.
+				// scenario's video + footprint uploads before marking the scenario done.
+				// step() fires recordStep fire-and-forget and the two uploads were kicked
+				// off above; the test process would otherwise exit while those requests
+				// were still in flight. All run concurrently — they share no ordering
+				// dependency.
 				try {
-					await Promise.all([reporter.flush(), videoUpload])
+					await Promise.all([reporter.flush(), videoUpload, footprintUpload])
 				} catch {
 					// best-effort
 				}
@@ -407,13 +568,16 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					+ `See the [opice] reporter error(s) above for the cause.`,
 				)
 			}
-			// Budget covers the slowest teardown path: the video upload (its own ~30s
-			// cap) and flush (~15s) run concurrently, so worst case is ~max(30s, 15s)
-			// plus teardown — comfortably inside this. Each returns as soon as its work
-			// is done, so the normal path costs nothing; the headroom just keeps a slow
-			// best-effort video PUT from tripping the hook timeout and redding an
-			// otherwise-green scenario.
-		}, 60_000)
+			// Budget covers the slowest teardown path, which is SEQUENTIAL in part:
+			// closePage() first runs the footprint's coverage pass (source-map fetching
+			// alone is budgeted 20s), and only then do the uploads start — the video
+			// PUT (~30s cap) and flush (~15s) overlap, followed by finishScenario with
+			// its retries (~30s). That is roughly 80s end to end, so the old 60s bound
+			// could fail an otherwise-green scenario during work that is entirely
+			// best-effort telemetry — the one thing footprint collection promises never
+			// to do. Each stage returns as soon as it's done, so the normal path costs
+			// nothing and this is pure headroom.
+		}, TEARDOWN_TIMEOUT_MS)
 
 		if (isBody) {
 			const body = fn as () => Promise<void>
@@ -428,11 +592,13 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				attempt++
 				currentAttempt = attempt
 				currentScenarioFailures = 0
+				currentScenarioTolerated = 0
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
+				currentWalkthroughCompleted = false
 				try {
-					await openScenario(meta)
+					await openScenario(meta, captured)
 				} catch (e) {
 					// Setup failed: record it (afterAll finishes the scenario) and fail
 					// the attempt so bun retries or, once spent, leaves the run red.
@@ -440,6 +606,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					throw e
 				}
 				await body()
+				// Reached only when the whole body resolved — anything that throws,
+				// inside a step or not, skips this line and leaves the footprint
+				// marked incomplete.
+				currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared
@@ -486,14 +656,21 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
  * scenario URL. `launchPage()` closes any previous context first, so calling
  * this again (a retry attempt) tears down the failed attempt's page cleanly.
  */
-async function openScenario(meta: BrowserTestMeta): Promise<void> {
+async function openScenario(meta: BrowserTestMeta, testFile?: { relative: string; absolute: string }): Promise<void> {
 	// Pass the scenario name so an opt-in video recording is saved under a
 	// readable, scenario-named file (see OPICE_VIDEO in context.ts). The roles
 	// drive which stored session (if any) seeds the context, so the scenario can
 	// open already authenticated instead of signing in by hand; baseUrl scopes
-	// that session cache per environment.
+	// that session cache per environment — and, for an opt-in footprint, marks
+	// which origin counts as "the app". `testFile` rides along so a footprint can
+	// name the file its scenario lives in (that pair is the key the platform's
+	// impact index is built on).
 	const base = meta.url ?? PLAYGROUND_URL
-	const page = await launchPage(meta.name, { roles: meta.roles, baseUrl: base })
+	const page = await launchPage(meta.name, {
+		roles: meta.roles,
+		baseUrl: base,
+		...(testFile ? { testFile: testFile.relative, testFileDir: path.dirname(testFile.absolute) } : {}),
+	})
 	// Repo-level context setup (browser-setup.ts) runs before the first
 	// navigation, so an addInitScript it registers fires before the app's own
 	// scripts on first paint.
@@ -585,6 +762,11 @@ async function runUnit(unit: RunUnit): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
+	// Point the footprint observer (when collecting) at this step, so every
+	// request the step triggers is attributed to it. Set for pending stubs too:
+	// they don't run, but leaving the previous step active would credit the next
+	// step's traffic to the wrong place.
+	getFootprintCollector()?.setActiveStep(sequence)
 	// A reason *with* a body is a .fixme (tolerated failure). A reason *without*
 	// a body is .blocked (a pending stub that can't be authored yet).
 	const fixme = unit.reason !== undefined && unit.fn !== undefined
@@ -634,6 +816,12 @@ async function runUnit(unit: RunUnit): Promise<void> {
 			// toward scenario failures and DON'T re-throw — that's the whole point
 			// of .fixme: the scenario (and the CI run) stay green, the failure
 			// surfaces as an amber warning on the dashboard.
+			//
+			// It DOES count toward footprint completeness: the body stopped where it
+			// threw, so whatever it would have touched afterwards is missing, and
+			// indexing that would replace the scenario's edges with a version of
+			// itself that skipped a step.
+			currentScenarioTolerated++
 			status = 'fixme'
 		} else {
 			status = 'failed'

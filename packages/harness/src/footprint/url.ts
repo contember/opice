@@ -1,0 +1,165 @@
+/**
+ * URL → route template.
+ *
+ * Raw URLs are useless for aggregation: `/api/invoices/8f3c…/lines` and
+ * `/api/invoices/1b7a…/lines` are the same endpoint, and keeping them apart
+ * would turn a scenario's footprint into a list of ids. So every path segment
+ * that *looks* like an identifier collapses to `:id`, and the result is what
+ * both the dashboard and the edge index key on.
+ *
+ * The heuristic is deliberately conservative — it would rather leave a real id
+ * in place (a duplicate endpoint row) than collapse a meaningful segment (two
+ * distinct endpoints silently merged into one). A repo whose ids don't fit the
+ * shapes below can override the whole thing with `normalizeUrl` in its
+ * `browser-footprint.ts`.
+ *
+ * Query VALUES are dropped unconditionally — they carry tokens, emails and
+ * search terms, and a footprint is rendered on a dashboard. Only the parameter
+ * names survive.
+ */
+
+/** A 8-4-4-4-12 UUID, with or without dashes. */
+const UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i
+/** Crockford base32 ULID / KSUID-ish: 26+ chars of upper-case alphanumerics. */
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26,}$/
+/** A long hex blob — a hash, an object id, a content digest. */
+const HEX_RE = /^[0-9a-f]{12,}$/i
+/** Pure digits — a numeric primary key. `v1`, `2024` in a path stay put (see below). */
+const DIGITS_RE = /^\d+$/
+/** base64url-ish opaque token: mixed case + digits, no separators, long. */
+const OPAQUE_RE = /^[A-Za-z0-9_-]{16,}$/
+
+/**
+ * Is this path segment an identifier rather than a route name?
+ *
+ * `index` is the segment's position: the FIRST segment is never collapsed. A
+ * leading numeric segment is far more likely to be a route (`/2024/archive`,
+ * `/1/edit` under a locale-less app) than an id, and collapsing it would merge
+ * whole sections of a site together.
+ */
+export function isIdSegment(segment: string, index: number): boolean {
+	if (!segment) return false
+	if (UUID_RE.test(segment)) return true
+	if (ULID_RE.test(segment)) return true
+	if (HEX_RE.test(segment)) return true
+	// Positional guards below: an id in the first segment is indistinguishable
+	// from a top-level route, so leave it alone.
+	if (index === 0) return false
+	if (DIGITS_RE.test(segment)) return true
+	// An opaque token must actually MIX character classes — `unsubscribe_all` and
+	// `admin-dashboard-v2` are route names, not ids, however long they are.
+	if (OPAQUE_RE.test(segment) && /\d/.test(segment) && /[A-Za-z]/.test(segment) && !/[_-]/.test(segment)) {
+		return /[A-Z]/.test(segment) && /[a-z]/.test(segment)
+	}
+	return false
+}
+
+export interface RouteTemplate {
+	/** Path template; origin-qualified (`https://host/path`) when not same-origin. */
+	route: string
+	/** Sorted query parameter names. Undefined when the URL had no query. */
+	params?: string[]
+}
+
+/**
+ * A segment that is safe to keep verbatim: a short, ordinary route word.
+ *
+ * The check is deliberately inverted — keep what looks like a NAME, collapse
+ * everything else — because the alternative is enumerating every shape a value
+ * can take, and the first one missed is a footprint with an email address in it.
+ * `isIdSegment` recognises the id shapes it knows; this catches what it cannot:
+ * addresses (`@`), percent-encoded text, magic-link tokens and JWTs (too long),
+ * and anything else that isn't a plain word. The cost of a false collapse is two
+ * endpoints merged into one row; the cost of a false keep is a leak.
+ */
+const ROUTE_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,31}$/
+
+/**
+ * Does this segment contain a high-entropy run — a value rather than a name?
+ *
+ * The discriminator is the longest UNBROKEN alphanumeric run, not the length of
+ * the whole segment. Route names are built from words joined by `-`, `_` or `.`:
+ * `admin-dashboard-v2` is eighteen characters but its longest run is
+ * `dashboard`. A token is the opposite — `abc123def456ghi-789jkl` carries a
+ * fifteen-character run even though it, too, contains a dash. Two earlier
+ * attempts at this checked the segment as a whole and leaked exactly the tokens
+ * that happen to include a separator.
+ *
+ * The run must mix letters and digits. That is what keeps ordinary long words
+ * (`documentation`, `notifications`) out of it while still catching ULIDs,
+ * base64url tokens and session ids, which in practice always carry digits.
+ * Pure-hex and all-digit runs are already handled by {@link isIdSegment}.
+ */
+function hasOpaqueRun(segment: string): boolean {
+	for (const run of segment.split(/[^A-Za-z0-9]+/)) {
+		if (run.length < MIN_OPAQUE_RUN) continue
+		if (/[A-Za-z]/.test(run) && /\d/.test(run)) return true
+	}
+	return false
+}
+
+/**
+ * Shortest alphanumeric run treated as a token. Long enough that real compound
+ * words survive, short enough to catch a truncated or short-form id.
+ */
+const MIN_OPAQUE_RUN = 12
+
+/**
+ * Turn a request URL into a route template, relative to the app's own origin.
+ * A same-origin URL keeps only its path; anything else keeps its origin too, so
+ * a third-party API is visibly third-party on the dashboard.
+ *
+ * Returns null for URLs that carry no route at all (`data:`, `blob:`) — those
+ * are noise in a footprint.
+ */
+export function toRouteTemplate(
+	rawUrl: string,
+	appOrigin?: string,
+	redactSegment?: (segment: string, context: { index: number; segments: readonly string[] }) => boolean,
+): RouteTemplate | null {
+	let url: URL
+	try {
+		url = new URL(rawUrl)
+	} catch {
+		return null
+	}
+	if (url.protocol === 'data:' || url.protocol === 'blob:' || url.protocol === 'about:') return null
+	const segments = url.pathname.split('/').filter(Boolean)
+	const templated = segments.map((segment, i) => {
+		if (hasOpaqueRun(segment)) return ':id'
+		if (isIdSegment(segment, i) || !ROUTE_WORD_RE.test(segment)) return ':id'
+		// The app's own positional rule, last: shape alone cannot tell a slug id
+		// (`/customers/acme`) from a route name (`/settings/billing`), so a repo
+		// that has the former says so here. It can only collapse further — a
+		// segment already templated above never reaches this.
+		if (redactSegment) {
+			try {
+				if (redactSegment(segment, { index: i, segments })) return ':id'
+			} catch {
+				// A throwing predicate must not lose the request. Redact anyway: the
+				// caller asked for a rule here and couldn't answer, and `:id` is the
+				// side that cannot leak.
+				return ':id'
+			}
+		}
+		return segment
+	})
+	const path = '/' + templated.join('/')
+	const sameOrigin = appOrigin !== undefined && url.origin === appOrigin
+	const route = sameOrigin ? path : `${url.origin}${path}`
+	const params = [...new Set([...url.searchParams.keys()])].sort()
+	return params.length > 0 ? { route, params } : { route }
+}
+
+/**
+ * Resource types that count as API traffic — the requests worth recording one
+ * by one. Everything else (scripts, styles, images, fonts) is either noise or
+ * feeds the FILE side of the footprint instead; recording a dev server's
+ * several-hundred ES module requests here would bury the handful of API calls
+ * that actually describe what the scenario does.
+ */
+const API_RESOURCE_TYPES = new Set(['xhr', 'fetch', 'eventsource', 'websocket', 'document'])
+
+export function isApiResourceType(resourceType: string): boolean {
+	return API_RESOURCE_TYPES.has(resourceType)
+}

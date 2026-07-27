@@ -48,6 +48,13 @@ export interface ReporterConfig {
 	clientSecret: string
 	branch?: string
 	commit?: string
+	/**
+	 * Commit timestamp (ms). Orders the change-tracking index by SOURCE revision
+	 * rather than by when a workflow happened to start — otherwise re-running an
+	 * old pipeline outranks a newer commit purely by wall clock.
+	 */
+	commitTime?: number
+	commitDepth?: number
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
 	source?: 'ci' | 'local'
 	/**
@@ -146,6 +153,21 @@ export interface VideoUpload {
 	filePath: string
 }
 
+export interface FootprintUpload {
+	scenarioId: string
+	/**
+	 * The serialized footprint. The harness already writes the same JSON to disk,
+	 * so it hands the string over rather than making this re-serialize a document
+	 * that runs to megabytes at the collector's caps.
+	 */
+	body: string
+	/**
+	 * Did the walkthrough finish without a failure? Only a complete footprint may
+	 * be indexed for change tracking — see the call site in `scenario.ts`.
+	 */
+	complete: boolean
+}
+
 export interface ScenarioFinish {
 	scenarioId: string
 	status: 'passed' | 'failed'
@@ -169,6 +191,14 @@ export interface Reporter {
 	 * platform.
 	 */
 	uploadVideo(input: VideoUpload): Promise<void>
+	/**
+	 * Ship a scenario's footprint (opt-in, OPICE_FOOTPRINT) to the platform.
+	 * Best-effort exactly like {@link uploadVideo}: it is evidence, not a result,
+	 * so a failure is logged, never counted toward {@link hadFailures}, and never
+	 * reds the run. The local JSON artifact is written by the harness regardless,
+	 * so nothing is lost when there's no platform.
+	 */
+	uploadFootprint(input: FootprintUpload): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
 	/**
@@ -186,6 +216,7 @@ class NoopReporter implements Reporter {
 	async skipScenario(_input: ScenarioSkip): Promise<void> {}
 	async recordStep(_event: StepEvent): Promise<void> {}
 	async uploadVideo(_input: VideoUpload): Promise<void> {}
+	async uploadFootprint(_input: FootprintUpload): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
 	hadFailures(): boolean {
@@ -213,6 +244,8 @@ class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
 	private warnedUnreachable = false
+	/** One "not indexed" notice per process — it's the same fact for every scenario. */
+	private warnedNotIndexed = false
 	/** Count of failed reports (network error or non-2xx). Drives strict mode. */
 	private failures = 0
 
@@ -233,6 +266,8 @@ class HttpReporter implements Reporter {
 		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs`, {
 			branch: this.config.branch,
 			commit: this.config.commit,
+			commitTime: this.config.commitTime,
+			commitDepth: this.config.commitDepth,
 			source: this.config.source,
 			tier: this.config.tier,
 		})
@@ -323,21 +358,66 @@ class HttpReporter implements Reporter {
 	}
 
 	/**
-	 * Stream a scenario's walkthrough video to the platform as a binary PUT (it
-	 * doesn't fit the JSON-body shape `fetch` uses for every other call). Awaited
-	 * inline by the harness before the scenario finishes — there's at most one per
-	 * scenario, and a fire-and-forget upload could be cut off when the test process
-	 * exits. Best-effort: any failure (missing file, R2 hiccup, auth) is logged and
-	 * swallowed — a dropped video must never fail the run, so it does NOT touch the
-	 * strict-mode failure count.
+	 * PUT one per-scenario asset (a walkthrough video, a footprint) as a raw body
+	 * — neither fits the JSON-envelope shape {@link fetch} uses for every other
+	 * call. Awaited inline by the harness before the scenario finishes: there's at
+	 * most one of each per scenario, and a fire-and-forget upload could be cut off
+	 * when the test process exits.
+	 *
+	 * Deliberately NOT retried like a step record: these are bulky and entirely
+	 * optional, and a retry storm at teardown would cost more than the data is
+	 * worth. Every failure path logs and returns — a dropped asset must never fail
+	 * the run, so none of this touches the strict-mode failure count.
+	 *
+	 * Returns the platform's JSON reply so a caller can act on the parts specific
+	 * to its asset, or null if there wasn't one.
 	 */
-	async uploadVideo(input: VideoUpload): Promise<void> {
-		// Resolve the run id first (cheap — it's memoized once the first scenario
-		// started) so we don't hold the whole video buffer in memory across the
-		// run-start round-trip. A rejected run-start is swallowed: no run ⇒ nothing
-		// to attach the video to, but it must never throw out of this best-effort path.
+	private async putScenarioAsset(input: {
+		scenarioId: string
+		/** Path segment + the noun used in log lines. */
+		kind: 'video' | 'footprint'
+		body: BodyInit
+		contentType: string
+		timeoutMs: number
+		/** Appended to the URL, for the few facts that aren't part of the body. */
+		query?: Record<string, string>
+	}): Promise<Record<string, unknown> | null> {
+		// Resolve the run id first (cheap — memoized once the first scenario
+		// started). A rejected run-start is swallowed: no run ⇒ nothing to attach
+		// to, but it must never throw out of this best-effort path.
 		const runId = await this.ensureRun().catch(() => undefined)
-		if (!runId) return
+		if (!runId) return null
+		const search = input.query ? `?${new URLSearchParams(input.query).toString()}` : ''
+		const path = `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/${input.kind}${search}`
+		const call = `PUT ${path}`
+		try {
+			const response = await fetch(this.config.endpoint + path, {
+				method: 'PUT',
+				headers: {
+					'cf-access-client-id': this.config.clientId,
+					'cf-access-client-secret': this.config.clientSecret,
+					'content-type': input.contentType,
+				},
+				body: input.body,
+				redirect: 'manual',
+				signal: AbortSignal.timeout(input.timeoutMs),
+			})
+			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the ${input.kind} was NOT uploaded (service token rejected at the edge).`)
+				return null
+			}
+			if (!response.ok) {
+				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the ${input.kind} was NOT uploaded.`)
+				return null
+			}
+			return (await response.json().catch(() => null)) as Record<string, unknown> | null
+		} catch (err) {
+			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the ${input.kind} was NOT uploaded.`)
+			return null
+		}
+	}
+
+	async uploadVideo(input: VideoUpload): Promise<void> {
 		let body: Blob
 		try {
 			// `fs.readFile` returns a Node Buffer, which Blob accepts directly — no
@@ -348,33 +428,44 @@ class HttpReporter implements Reporter {
 			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath} (${err instanceof Error ? err.message : String(err)})`)
 			return
 		}
-		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`
-		try {
-			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`, {
-				method: 'PUT',
-				headers: {
-					'cf-access-client-id': this.config.clientId,
-					'cf-access-client-secret': this.config.clientSecret,
-					'content-type': 'video/webm',
-				},
-				body,
-				redirect: 'manual',
-				signal: AbortSignal.timeout(VIDEO_REQUEST_TIMEOUT_MS),
-			})
-			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the video was NOT uploaded (service token rejected at the edge).`)
-				return
-			}
-			if (!response.ok) {
-				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the video was NOT uploaded.`)
-				return
-			}
-			const data = (await response.json().catch(() => null)) as { videoFailed?: boolean } | null
-			if (data?.videoFailed) {
-				console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
-			}
-		} catch (err) {
-			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the video was NOT uploaded.`)
+		const result = await this.putScenarioAsset({
+			scenarioId: input.scenarioId,
+			kind: 'video',
+			body,
+			contentType: 'video/webm',
+			timeoutMs: VIDEO_REQUEST_TIMEOUT_MS,
+		})
+		if (result?.['videoFailed'] === true) {
+			console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
+		}
+	}
+
+	async uploadFootprint(input: FootprintUpload): Promise<void> {
+		const result = await this.putScenarioAsset({
+			scenarioId: input.scenarioId,
+			kind: 'footprint',
+			body: input.body,
+			contentType: 'application/json',
+			timeoutMs: REQUEST_TIMEOUT_MS,
+			query: { complete: String(input.complete) },
+		})
+		if (!result) return
+		if (result['footprintFailed'] === true) {
+			console.error(`[opice] footprint upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
+		}
+		// The footprint was stored, but the platform did NOT fold it into the
+		// change-tracking index. Say so once — a team collecting footprints on a
+		// feature branch would otherwise watch `--impacted` report an empty index
+		// forever with no clue why — but say WHICH reason, because they are not
+		// alike. "Not the default branch" is a configuration question; "a run at
+		// least as new already indexed this" is the system working exactly as
+		// designed, and reporting that as a branch problem sends people to change
+		// settings that were never wrong.
+		if (result['indexed'] === false && !this.warnedNotIndexed) {
+			this.warnedNotIndexed = true
+			const reason = typeof result['indexReason'] === 'string' ? result['indexReason'] : undefined
+			const explanation = INDEX_REASONS[reason ?? ''] ?? INDEX_REASONS['']
+			console.error(`[opice] footprints are being stored but NOT indexed for change tracking — ${explanation}`)
 		}
 	}
 
@@ -576,11 +667,203 @@ export function setReporter(reporter: Reporter): void {
  * the user asked for "fail if reporting fails" and is instead getting no
  * reporting at all, which strict can't catch.
  */
+/**
+ * Is this environment variable set to something meaning YES?
+ *
+ * `CI=false` is a string, and a plain truthiness test reads it as true. That is
+ * not a cosmetic bug: `source` is derived from this, and only a `ci` run of the
+ * default branch may replace the shared change-tracking index. A developer whose
+ * shell exports `CI=false` — a common way to say "I am not CI" — sitting on
+ * `main` with reporting credentials would hand everyone else their local working
+ * state as the authoritative answer.
+ */
+/**
+ * What the platform's `indexReason` means, in the words the person reading a CI
+ * log needs. Only the first two are anything for them to act on.
+ */
+export const INDEX_REASONS: Record<string, string> = {
+	'not-ci': 'this is a local run, and only CI runs write the shared index.',
+	'not-default-branch': 'only a CI run of the default branch (main/master, or the project\'s configured trunk) '
+		+ 'may write the index, so `opice test --impacted` will not see these.',
+	'incomplete-walkthrough': 'the walkthrough did not finish, so this footprint covers only part of what the '
+		+ 'scenario reaches and must not replace what a complete run recorded.',
+	'no-commit-time': 'the run reports no commit timestamp, so there is nothing to order index writes by. '
+		+ 'Run through `opice test`, or set OPICE_COMMIT_TIME.',
+	'nothing-measured': 'no dimension was collected completely enough to speak for — see the footprint warnings.',
+	'already-current': 'a run of the same or a newer revision already indexed these scenarios. Nothing is wrong; '
+		+ 'the index is simply already current.',
+	'index-error': 'the platform failed to write the index. The footprints themselves were stored.',
+	'': 'only a CI run of the default branch may write the index, so `opice test --impacted` will not see these.',
+}
+
+export function isTruthyEnv(value: string | undefined): boolean {
+	if (!value) return false
+	const normalized = value.trim().toLowerCase()
+	return normalized !== '' && normalized !== 'false' && normalized !== '0' && normalized !== 'no' && normalized !== 'off'
+}
+
 function warnStrictNoop(why: string): void {
 	console.error(
 		`[opice] OPICE_REPORT_STRICT is set but ${why} — strict reporting has no effect `
 		+ `(there is nothing to report, so nothing can fail).`,
 	)
+}
+
+/** Commit timestamp in ms, from `OPICE_COMMIT_TIME` (seconds or ms). */
+function commitDepth(env: NodeJS.ProcessEnv): number | undefined {
+	const raw = env['OPICE_COMMIT_DEPTH']
+	if (raw) {
+		const n = Number(raw)
+		if (Number.isInteger(n) && n > 0) return n
+	}
+	return gitCommitDepth()
+}
+
+function commitTime(env: NodeJS.ProcessEnv): number | undefined {
+	const raw = env['OPICE_COMMIT_TIME'] ?? gitCommitTime()
+	if (!raw) return undefined
+	const n = Number(raw)
+	if (!Number.isFinite(n) || n <= 0) return undefined
+	// git's `%ct` is seconds; accept either and normalize to ms.
+	return n < 1e12 ? Math.round(n * 1000) : Math.round(n)
+}
+
+/**
+ * The commit's depth on its branch, or undefined when it cannot be trusted.
+ *
+ * A better revision key than the timestamp: `%ct` has second resolution, so two
+ * trunk commits can share one, and committer dates can invert outright between
+ * runners with skewed clocks. Depth only ever grows as the trunk advances.
+ *
+ * Refused on a SHALLOW clone, which is the default for most CI checkouts. There
+ * `rev-list --count` answers the depth of the CLONE, not of the commit — a
+ * constant 1 for `fetch-depth: 1` — so believing it would rank every run equal
+ * and, worse, could rank a newer run below an older one. Undefined simply falls
+ * back to the timestamp, which is what happens today.
+ */
+let cachedDepth: number | undefined | null
+function gitCommitDepth(): number | undefined {
+	if (cachedDepth === undefined) {
+		cachedDepth = null
+		if (gitOutput(['rev-parse', '--is-shallow-repository']) === 'false') {
+			const count = Number(gitOutput(['rev-list', '--count', 'HEAD']))
+			if (Number.isInteger(count) && count > 0) cachedDepth = count
+		}
+	}
+	return cachedDepth ?? undefined
+}
+
+/**
+ * The branch this CI provider reports, if any.
+ *
+ * Mirrors the CLI's list, deliberately duplicated: the harness is what a user's
+ * repo installs and it cannot import from `@opice/cli`. Keeping the two in step
+ * matters because a null branch is not a cosmetic gap — the worker's
+ * default-branch gate rejects every footprint from a run it cannot attribute, so
+ * on GitLab the index would simply never populate, with nothing saying why.
+ *
+ * A merge-request variable is deliberately absent: a PR build is not a
+ * default-branch build.
+ */
+export function ciBranch(env: NodeJS.ProcessEnv): string | undefined {
+	const derived = usableBranch(
+		env['GITHUB_REF_NAME'] // GitHub Actions
+		?? env['CI_COMMIT_BRANCH'] // GitLab CI
+		?? env['BUILDKITE_BRANCH'] // Buildkite
+		?? env['CIRCLE_BRANCH'] // CircleCI
+		?? env['BRANCH_NAME'] // Jenkins multibranch
+		// Drone reports the TARGET branch here on a pull-request build — see the
+		// CLI's copy. The source branch has to win, or a PR into main reports
+		// itself as main and its footprints replace the shared index.
+		?? env['DRONE_SOURCE_BRANCH'] ?? env['DRONE_BRANCH'] // Drone
+		?? env['BITBUCKET_BRANCH'] // Bitbucket Pipelines
+		?? env['CF_PAGES_BRANCH'], // Cloudflare Pages
+	)
+	// A PULL-REQUEST build is never a default-branch build. If the branch we
+	// derived IS the announced target, we are reading the target rather than the
+	// source — reporting nothing is right, because the worker refuses to index a
+	// run it cannot attribute, and that is the safe direction.
+	const target = (
+		env['GITHUB_BASE_REF']
+		?? env['CI_MERGE_REQUEST_TARGET_BRANCH_NAME']
+		?? env['BUILDKITE_PULL_REQUEST_BASE_BRANCH']
+		?? env['BITBUCKET_PR_DESTINATION_BRANCH']
+		?? env['CHANGE_TARGET']
+		?? env['DRONE_TARGET_BRANCH']
+	)?.trim()
+	return derived && target && derived === target ? undefined : derived
+}
+
+/**
+ * The commit SHA this CI provider reports, if any.
+ *
+ * Not cosmetic either: the worker groups bun's per-test-file runs by
+ * `commit_sha` to build a scenario inventory, so a null SHA collapses a whole
+ * suite to whichever single run was newest — and `unindexed` then reports zero
+ * while sibling files go uninventoried.
+ */
+export function ciCommit(env: NodeJS.ProcessEnv): string | undefined {
+	const value = env['GITHUB_SHA'] // GitHub Actions
+		?? env['CI_COMMIT_SHA'] // GitLab CI
+		?? env['BUILDKITE_COMMIT'] // Buildkite
+		?? env['CIRCLE_SHA1'] // CircleCI
+		?? env['GIT_COMMIT'] // Jenkins
+		?? env['DRONE_COMMIT_SHA'] // Drone
+		?? env['BITBUCKET_COMMIT'] // Bitbucket Pipelines
+		?? env['CF_PAGES_COMMIT_SHA'] // Cloudflare Pages
+	return value?.trim() || undefined
+}
+
+/**
+ * The checked-out branch, straight from git. Resolved once, best-effort — the
+ * last resort when neither the CLI nor a CI provider named one.
+ */
+let cachedBranch: string | undefined | null
+function gitBranch(): string | undefined {
+	if (cachedBranch === undefined) {
+		cachedBranch = usableBranch(gitOutput(['rev-parse', '--abbrev-ref', 'HEAD'])) ?? null
+	}
+	return cachedBranch ?? undefined
+}
+
+/** A branch name, or undefined for the empty string and git's detached-HEAD placeholder. */
+export function usableBranch(value: string | undefined): string | undefined {
+	const trimmed = value?.trim()
+	return trimmed && trimmed !== 'HEAD' ? trimmed : undefined
+}
+
+/**
+ * The HEAD commit's timestamp, straight from git. Resolved once, best-effort.
+ *
+ * `opice test` injects OPICE_COMMIT_TIME, but a plain `bun test` in CI is a
+ * supported path and sets nothing — and the platform refuses to index a
+ * footprint it cannot order by revision, because ordering by wall clock lets a
+ * re-run of an old workflow overwrite a newer commit's edges. Asking git costs
+ * one process at startup and keeps that path working; where git isn't there, the
+ * answer is simply undefined and the footprint goes unindexed rather than wrong.
+ */
+let cachedCommitTime: string | undefined | null
+function gitCommitTime(): string | undefined {
+	if (cachedCommitTime === undefined) {
+		cachedCommitTime = null
+		cachedCommitTime = gitOutput(['show', '-s', '--format=%ct', 'HEAD']) ?? null
+	}
+	return cachedCommitTime ?? undefined
+}
+
+/**
+ * Run git and return its trimmed output, or undefined for any failure. No git,
+ * no checkout, no HEAD — all fine, all simply mean "cannot answer".
+ */
+function gitOutput(args: string[]): string | undefined {
+	try {
+		// Required lazily: this module is imported under plain Node by the authoring
+		// daemon, and there is no reason to pay for it until asked.
+		const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+		return execFileSync('git', args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined
+	} catch {
+		return undefined
+	}
 }
 
 export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter {
@@ -618,7 +901,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	// get the CLI's POST /finish, so they'd sit there as "running" forever).
 	// CI reports automatically; OPICE_REPORT=always forces it locally, =never
 	// silences it everywhere.
-	const isCI = !!(env['CI'] || env['GITHUB_ACTIONS'])
+	const isCI = isTruthyEnv(env['CI']) || isTruthyEnv(env['GITHUB_ACTIONS'])
 	const mode = (env['OPICE_REPORT'] ?? 'auto').toLowerCase()
 	const shouldReport = mode === 'never' ? false : mode === 'always' ? true : isCI
 	if (!shouldReport) {
@@ -630,8 +913,10 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 		projectId,
 		clientId,
 		clientSecret,
-		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
-		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
+		branch: env['OPICE_BRANCH'] ?? ciBranch(env) ?? gitBranch(),
+		commit: env['OPICE_COMMIT'] ?? ciCommit(env) ?? gitOutput(['rev-parse', 'HEAD']),
+		...(commitTime(env) !== undefined ? { commitTime: commitTime(env) } : {}),
+		...(commitDepth(env) !== undefined ? { commitDepth: commitDepth(env) } : {}),
 		source: isCI ? 'ci' : 'local',
 		// Record the selected tier only when one was explicitly requested — a run
 		// with no OPICE_TIER ran everything and carries no tier filter.

@@ -1,8 +1,10 @@
 import { withVideoUrl } from '../asset-url'
+import { isDefaultBranch } from '../db'
+import { indexableKinds, matchImpact, normalizeFootprint, scenarioKeyOf, summarize, toEdges, type ScenarioFootprint } from '../footprint'
 import { badRequest, json, notFound, readJson, serveR2Asset, unauthorized } from '../http'
 import { machineCanReadReports, machineCanWriteReports, resolveMachine } from '../principal'
 import type { Services } from '../services'
-import type { Project, ScenarioStatus, StepKind, StepStatus } from '../types'
+import type { Project, Run, Scenario, ScenarioStatus, StepKind, StepStatus, FootprintEdgeKind } from '../types'
 
 // Steps accept the tolerated fixme markers + 'pending' (a phase-1 stub); scenario
 // finish does not (a scenario is only ever passed/failed — fixme/pending surface
@@ -32,6 +34,21 @@ export async function handleApi(request: Request, services: Services, segments: 
 	const project = await services.db.getProjectBySlug(slug)
 	if (!project) {
 		return unauthorized()
+	}
+
+	// Impact is a READ that needs a request body: `opice test --impacted` sends the
+	// changed-path list from a diff, which is far too long for a query string. So
+	// it's a POST that doesn't follow the method split below, and it accepts
+	// EITHER report permission. Read is the obvious one. Write is allowed because
+	// the ingest DSN is what a CI job running `--impacted` already holds, and the
+	// answer — scenario names and their test files — is precisely what that token
+	// reports to us in the first place. Requiring a second credential to learn
+	// nothing new would buy no security and cost every project a secret.
+	if (request.method === 'POST' && path[0] === 'impact' && path.length === 1) {
+		if (!machineCanReadReports(auth, slug) && !machineCanWriteReports(auth, slug)) {
+			return unauthorized()
+		}
+		return impact(request, services, project)
 	}
 
 	if (request.method === 'GET') {
@@ -77,6 +94,9 @@ async function handleWrite(request: Request, services: Services, project: Projec
 		}
 		if (request.method === 'PUT' && path[2] === 'scenarios' && path[3] && path[4] === 'video' && path.length === 5) {
 			return uploadVideo(request, services, project, runId, path[3])
+		}
+		if (request.method === 'PUT' && path[2] === 'scenarios' && path[3] && path[4] === 'footprint' && path.length === 5) {
+			return uploadFootprint(request, services, project, run, path[3])
 		}
 		if (request.method === 'POST' && path[2] === 'finish' && path.length === 3) {
 			await services.db.finishRun(runId)
@@ -148,10 +168,14 @@ async function readAsset(services: Services, project: Project, key: string, fall
 }
 
 async function createRun(request: Request, services: Services, project: Project): Promise<Response> {
-	const body = (await readJson<{ branch?: string; commit?: string; source?: string; tier?: string }>(request)) ?? {}
+	const body = (await readJson<{ branch?: string; commit?: string; commitTime?: number; commitDepth?: number; source?: string; tier?: string }>(request)) ?? {}
 	const source = body.source === 'ci' || body.source === 'local' ? body.source : undefined
 	const tier = typeof body.tier === 'string' ? body.tier : undefined
-	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, source, tier })
+	const commitTime = typeof body.commitTime === 'number' && Number.isFinite(body.commitTime) ? body.commitTime : undefined
+	const commitDepth = typeof body.commitDepth === 'number' && Number.isInteger(body.commitDepth) && body.commitDepth > 0
+		? body.commitDepth
+		: undefined
+	const run = await services.db.createRun({ id: crypto.randomUUID(), projectId: project.id, branch: body.branch, commit: body.commit, commitTime, commitDepth, source, tier })
 	return json({ runId: run.id })
 }
 
@@ -280,21 +304,98 @@ async function createStep(
 }
 
 /**
- * Largest video body we'll buffer + store. A walkthrough webm is normally a few
- * MB; this guards the Worker's memory against a pathological upload (we buffer
- * the whole body so `putWithRetry` can re-send it on a transient R2 error).
+ * Largest video body we'll store. A walkthrough webm is normally a few MB; this
+ * bounds a pathological upload. Enforced on the STREAM rather than after
+ * buffering — see {@link uploadVideo}.
  */
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 /**
- * Receive a scenario's walkthrough video (opt-in, `OPICE_VIDEO`) as a binary PUT
- * and store it in the shared run-assets bucket under `<slug>/<runId>/...`. The
- * video is non-essential telemetry, exactly like a step screenshot: the scenario
- * row already exists, so a *storage* failure is logged and reported as
- * `{ videoFailed: true }` (HTTP 200) rather than 500-ing — which, under the
- * reporter's strict mode, would fail the CI run over a dropped video. A malformed
- * request (empty or over-size body) is a genuine 400, not a storage failure; the
- * reporter treats any non-2xx as best-effort and never reds the run either way.
+ * Read a per-scenario asset body that the caller needs IN MEMORY — currently the
+ * footprint, whose JSON has to be parsed and sanitized before it is stored.
+ *
+ * Buffering is only acceptable because that cap is small (8 MB): the read holds
+ * the chunks and then concatenates them, so peak use is about twice the body.
+ * The video does not come through here for exactly that reason — at its 100 MB
+ * cap the same pattern peaks past the Worker's 128 MB allowance and kills a
+ * perfectly valid upload, so it streams to R2 instead.
+ *
+ * The scenario must belong to the run, the body must be non-empty, and an
+ * over-size body is refused up front from the declared `content-length` and
+ * again while reading, since a chunked upload declares nothing. Returns the body
+ * with the scenario it belongs to, or the `Response` to send instead.
+ */
+async function readScenarioAssetBody(
+	request: Request,
+	services: Services,
+	runId: string,
+	scenarioId: string,
+	limits: { maxBytes: number; label: string },
+): Promise<{ body: ArrayBuffer; scenario: Scenario } | { response: Response }> {
+	const scenario = await services.db.getScenario(scenarioId)
+	if (!scenario || scenario.runId !== runId) {
+		return { response: notFound('scenario not found') }
+	}
+	const declared = Number(request.headers.get('content-length') ?? '')
+	if (Number.isFinite(declared) && declared > limits.maxBytes) {
+		return { response: badRequest(`${limits.label} too large (${declared} bytes > ${limits.maxBytes})`) }
+	}
+	const body = await readCapped(request, limits.maxBytes)
+	if (!body) {
+		return { response: badRequest(`${limits.label} too large (exceeds ${limits.maxBytes} bytes)`) }
+	}
+	if (body.byteLength === 0) {
+		return { response: badRequest(`empty ${limits.label} body`) }
+	}
+	return { body, scenario }
+}
+
+/**
+ * Read a request body, giving up as soon as it passes `maxBytes`. Null when it does.
+ *
+ * `arrayBuffer()` buffers first and lets the caller check the size afterwards,
+ * which only works when `content-length` was honest. A chunked upload declares
+ * no length at all, so an oversized or malformed one would be buffered in full —
+ * spending the Worker's whole 128 MB allowance and killing the invocation
+ * instead of returning the 400 this is here to return. Reading the stream with a
+ * running total bounds the damage to one chunk past the limit.
+ */
+async function readCapped(request: Request, maxBytes: number): Promise<ArrayBuffer | null> {
+	if (!request.body) return new ArrayBuffer(0)
+	const reader = request.body.getReader()
+	const chunks: Uint8Array[] = []
+	let total = 0
+	try {
+		for (;;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			if (!value) continue
+			total += value.byteLength
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => {})
+				return null
+			}
+			chunks.push(value)
+		}
+	} finally {
+		reader.releaseLock()
+	}
+	const out = new Uint8Array(total)
+	let offset = 0
+	for (const chunk of chunks) {
+		out.set(chunk, offset)
+		offset += chunk.byteLength
+	}
+	return out.buffer
+}
+
+/**
+ * Receive a scenario's walkthrough video (opt-in, `OPICE_VIDEO`) and store it in
+ * the shared run-assets bucket. The video is non-essential telemetry, exactly
+ * like a step screenshot: the scenario row already exists, so a *storage*
+ * failure is reported as `{ videoFailed: true }` (HTTP 200) rather than 500-ing
+ * — which, under the reporter's strict mode, would fail the CI run over a
+ * dropped video.
  */
 async function uploadVideo(
 	request: Request,
@@ -304,30 +405,262 @@ async function uploadVideo(
 	scenarioId: string,
 ): Promise<Response> {
 	const scenario = await services.db.getScenario(scenarioId)
-	if (!scenario || scenario.runId !== runId) {
-		return notFound('scenario not found')
-	}
-	// Reject an over-size body up front when the length is declared, before buffering.
+	if (!scenario || scenario.runId !== runId) return notFound('scenario not found')
 	const declared = Number(request.headers.get('content-length') ?? '')
-	if (Number.isFinite(declared) && declared > MAX_VIDEO_BYTES) {
+	// R2 will not accept a stream whose length it doesn't know, so the header is
+	// REQUIRED rather than merely checked. The reporter always sends it; refusing
+	// the rest is deliberate — the alternative is buffering an undeclared body to
+	// find out how big it is, which at this cap peaks past the Worker's memory
+	// allowance and kills the invocation.
+	if (!Number.isFinite(declared) || declared <= 0) {
+		return badRequest('video upload requires a content-length header')
+	}
+	if (declared > MAX_VIDEO_BYTES) {
 		return badRequest(`video too large (${declared} bytes > ${MAX_VIDEO_BYTES})`)
 	}
-	const buffer = await request.arrayBuffer()
-	if (buffer.byteLength === 0) {
-		return badRequest('empty video body')
-	}
-	if (buffer.byteLength > MAX_VIDEO_BYTES) {
-		return badRequest(`video too large (${buffer.byteLength} bytes > ${MAX_VIDEO_BYTES})`)
-	}
+	if (!request.body) return badRequest('empty video body')
 	const key = `${project.slug}/${runId}/video-${scenarioId}.webm`
 	try {
-		await putWithRetry(services.runAssets, key, new Uint8Array(buffer), { httpMetadata: { contentType: 'video/webm' } })
+		// STREAMED to R2, never buffered. A video may legitimately approach 100 MB,
+		// and holding the chunks plus a concatenated copy peaks at twice that —
+		// past the Worker's 128 MB allowance, so a perfectly valid upload would
+		// kill the invocation. Streaming costs the retry (a stream cannot be
+		// replayed), which is the right trade here: the video is best-effort
+		// telemetry exactly like a screenshot, and a failed one is already logged
+		// without reddening the run.
+		//
+		// FixedLengthStream, not a bare TransformStream: R2 rejects a stream of
+		// unknown length outright, and `pipeThrough` erases the length the request
+		// body came with.
+		await services.runAssets.put(key, limitedBody(request.body, declared), {
+			httpMetadata: { contentType: 'video/webm' },
+		})
 		await services.db.attachVideo(scenarioId, key)
 	} catch (err) {
 		console.error(`video upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
 		return json({ videoFailed: true })
 	}
 	return json({ ok: true, videoKey: key })
+}
+
+/**
+ * A known-length stream carrying at most `declared` bytes.
+ *
+ * R2 needs the length up front, which `pipeThrough` on a TransformStream throws
+ * away — that is why this uses `FixedLengthStream`, whose readable side keeps it.
+ * A body that sends MORE than it declared fails the write rather than
+ * overrunning: the runtime enforces the declared length, and the count here
+ * makes the reason explicit in the log.
+ */
+function limitedBody(body: ReadableStream<Uint8Array>, declared: number): ReadableStream<Uint8Array> {
+	const fixed = new FixedLengthStream(declared)
+	void pump(body, fixed.writable, declared)
+	return fixed.readable
+}
+
+async function pump(body: ReadableStream<Uint8Array>, sink: WritableStream<Uint8Array>, limit: number): Promise<void> {
+	const writer = sink.getWriter()
+	const reader = body.getReader()
+	let total = 0
+	try {
+		for (;;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			if (!value) continue
+			total += value.byteLength
+			if (total > limit) throw new Error(`video exceeds its declared ${limit} bytes`)
+			await writer.write(value)
+		}
+		await writer.close()
+	} catch (err) {
+		await writer.abort(err).catch(() => {})
+		await reader.cancel().catch(() => {})
+	} finally {
+		reader.releaseLock()
+	}
+}
+
+/** Most changed paths one impact query will consider. A diff past this is a rewrite, not a change. */
+const MAX_IMPACT_PATHS = 2000
+
+/**
+ * Which scenarios does a change reach?
+ *
+ * Answers with the matched scenarios AND with the state of the index itself
+ * (`indexed`, `updatedAt`), because those are what tell an empty answer apart
+ * from a meaningless one. "No scenario touches these files" and "no footprint
+ * has ever been recorded" both produce zero scenarios, and a caller that can't
+ * distinguish them will either skip tests it needed or run everything forever.
+ * The CLI prints the difference and fails open on the second.
+ */
+async function impact(request: Request, services: Services, project: Project): Promise<Response> {
+	const body = (await readJson<{ paths?: unknown; models?: unknown; includeLoaded?: unknown }>(request)) ?? {}
+	const paths = toStringArray(body.paths) ?? []
+	const models = toStringArray(body.models) ?? []
+	if (paths.length > MAX_IMPACT_PATHS) {
+		return badRequest(`too many paths (${paths.length} > ${MAX_IMPACT_PATHS})`)
+	}
+	const includeLoaded = body.includeLoaded === true
+	const [edges, index] = await Promise.all([
+		services.db.listImpactEdges(project.id, includeLoaded),
+		// The dimensions THIS query depends on. A changed PATH is matched against
+		// file edges by suffix AND against component and model edges by basename
+		// (see `matchEdge`), so all three decide whether an empty answer means
+		// "nothing is affected" or "never measured" — checking only files let a
+		// path whose sole relationship is an uncollected component report
+		// `unindexed: 0` and read as authoritative.
+		services.db.footprintIndexStatus(project.id, impactKinds(paths.length > 0, models.length > 0), project.defaultBranch),
+	])
+	const scenarios = matchImpact(edges, { paths, models, includeLoaded })
+	return json({ scenarios, index })
+}
+
+/** The edge kinds an impact query's answer depends on. */
+function impactKinds(hasPaths: boolean, hasModels: boolean): FootprintEdgeKind[] {
+	if (hasPaths) return ['file', 'component', 'model']
+	return hasModels ? ['model'] : ['file']
+}
+
+/**
+ * Largest footprint we'll accept. The harness already caps what it collects
+ * (2000 requests, 5000 files) and reports when it truncated, so anything past
+ * this is a client that isn't ours.
+ */
+const MAX_FOOTPRINT_BYTES = 8 * 1024 * 1024
+
+/**
+ * Receive a scenario's footprint (opt-in, `OPICE_FOOTPRINT`) and do two things
+ * with it.
+ *
+ * The **blob** goes to R2 beside the run's screenshots and video, so the
+ * dashboard can show what that particular run's scenario touched. Best-effort,
+ * like the other two: a storage failure answers 200 with `{ footprintFailed:
+ * true }` rather than 500-ing, because the reporter's strict mode would
+ * otherwise fail a CI run over dropped telemetry.
+ *
+ * The **edges** go to the change-tracking index — but only for CI runs. A local
+ * run happens against whatever half-built state is on someone's laptop, and
+ * letting it rewrite the shared index is the one way `--impacted` could start
+ * quietly selecting the wrong tests for everybody. The blob is still stored for
+ * a local run; only the index is protected.
+ */
+async function uploadFootprint(
+	request: Request,
+	services: Services,
+	project: Project,
+	run: Run,
+	scenarioId: string,
+): Promise<Response> {
+	const read = await readScenarioAssetBody(request, services, run.id, scenarioId, { maxBytes: MAX_FOOTPRINT_BYTES, label: 'footprint' })
+	if ('response' in read) return read.response
+	const bytes = new Uint8Array(read.body)
+	let footprint: ScenarioFootprint
+	try {
+		footprint = normalizeFootprint(JSON.parse(new TextDecoder().decode(bytes)) as unknown)
+	} catch (err) {
+		return badRequest(`invalid footprint: ${err instanceof Error ? err.message : String(err)}`)
+	}
+	const scenario = read.scenario
+
+	const key = `${project.slug}/${run.id}/footprint-${scenarioId}.json`
+	let footprintFailed = false
+	try {
+		// The SANITIZED document is what gets stored — never the bytes that arrived.
+		// `normalizeFootprint` rebuilds every request from an allow-list, and this is
+		// what makes that hold: persisting the original body would keep whatever
+		// extra fields a client sent, and the RPC would hand them back out, including
+		// to run-share holders.
+		const sanitized = new TextEncoder().encode(JSON.stringify(footprint))
+		await putWithRetry(services.runAssets, key, sanitized, { httpMetadata: { contentType: 'application/json' } })
+		await services.db.attachFootprint(scenarioId, key, summarize(footprint))
+	} catch (err) {
+		footprintFailed = true
+		console.error(`footprint upload failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
+	// Three gates before this footprint may rewrite the shared index. It must come
+	// from CI and from the default branch (see migration 0012 for why) — and the
+	// walkthrough must have COMPLETED. A scenario that failed part-way touched a
+	// prefix of what it covers, and edges are replaced wholesale, so indexing that
+	// prefix would delete the valid ones and quietly stop selecting the scenario
+	// for everything it never reached. The blob is stored regardless of all three.
+	// Explicit opt-in, not opt-out: a client that doesn't say the walkthrough
+	// finished hasn't proved it did. An older harness omits the parameter
+	// entirely, and treating that silence as "complete" would let it replace a
+	// scenario's valid edges with whatever it managed to collect.
+	const complete = new URL(request.url).searchParams.get('complete') === 'true'
+	// A completed walkthrough still only speaks for the dimensions it actually
+	// measured; with none of them there is nothing to index.
+	const kinds = indexableKinds(footprint)
+	// Without a commit time there is nothing to order these writes BY. Falling
+	// back to the run's start time orders them by wall clock, which is precisely
+	// the failure commit-time ordering exists to prevent: re-running an older
+	// workflow gives it a fresh start time but not a fresh commit, so it would
+	// sail past the freshness guard and replace a newer commit's edges. Refusing
+	// costs that scenario a refresh until the next run reports one; accepting
+	// silently rolls the index back. The response says `indexed: false`, and the
+	// blob is stored either way.
+	const commitTime = run.commitTime ?? null
+	let indexed = false
+	// WHY a footprint wasn't indexed, for the reporter to relay. `indexed: false`
+	// alone covers cases that mean completely different things — a refused refresh
+	// of the same revision is the system working, a feature-branch run is a
+	// configuration question — and a client that can only see the boolean has to
+	// guess, which it did, wrongly and confidently.
+	let indexReason: string | null = null
+	// Re-read the project immediately before deciding. `project` was loaded before
+	// the body was parsed and the blob was written to R2, so it can be seconds
+	// stale — and `setProjectDefaultBranch` CLEARS the index when the trunk
+	// changes. An upload from the old branch that passed a stale check would then
+	// repopulate what was just cleared, and since impact reads don't filter edges
+	// by branch, that wrong data would stay live. This narrows the window to the
+	// gap between this read and the batch below rather than closing it outright:
+	// D1 cannot include the read in the same transaction.
+	const current = (await services.db.getProjectBySlug(project.slug)) ?? project
+	const eligible = complete && kinds.length > 0 && commitTime !== null
+		&& run.source === 'ci' && isDefaultBranch(current, run.branch)
+	if (!eligible) {
+		if (run.source !== 'ci') indexReason = 'not-ci'
+		else if (!isDefaultBranch(current, run.branch)) indexReason = 'not-default-branch'
+		else if (!complete) indexReason = 'incomplete-walkthrough'
+		else if (commitTime === null) indexReason = 'no-commit-time'
+		else indexReason = 'nothing-measured'
+	}
+	if (eligible) {
+		try {
+			const replaced = await services.db.replaceFootprintEdges({
+				projectId: current.id,
+				scenarioKey: scenarioKeyOf(scenario.testFile, scenario.name),
+				testFile: scenario.testFile,
+				scenarioName: scenario.name,
+				runId: run.id,
+				branch: run.branch,
+				// The COMMIT's time. Guaranteed present by the `orderable` gate above —
+				// a run without one is never indexed at all, rather than ordered by
+				// wall clock. See migration 0012.
+				runStartedAt: commitTime,
+				runDepth: run.commitDepth,
+				// Only the dimensions this run actually measured, whole. A run that saw
+				// no files (network mode against a bundle, no source maps) must not
+				// delete the file edges a fuller run established — that would shrink
+				// `--impacted` silently, which is worse than not indexing at all.
+				kinds,
+				edges: toEdges(footprint, kinds),
+			})
+			// False when a NEWER run already indexed this scenario — the write was
+			// correctly refused rather than having failed.
+			indexed = replaced.applied
+			// Applied=false here means a run at least as new already indexed this
+			// scenario — the guard working, not a failure.
+			if (!indexed) indexReason = 'already-current'
+		} catch (err) {
+			// The index is a derived convenience; the blob above is the record. A
+			// failure here degrades `--impacted`, it doesn't lose data.
+			indexReason = 'index-error'
+			console.error(`footprint indexing failed for ${key}: ${err instanceof Error ? err.message : String(err)}`)
+		}
+	}
+	return json({ ok: !footprintFailed, footprintFailed, indexed, ...(indexReason ? { indexReason } : {}) })
 }
 
 /**

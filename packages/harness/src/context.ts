@@ -4,7 +4,8 @@ import path from 'node:path'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { resolveStorageState } from './auth.js'
 import { isTruthy } from './env.js'
-import { slugify } from './slug.js'
+import { FootprintCollector, loadFootprintConfig, resolveMode, type ScenarioFootprint } from './footprint/index.js'
+import { slugify, uniqueStem } from './slug.js'
 
 /**
  * The live Playwright page for the running scenario.
@@ -25,6 +26,11 @@ import { slugify } from './slug.js'
 let browser: Browser | null = null
 let context: BrowserContext | null = null
 let page: Page | null = null
+// Footprint observer for the current scenario's context (null when collection is
+// off, which is the default). Created with the context and finished before it
+// closes — a discarded retry attempt disposes of its collector unread, exactly
+// like its half-recorded video.
+let collector: FootprintCollector | null = null
 // Filename stem for the current scenario's recording — set by `launchPage` and
 // consumed by `closePage` when it saves the video. Null when video is off.
 let currentVideoLabel: string | null = null
@@ -146,26 +152,12 @@ function parseSize(raw: string | undefined): { width: number; height: number } |
 	return width > 0 && height > 0 ? { width, height } : undefined
 }
 
-// Video filename stems already saved this process. Two scenarios whose names
-// slug to the same stem (e.g. "Login" and "Login!", or two emoji-only names that
-// both fall back to "scenario") would otherwise overwrite each other's on-disk
-// recording. We disambiguate the second and later with a `-2`, `-3`, … suffix so
-// every scenario keeps its footage (the R2 key is already unique — it carries
-// the scenario id — so this only protects the local OPICE_VIDEO_DIR files).
+// Video filename stems already saved this process — see `uniqueStem`, which
+// keeps two scenarios that slug alike from overwriting each other's recording.
+// (The R2 key is already unique — it carries the scenario id — so this only
+// protects the local OPICE_VIDEO_DIR files.)
 const usedVideoStems = new Set<string>()
-function uniqueVideoStem(stem: string): string {
-	let candidate = stem
-	for (let n = 2; usedVideoStems.has(candidate); n++) {
-		candidate = `${stem}-${n}`
-	}
-	usedVideoStems.add(candidate)
-	return candidate
-}
 
-// Playwright writes recordings under `recordVideo.dir` with auto-generated hash
-// names *as the context runs*; we point that at a scratch dir and `saveAs` the
-// finished file under a scenario-named path, so the raw hashes never litter the
-// user's output folder.
 const VIDEO_RAW_DIR = path.join(tmpdir(), 'opice-videos-raw')
 
 /** The active page, or throw if called outside a `browserTest` scenario. */
@@ -203,12 +195,25 @@ async function getBrowser(): Promise<Browser> {
  * scenario whose teardown didn't complete is closed first so state never
  * bleeds across scenarios.
  */
-export async function launchPage(label?: string, opts?: { roles?: string[]; baseUrl?: string }): Promise<Page> {
+export async function launchPage(
+	label?: string,
+	opts?: {
+		roles?: string[]
+		baseUrl?: string
+		/** Repo-relative path, recorded on the footprint. */
+		testFile?: string
+		/** ABSOLUTE directory of that test — where a `browser-footprint.ts` is looked up. */
+		testFileDir?: string
+	},
+): Promise<Page> {
 	if (context) {
 		// A leftover context is a discarded attempt (a retry relaunches here): drop
 		// its half-recorded video rather than saving it — only the final attempt,
-		// closed via closePage, is worth keeping.
+		// closed via closePage, is worth keeping. Its footprint goes the same way:
+		// what a failed attempt touched before dying is not what the scenario covers.
 		const staleVideo = page?.video() ?? null
+		collector?.dispose()
+		collector = null
 		await context.close().catch(() => {})
 		await staleVideo?.delete().catch(() => {})
 		context = null
@@ -239,6 +244,24 @@ export async function launchPage(label?: string, opts?: { roles?: string[]; base
 	currentVideoName = video ? (label ?? 'scenario') : null
 	videoSteps = []
 	page = await context.newPage()
+	// Attach the footprint observer before the first navigation, so the opening
+	// page load — the requests and modules that get the app on screen — is part of
+	// what the scenario is recorded as touching.
+	const mode = resolveMode()
+	if (mode !== 'off') {
+		collector = await FootprintCollector.attach(context, page, {
+			scenario: label ?? 'scenario',
+			mode,
+			// Resolved from the TEST's own directory, not the cwd: in a monorepo run
+			// from the repo root, a package's `browser-footprint.ts` sits beside its
+			// tests and would otherwise never be found. The directory arrives already
+			// absolute — `testFile` is repo-relative, so resolving THAT against the
+			// cwd would duplicate the package prefix when the run started inside it.
+			config: await loadFootprintConfig(opts?.testFileDir),
+			...(opts?.testFile ? { testFile: opts.testFile } : {}),
+			...(opts?.baseUrl ? { baseUrl: opts.baseUrl } : {}),
+		})
+	}
 	// t=0 reference for the manifest: the recording starts with this page.
 	videoStartMs = Date.now()
 	return page
@@ -275,13 +298,21 @@ export async function recordVideoStep(s: { name: string; kind: string; sequence:
 	})
 }
 
+/** What a closed scenario left behind for the reporter to ship. */
+export interface ClosedScenario {
+	/** Path to the saved walkthrough recording (opt-in, `OPICE_VIDEO`). */
+	video?: string
+	/** What the scenario touched (opt-in, `OPICE_FOOTPRINT`). */
+	footprint?: ScenarioFootprint
+}
+
 /**
  * Close the scenario's context (and page); keep the shared browser alive for
  * the next scenario. Called from `afterAll`. The browser itself is launched
  * once and reaped by Playwright's own process-exit handler when `bun test`
  * exits — see the `beforeExit` hook below for the graceful path.
  */
-export async function closePage(): Promise<string | undefined> {
+export async function closePage(): Promise<ClosedScenario> {
 	// Grab the video handle before the page is torn down. Playwright finalizes the
 	// file only once the context closes, so we save it afterwards.
 	const video = page?.video() ?? null
@@ -289,6 +320,16 @@ export async function closePage(): Promise<string | undefined> {
 	const name = currentVideoName
 	const steps = videoSteps
 	const viewport = page?.viewportSize() ?? undefined
+	// The footprint has to be harvested BEFORE the context closes: coverage is read
+	// off the live page, and source maps are fetched through the context. Its own
+	// failures are already swallowed internally, so this can't throw.
+	let footprint: ScenarioFootprint | undefined
+	if (collector && page) {
+		footprint = await collector.finish(page)
+	}
+	collector?.dispose()
+	collector = null
+	const closed: ClosedScenario = footprint ? { footprint } : {}
 	try {
 		await context?.close()
 	} finally {
@@ -299,10 +340,10 @@ export async function closePage(): Promise<string | undefined> {
 		videoSteps = []
 		videoStartMs = 0
 	}
-	if (!video || !label) return undefined
+	if (!video || !label) return closed
 	const cfg = videoConfig()
 	const dir = cfg?.dir ?? 'opice-videos'
-	const target = path.join(dir, `${uniqueVideoStem(label)}.webm`)
+	const target = path.join(dir, `${uniqueStem(label, usedVideoStems)}.webm`)
 	// Saving the .webm is the part that matters — it's what gets uploaded to R2.
 	let saved = false
 	try {
@@ -315,7 +356,7 @@ export async function closePage(): Promise<string | undefined> {
 		// Drop the raw hash-named copy under the scratch dir.
 		await video.delete().catch(() => {})
 	}
-	if (!saved) return undefined
+	if (!saved) return closed
 	// The sidecar manifest is a nice-to-have for post-production; a failure to
 	// write it must NOT discard the successfully-saved video (which would skip the
 	// R2 upload and leave the dashboard with no recording for the scenario).
@@ -330,7 +371,16 @@ export async function closePage(): Promise<string | undefined> {
 	} catch (e) {
 		console.warn(`[opice] saved video for "${label}" but failed to write its manifest (ignored): ${e instanceof Error ? e.message : String(e)}`)
 	}
-	return target
+	return { ...closed, video: target }
+}
+
+/**
+ * The active scenario's footprint observer, or null when collection is off.
+ * The scenario runner uses it to tell the collector which step is running, so
+ * every request lands on the step that caused it.
+ */
+export function getFootprintCollector(): FootprintCollector | null {
+	return collector
 }
 
 // Graceful shutdown of the shared browser when the test process winds down. If

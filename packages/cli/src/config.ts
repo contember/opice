@@ -26,6 +26,17 @@ export interface OpiceConfig {
 	 * `OPICE_REPORT_STRICT` env var.
 	 */
 	failOnReportError?: boolean
+	/**
+	 * Footprint collection — record what each scenario touches in the browser
+	 * (source files, React components, endpoints, GraphQL models). `network` is
+	 * pure event listeners; `full` adds V8 coverage and component names. Off by
+	 * default. Overridden by `opice test --footprint[=MODE]` and `OPICE_FOOTPRINT`.
+	 *
+	 * The footprint is what `opice test --impacted` selects scenarios from, so a
+	 * project that wants impact-based selection needs a regular run — typically
+	 * the nightly full-tier one — with this on.
+	 */
+	footprint?: 'off' | 'network' | 'full'
 }
 
 const CONFIG_NAME = 'opice.config.json'

@@ -20,10 +20,15 @@ export function NewProject() {
 	const [open, setOpen] = useState(false)
 	const [slug, setSlug] = useState('')
 	const [name, setName] = useState('')
+	const [defaultBranch, setDefaultBranch] = useState('')
 	const [created, setCreated] = useState<Created | null>(null)
 
 	const mutation = useMutation({
-		mutationFn: () => rpc.projects.create({ slug: slug.trim(), name: name.trim() }),
+		mutationFn: () => rpc.projects.create({
+			slug: slug.trim(),
+			name: name.trim(),
+			...(defaultBranch.trim() ? { defaultBranch: defaultBranch.trim() } : {}),
+		}),
 		onSuccess: (result) => {
 			setCreated(result)
 			queryClient.invalidateQueries({ queryKey: ['projects.list'] })
@@ -35,6 +40,7 @@ export function NewProject() {
 		setCreated(null)
 		setSlug('')
 		setName('')
+		setDefaultBranch('')
 		mutation.reset()
 	}
 
@@ -109,6 +115,18 @@ export function NewProject() {
 			<label className="np-field">
 				<span>Name</span>
 				<input value={name} onChange={(e) => setName(e.target.value)} placeholder="My App" required />
+			</label>
+			<label className="np-field">
+				<span>Default branch</span>
+				{/* Only this branch may write the change-tracking index. Blank covers
+				    main and master; a project whose trunk is named anything else has
+				    to say so, or `opice test --impacted` can never build an index. */}
+				<input
+					value={defaultBranch}
+					onChange={(e) => setDefaultBranch(e.target.value)}
+					placeholder="main or master"
+				/>
+				<small className="np-hint">Optional. Only runs of this branch write the change-tracking index.</small>
 			</label>
 			{errorMessage && <p className="np-error">{errorMessage}</p>}
 			<button type="submit" className="btn-primary" disabled={mutation.isPending}>

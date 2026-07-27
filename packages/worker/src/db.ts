@@ -1,4 +1,5 @@
-import type { CapabilityKind, CapabilityRecord, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
+import type { FootprintEdgeInput } from './footprint'
+import type { CapabilityKind, CapabilityRecord, FootprintEdge, FootprintEdgeKind, FootprintSummary, ImpactedScenario, ImpactReason, Project, Run, RunSource, RunStatus, RunWithProject, Scenario, ScenarioStatus, Step, StepKind, StepStatus } from './types'
 
 // Step statuses that mark a tolerated known failure (step.fixme). A scenario
 // carrying one of these (and no hard failure / no pending step) reads as
@@ -24,11 +25,26 @@ const HAS_WARNING = `EXISTS(SELECT 1 FROM steps st WHERE st.scenario_id = s.id A
 // too). Generous — a slow scenario + screenshot upload must not trip it.
 export const STALE_RUN_MS = 10 * 60 * 1000
 
+// Edges per INSERT. They ride as one JSON parameter rather than as placeholders,
+// so this is bounded by statement size, not by D1's 100-parameter cap: 1000 keeps
+// each payload well under a hundred kilobytes while making even a 5000-edge
+// footprint five statements.
+const EDGES_PER_INSERT = 1000
+
+/**
+ * How long an unrefreshed index edge survives. Generous on purpose: an
+ * `extended`-tier scenario may only be exercised by an occasional full run, and
+ * pruning one that is merely infrequent would quietly narrow what `--impacted`
+ * selects.
+ */
+const EDGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+
 // Internal D1 row shapes — snake_case as the migration defines.
 interface ProjectRow {
 	id: number
 	slug: string
 	name: string
+	default_branch: string | null
 	created_at: number
 }
 
@@ -38,6 +54,8 @@ interface RunRow {
 	project_id: number
 	branch: string | null
 	commit_sha: string | null
+	commit_time: number | null
+	commit_depth: number | null
 	status: ScenarioStatus
 	tier: string | null
 	total_scenarios: number
@@ -100,6 +118,8 @@ interface ScenarioRow {
 	skipped_at: number | null
 	skip_reason: string | null
 	video_r2_key: string | null
+	footprint_r2_key: string | null
+	footprint_summary: string | null
 	// Computed per read: 1 when the scenario carries a tolerated fixme step /
 	// a pending step. Absent on `SELECT *` reads where the state doesn't matter.
 	has_warning?: number
@@ -128,8 +148,20 @@ const toProject = (r: ProjectRow): Project => ({
 	id: r.id,
 	slug: r.slug,
 	name: r.name,
+	defaultBranch: r.default_branch,
 	createdAt: r.created_at,
 })
+
+/**
+ * May a run on `branch` rewrite the project's change-tracking index? See
+ * migration 0012 for why only the default branch may. A run with no branch
+ * recorded is refused — an unattributable run is the one we can't reason about.
+ */
+export const isDefaultBranch = (project: Project, branch: string | null): boolean => {
+	if (!branch) return false
+	if (project.defaultBranch) return branch === project.defaultBranch
+	return branch === 'main' || branch === 'master'
+}
 
 interface CapabilityRow {
 	id: string
@@ -172,6 +204,8 @@ const toRun = (r: RunRow, counts: RunCountsRow, now: number): Run => {
 		projectId: r.project_id,
 		branch: r.branch,
 		commitSha: r.commit_sha,
+		commitTime: r.commit_time,
+		commitDepth: r.commit_depth,
 		status,
 		source: r.source,
 		tier: r.tier,
@@ -198,6 +232,21 @@ const parseStringArray = (json: string | null): string[] => {
 	}
 }
 
+/**
+ * The stored summary is written by this worker from a validated footprint, so a
+ * parse failure means a corrupt row rather than untrusted input — either way the
+ * scenario reads fine without it, so it degrades to null instead of throwing.
+ */
+const parseFootprintSummary = (json: string | null): FootprintSummary | null => {
+	if (!json) return null
+	try {
+		const parsed = JSON.parse(json) as FootprintSummary
+		return typeof parsed === 'object' && parsed !== null ? parsed : null
+	} catch {
+		return null
+	}
+}
+
 const toScenario = (r: ScenarioRow): Scenario => ({
 	id: r.id,
 	runId: r.run_id,
@@ -211,6 +260,8 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	tier: r.tier,
 	skipReason: r.skip_reason,
 	videoKey: r.video_r2_key,
+	footprintKey: r.footprint_r2_key,
+	footprint: parseFootprintSummary(r.footprint_summary),
 	// Display status: a skipped scenario (tier filter) wins — it never ran, so no
 	// step overlay applies. Otherwise overlay a passed scenario, in priority
 	// order: a pending step → 'incomplete'; else a tolerated fixme step → 'warning'.
@@ -223,6 +274,27 @@ const toScenario = (r: ScenarioRow): Scenario => ({
 	attempts: r.attempts,
 	startedAt: r.started_at,
 	finishedAt: r.finished_at,
+})
+
+/** The columns `listImpactEdges` selects — deliberately not the whole table. */
+interface FootprintEdgeRow {
+	scenario_key: string
+	test_file: string | null
+	scenario_name: string
+	kind: FootprintEdgeKind
+	value: string
+	exercised: number
+	updated_at: number
+}
+
+const toFootprintEdge = (r: FootprintEdgeRow): FootprintEdge => ({
+	scenarioKey: r.scenario_key,
+	testFile: r.test_file,
+	scenarioName: r.scenario_name,
+	kind: r.kind,
+	value: r.value,
+	exercised: r.exercised !== 0,
+	updatedAt: r.updated_at,
 })
 
 const toStep = (r: StepRow): Step => ({
@@ -246,18 +318,45 @@ const toStep = (r: StepRow): Step => ({
 export class Db {
 	constructor(private readonly d1: D1Database) {}
 
-	async createProject(input: { slug: string; name: string }): Promise<Project> {
+	async createProject(input: { slug: string; name: string; defaultBranch?: string }): Promise<Project> {
 		const createdAt = Date.now()
+		const defaultBranch = input.defaultBranch?.trim() || null
 		const result = await this.d1
-			.prepare('INSERT INTO projects (slug, name, created_at) VALUES (?, ?, ?)')
-			.bind(input.slug, input.name, createdAt)
+			.prepare('INSERT INTO projects (slug, name, default_branch, created_at) VALUES (?, ?, ?, ?)')
+			.bind(input.slug, input.name, defaultBranch, createdAt)
 			.run()
 		return {
 			id: Number(result.meta.last_row_id),
 			slug: input.slug,
 			name: input.name,
+			defaultBranch,
 			createdAt,
 		}
+	}
+
+	/**
+	 * Set (or clear) the branch allowed to write the change-tracking index.
+	 *
+	 * Without this a project whose trunk isn't main/master could never build an
+	 * index at all: every upload would be refused by {@link isDefaultBranch} and
+	 * `--impacted` would report an empty index forever, with nothing the operator
+	 * could do about it. Null restores the main-or-master default.
+	 */
+	async setProjectDefaultBranch(projectId: number, branch: string | null): Promise<void> {
+		const next = branch?.trim() || null
+		const project = await this.getProjectById(projectId)
+		if (project && project.defaultBranch === next) return
+		// Changing the trunk invalidates everything indexed from the old one: those
+		// edges describe a branch this project no longer considers authoritative,
+		// and nothing filters them out on read, so they would keep answering impact
+		// queries until each scenario happened to be refreshed. Dropping them makes
+		// the index fail OPEN — `--impacted` reports it as empty and runs the tier
+		// alone — which is the honest state until a run of the new trunk fills it.
+		await this.d1.batch([
+			this.d1.prepare('UPDATE projects SET default_branch = ? WHERE id = ?').bind(next, projectId),
+			this.d1.prepare('DELETE FROM footprint_edges WHERE project_id = ?').bind(projectId),
+			this.d1.prepare('DELETE FROM footprint_index_state WHERE project_id = ?').bind(projectId),
+		])
 	}
 
 	async getProjectBySlug(slug: string): Promise<Project | null> {
@@ -342,17 +441,21 @@ export class Db {
 		return results.map(toProject)
 	}
 
-	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; source?: RunSource; tier?: string }): Promise<Run> {
+	async createRun(input: { id: string; projectId: number; branch?: string; commit?: string; commitTime?: number; commitDepth?: number; source?: RunSource; tier?: string }): Promise<Run> {
 		const startedAt = Date.now()
+		const commitTime = typeof input.commitTime === 'number' && Number.isFinite(input.commitTime) ? input.commitTime : null
+		const commitDepth = typeof input.commitDepth === 'number' && Number.isInteger(input.commitDepth) ? input.commitDepth : null
 		await this.d1
-			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
-			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, input.source ?? null, input.tier ?? null, startedAt, startedAt)
+			.prepare(`INSERT INTO runs (id, project_id, branch, commit_sha, commit_time, commit_depth, status, source, tier, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+			.bind(input.id, input.projectId, input.branch ?? null, input.commit ?? null, commitTime, commitDepth, input.source ?? null, input.tier ?? null, startedAt, startedAt)
 			.run()
 		return {
 			id: input.id,
 			projectId: input.projectId,
 			branch: input.branch ?? null,
 			commitSha: input.commit ?? null,
+			commitTime,
+			commitDepth,
 			status: 'running',
 			source: input.source ?? null,
 			tier: input.tier ?? null,
@@ -446,9 +549,17 @@ export class Db {
 			.prepare(`WITH ranked AS (
 				SELECT r.id, ROW_NUMBER() OVER (
 					PARTITION BY r.project_id
-					ORDER BY (CASE WHEN r.branch IN ('main', 'master') THEN 0 ELSE 1 END), r.started_at DESC
+					-- Rank against the project's CONFIGURED trunk, falling back to
+					-- main/master only when it has none. Hardcoding main/master meant a
+					-- project on \`develop\` pinned its headline to whatever ancient
+					-- \`main\` run it happened to have, forever — and a custom trunk is
+					-- exactly what \`projects.default_branch\` exists to support.
+					ORDER BY (CASE
+						WHEN p.default_branch IS NOT NULL THEN (CASE WHEN r.branch = p.default_branch THEN 0 ELSE 1 END)
+						ELSE (CASE WHEN r.branch IN ('main', 'master') THEN 0 ELSE 1 END)
+					END), r.started_at DESC
 				) AS rn
-				FROM runs r
+				FROM runs r JOIN projects p ON p.id = r.project_id
 			)
 			SELECT r.*,
 				(SELECT COUNT(*) FROM scenarios s WHERE s.run_id = r.id AND s.skipped_at IS NULL) AS live_total,
@@ -661,6 +772,358 @@ export class Db {
 			.prepare('UPDATE scenarios SET video_r2_key = ? WHERE id = ?')
 			.bind(key, scenarioId)
 			.run()
+	}
+
+	/**
+	 * Point a scenario at its uploaded footprint blob and store its counts. See
+	 * ingest `uploadFootprint`.
+	 */
+	async attachFootprint(scenarioId: string, key: string, summary: FootprintSummary): Promise<void> {
+		await this.d1
+			.prepare('UPDATE scenarios SET footprint_r2_key = ?, footprint_summary = ? WHERE id = ?')
+			.bind(key, JSON.stringify(summary), scenarioId)
+			.run()
+	}
+
+	/**
+	 * Replace a scenario's edges in the change-tracking index.
+	 *
+	 * Replace, not merge: the index answers "what does this scenario touch NOW",
+	 * so a file the scenario stopped touching has to disappear. Merging would let
+	 * the index accumulate every file the scenario ever loaded, and `--impacted`
+	 * would slowly converge on "run everything".
+	 *
+	 * Delete + insert run in one `batch()`, which D1 wraps in a transaction — a
+	 * half-applied replacement would leave the scenario partly indexed, which is
+	 * worse than either state.
+	 */
+	async replaceFootprintEdges(input: {
+		projectId: number
+		scenarioKey: string
+		testFile: string | null
+		scenarioName: string
+		runId: string
+		branch: string | null
+		/** The run's COMMIT time — the freshness key the guard below compares. */
+		runStartedAt: number
+		/** The run's commit DEPTH, when known — the preferred ordering key. See migration 0012. */
+		runDepth?: number | null
+		edges: FootprintEdgeInput[]
+		/**
+		 * The edge kinds this run may REPLACE (see `indexableKinds`). Kinds absent
+		 * here are left untouched: the run couldn't measure them, and deleting a
+		 * previous run's answer is worse than letting it go stale.
+		 */
+		kinds: readonly FootprintEdgeKind[]
+	}): Promise<{ applied: boolean }> {
+		const now = Date.now()
+		// Every statement is guarded on the incoming run being at least as new as
+		// what is already indexed, and they run in one D1 batch (a transaction), so
+		// a slow older run finishing after a newer one cannot delete the newer edges
+		// and then fail to replace them — it simply does nothing.
+		//
+		// The guard reads the STATE table, not the edges: a newer run that produced
+		// no edges leaves no edge row to compare against, and an older run arriving
+		// afterwards would otherwise be free to reinsert what the newer one removed.
+		// STRICTLY newer on the commit time — equal is refused, not broken by the
+		// wall clock. git's %ct is second-resolution, so two trunk commits can share
+		// a timestamp; ordering those by when their workflows ran would let a RERUN
+		// of the older one win simply by executing later, which is the exact failure
+		// the commit-time ordering exists to prevent. Refusing an ambiguous upload
+		// costs one scenario a refresh until the next commit; accepting it restores
+		// stale edges.
+		// Correlated on the KIND, so each dimension orders independently: a run that
+		// only measured endpoints cannot be refused because a newer run already
+		// wrote the file edges, and cannot block one either.
+		// Prefer DEPTH, fall back to the timestamp, and never mix the two: a depth
+		// and a millisecond count are not comparable quantities, so a row is judged
+		// by depth only when BOTH it and the incoming run have one. Depth is the
+		// better key because git's %ct has second resolution — two trunk commits
+		// can share it, and the strict `>=` refusal then locks the second one out
+		// until a commit lands in a later second — and because committer dates can
+		// invert outright between runners with skewed clocks, which no amount of
+		// tie-breaking fixes. Depth only grows as the trunk advances.
+		// `depth` is the placeholder holding this run's depth, which differs per
+		// statement — each binds a different number of parameters before it.
+		const notOlder = (kind: string, depth: string) => `NOT EXISTS (
+			SELECT 1 FROM footprint_index_state s
+			WHERE s.project_id = ?1 AND s.scenario_key = ?2 AND s.kind = ${kind}
+				AND (CASE
+					WHEN s.run_depth IS NOT NULL AND ${depth} IS NOT NULL THEN s.run_depth >= ${depth}
+					ELSE s.run_started_at >= ?3
+				END)
+		)`
+		// The delete is scoped to the kinds this run can speak for. A run that
+		// observed endpoints but no files replaces the endpoint edges and leaves the
+		// file edges from whichever run last measured them — the alternative is a
+		// degraded run quietly deleting coverage nobody asked it to touch.
+		const kindList = [...new Set(input.kinds)]
+		const kindPlaceholders = kindList.map((_, i) => `?${i + 4}`).join(', ')
+		const statements: D1PreparedStatement[] = []
+		if (kindList.length > 0) {
+			statements.push(
+				this.d1
+					.prepare(
+						`DELETE FROM footprint_edges
+							WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})
+								AND ${notOlder('footprint_edges.kind', `?${4 + kindList.length}`)}`,
+					)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, ...kindList, input.runDepth ?? null),
+			)
+		}
+		// The edges travel as ONE json array parameter per statement, expanded by
+		// `json_each`, rather than as a row of placeholders each. A scenario indexes
+		// well over a thousand edges; at nine rows per INSERT that was ~180 queries
+		// for one scenario, which blows through the per-invocation D1 query limit
+		// (50 on the Workers Free plan) and leaves the index silently unwritten.
+		// This is a handful of statements no matter how large the footprint.
+		for (let i = 0; i < input.edges.length; i += EDGES_PER_INSERT) {
+			const payload = JSON.stringify(input.edges.slice(i, i + EDGES_PER_INSERT).map((edge) => ({
+				k: edge.kind,
+				v: edge.value,
+				w: edge.writes ? 1 : 0,
+				x: edge.exercised === false ? 0 : 1,
+			})))
+			statements.push(
+				this.d1
+					.prepare(
+						`INSERT INTO footprint_edges (project_id, scenario_key, test_file, scenario_name, kind, value, writes, exercised, run_id, branch, run_started_at, updated_at)
+							SELECT ?1, ?2, ?4, ?5,
+								json_extract(e.value, '$.k'), json_extract(e.value, '$.v'),
+								json_extract(e.value, '$.w'), json_extract(e.value, '$.x'),
+								?6, ?7, ?3, ?8
+							FROM json_each(?9) AS e
+							WHERE ${notOlder("json_extract(e.value, '$.k')", '?10')}
+							ON CONFLICT (project_id, scenario_key, kind, value) DO UPDATE SET
+								writes = excluded.writes, exercised = excluded.exercised,
+								run_id = excluded.run_id, branch = excluded.branch,
+								run_started_at = excluded.run_started_at, updated_at = excluded.updated_at`,
+					)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, input.testFile, input.scenarioName, input.runId, input.branch, now, payload, input.runDepth ?? null),
+			)
+		}
+		// One marker per replaced kind, recorded last so each reflects a replacement
+		// that actually applied, and guarded the same way so an older run can't move
+		// a marker backwards. Only the kinds this run measured get one — a dimension
+		// it stayed silent about keeps whatever freshness it already had.
+		for (const kind of kindList) {
+			statements.push(
+				this.d1
+					.prepare(`INSERT INTO footprint_index_state (project_id, scenario_key, kind, run_started_at, run_id, run_depth, updated_at)
+						SELECT ?1, ?2, ?4, ?3, ?5, ?7, ?6 WHERE ${notOlder('?4', '?7')}
+						ON CONFLICT (project_id, scenario_key, kind) DO UPDATE SET
+							run_started_at = excluded.run_started_at, run_id = excluded.run_id,
+							run_depth = excluded.run_depth, updated_at = excluded.updated_at`)
+					.bind(input.projectId, input.scenarioKey, input.runStartedAt, kind, input.runId, now, input.runDepth ?? null),
+			)
+		}
+		// Unconditional, and outside every freshness guard: this records that the
+		// scenario was REPORTED, which is what retention should measure. A refused
+		// write still means the scenario is alive and running.
+		if (kindList.length > 0) {
+			statements.push(
+				this.d1
+					.prepare(`UPDATE footprint_edges SET last_seen_at = ?3
+						WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})`)
+					.bind(input.projectId, input.scenarioKey, now, ...kindList),
+				this.d1
+					.prepare(`UPDATE footprint_index_state SET last_seen_at = ?3
+						WHERE project_id = ?1 AND scenario_key = ?2 AND kind IN (${kindPlaceholders})`)
+					.bind(input.projectId, input.scenarioKey, now, ...kindList),
+			)
+		}
+		const results = await this.d1.batch(statements)
+		// The guard makes these no-ops for a run older than what's indexed, and the
+		// caller reports whether the index was actually written — saying "indexed"
+		// when a stale upload changed nothing would be a lie a CI log can't check.
+		// The markers are the reliable signal: one is written for every kind whose
+		// replacement was accepted, including a kind that legitimately has no edges.
+		// A run with no indexable kinds at all writes none, and is not "indexed".
+		// The two touch statements above sit at the end, so the markers are the
+		// slice before them.
+		const touches = kindList.length > 0 ? 2 : 0
+		const markers = results.slice(results.length - touches - kindList.length, results.length - touches)
+		const applied = kindList.length > 0 && markers.some((r) => (r?.meta.changes ?? 0) > 0)
+		return { applied }
+	}
+
+	/**
+	 * The project's change-tracking edges, for {@link matchImpact} to match a diff
+	 * against. One indexed read: the index is bounded by scenarios x
+	 * touched-things (refreshed rather than appended), and expressing
+	 * suffix-matching against a few hundred changed paths as SQL would mean a LIKE
+	 * per path or a temp table — both worse than reading it once.
+	 *
+	 * `includeLoaded` filters here rather than in the matcher because it decides
+	 * ~85% of the file rows: a scenario indexes far more loaded files than called
+	 * ones (see `exercised` in migration 0012), and there is no point shipping
+	 * them out of D1 only to drop them. Non-file edges are always stored
+	 * `exercised = 1`, so the predicate leaves them alone.
+	 */
+	async listImpactEdges(projectId: number, includeLoaded = false): Promise<FootprintEdge[]> {
+		const exercisedOnly = includeLoaded ? '' : ' AND (kind != \'file\' OR exercised = 1)'
+		const { results } = await this.d1
+			.prepare(
+				`SELECT scenario_key, test_file, scenario_name, kind, value, exercised, updated_at
+					FROM footprint_edges
+					WHERE project_id = ? AND kind IN ('file', 'component', 'model')${exercisedOnly}`,
+			)
+			.bind(projectId)
+			.all<FootprintEdgeRow>()
+		return results.map(toFootprintEdge)
+	}
+
+	/**
+	 * Drop index edges no run has refreshed in {@link EDGE_RETENTION_MS}.
+	 *
+	 * Edges are replaced per scenario, so a scenario that is renamed, moved to
+	 * another file or deleted leaves rows nothing will ever overwrite — the index
+	 * would grow without bound and keep answering with test files that no longer
+	 * exist. Age is the one signal available here: a scenario the default branch
+	 * hasn't exercised in three months describes an app three months gone, which
+	 * is worth less than nothing. Dropping it fails safe — `--impacted` only ever
+	 * ADDS to the tier, so a missing entry costs targeting, never coverage.
+	 */
+	async pruneStaleFootprintEdges(now = Date.now()): Promise<number> {
+		const cutoff = now - EDGE_RETENTION_MS
+		// On LAST SEEN, not on updated_at. A project whose trunk hasn't moved keeps
+		// re-reporting the same revision; every one of those writes is correctly
+		// refused as not-newer, so updated_at never advances — and pruning on it
+		// would delete an index that is being actively maintained, leaving
+		// `--impacted` blind until some later commit rebuilt it.
+		const [edges] = await this.d1.batch([
+			this.d1.prepare('DELETE FROM footprint_edges WHERE MAX(updated_at, last_seen_at) < ?').bind(cutoff),
+			this.d1.prepare('DELETE FROM footprint_index_state WHERE MAX(updated_at, last_seen_at) < ?').bind(cutoff),
+		])
+		return edges?.meta.changes ?? 0
+	}
+
+	/** How many edges the project has indexed, and when it was last refreshed. */
+	/**
+	 * `kinds` are the edge kinds the CALLER is about to query. A scenario counts as
+	 * unindexed when it has no state for one of them — not merely when it has no
+	 * state at all. Since freshness is tracked per kind, a scenario whose endpoints
+	 * were indexed by a network-only run but whose files never were has state, and
+	 * the old any-row test called it indexed. A source-file query would then return
+	 * zero matches alongside `unindexed: 0`, which the CLI reads as "nothing is
+	 * affected" rather than "this was never measured" — the exact false confidence
+	 * the count exists to prevent.
+	 */
+	async footprintIndexStatus(
+		projectId: number,
+		kinds: readonly FootprintEdgeKind[] = ['file'],
+		defaultBranch: string | null = null,
+	): Promise<{ edges: number; scenarios: number; updatedAt: number | null; unindexed: number }> {
+		const [indexed, missing] = await this.d1.batch<{ edges?: number; scenarios?: number; updated_at?: number | null; unindexed?: number }>([
+			// Scenario count and freshness come from the STATE table, not the edges: a
+			// scenario that legitimately touches nothing is recorded there and nowhere
+			// else, and counting edges would report the index as never built.
+			this.d1
+				.prepare(`SELECT
+						(SELECT COUNT(*) FROM footprint_edges WHERE project_id = ?1) AS edges,
+						-- DISTINCT: the state table holds one row per scenario × edge KIND, so
+					-- a plain COUNT would report a project as several times larger than
+					-- it is and make a partial index look complete.
+					(SELECT COUNT(DISTINCT scenario_key) FROM footprint_index_state WHERE project_id = ?1) AS scenarios,
+						(SELECT MAX(updated_at) FROM footprint_index_state WHERE project_id = ?1) AS updated_at`)
+				.bind(projectId),
+			// Scenarios the project has REPORTED but which carry no edges. A count
+			// of indexed scenarios alone can't tell a complete index from a partial
+			// one, and the difference decides how much an empty match is worth: with
+			// everything indexed it means "nothing is affected", with a gap it means
+			// "possibly unknown". Runs report every scenario including skipped ones,
+			// so the newest authoritative COMMIT is a full inventory.
+			//
+			// The commit, not the newest run: `bun test` runs one process per test
+			// file and each process opens its own run, so a suite of N files produces
+			// N runs. Taking only the newest would inventory one file's scenarios and
+			// report every sibling file as indexed — making a partial index look
+			// complete, which is precisely the confusion this count exists to prevent.
+			// Runs with no commit recorded fall back to the newest run alone, since
+			// nothing groups them.
+			//
+			// And only DEFAULT-BRANCH runs, by the same rule that gates index writes.
+			// A PR run is typically focused — `--tier critical --impacted` — so its
+			// scenario list is a subset, and inventorying against it would silently
+			// omit every default-branch scenario the PR didn't run and report
+			// `unindexed: 0`. The count would then vouch for an index it never looked
+			// at. `?3` carries the project's configured trunk (NULL = main or master),
+			// mirroring `isDefaultBranch`.
+			this.d1
+				.prepare(`WITH newest AS (
+						SELECT id, commit_sha FROM runs
+						WHERE project_id = ?1 AND source = 'ci'
+							AND (CASE WHEN ?3 IS NULL THEN branch IN ('main', 'master') ELSE branch = ?3 END)
+						-- By REVISION, matching how edge writes are ordered. Sorting by
+						-- started_at lets a re-run of an older workflow become the
+						-- authoritative inventory: it has the newer wall clock but the
+						-- older commit, and edge replacement correctly refuses it. If the
+						-- newer revision added or moved a scenario, the stale inventory
+						-- would not contain it, unindexed would read 0, and an empty
+						-- match would look authoritative. Runs with no commit_time sort
+						-- last — they are never indexed anyway (see routes/ingest.ts).
+						--
+						-- DEPTH first, matching replaceFootprintEdges. Ordering the
+						-- inventory by timestamp while ordering the edges by depth means
+						-- the two can disagree about which revision is newer: with
+						-- inverted committer dates the inventory would come from the
+						-- ANCESTOR, and a scenario the real newer revision added would be
+						-- missing from it — so unindexed reads 0 and an empty impact
+						-- result looks authoritative.
+						-- Depth is the better key, but it cannot simply outrank the
+						-- timestamp: replaceFootprintEdges compares a mixed pair BY TIME,
+						-- so ranking every depth-bearing run above every null-depth one
+						-- would disagree with it — a repo that moved to shallow checkouts
+						-- would keep inventorying its last full-checkout run forever while
+						-- the edges advanced past it.
+						--
+						-- Nor can it be "only when every run has a depth": one ancient
+						-- shallow run would then disable depth ordering for good, even
+						-- after every current run reports one.
+						--
+						-- So depth decides UNLESS a null-depth run is genuinely newer by
+						-- the clock. Old shallow history is simply older and stops
+						-- mattering; a newer shallow run correctly takes over.
+						ORDER BY (CASE WHEN NOT EXISTS (
+								SELECT 1 FROM runs n
+								WHERE n.project_id = ?1 AND n.source = 'ci'
+									AND (CASE WHEN ?3 IS NULL THEN n.branch IN ('main', 'master') ELSE n.branch = ?3 END)
+									AND n.commit_depth IS NULL
+									AND n.commit_time > (
+										SELECT MAX(d.commit_time) FROM runs d
+										WHERE d.project_id = ?1 AND d.source = 'ci'
+											AND (CASE WHEN ?3 IS NULL THEN d.branch IN ('main', 'master') ELSE d.branch = ?3 END)
+											AND d.commit_depth IS NOT NULL
+									)
+							) THEN commit_depth ELSE NULL END) DESC,
+							(commit_time IS NULL), commit_time DESC, started_at DESC
+						LIMIT 1
+					), latest AS (
+						SELECT r.id FROM runs r, newest n
+						WHERE r.project_id = ?1 AND r.source = 'ci'
+							AND (CASE WHEN ?3 IS NULL THEN r.branch IN ('main', 'master') ELSE r.branch = ?3 END)
+							AND (CASE WHEN n.commit_sha IS NULL THEN r.id = n.id ELSE r.commit_sha = n.commit_sha END)
+					)
+					SELECT COUNT(*) AS unindexed FROM scenarios s
+					WHERE s.run_id IN (SELECT id FROM latest)
+						AND EXISTS (
+							SELECT 1 FROM json_each(?2) AS k
+							WHERE NOT EXISTS (
+								SELECT 1 FROM footprint_index_state st
+								WHERE st.project_id = ?1
+									AND st.kind = k.value
+									AND st.scenario_key = CASE WHEN s.test_file IS NULL THEN s.name ELSE s.test_file || '::' || s.name END
+							)
+						)`)
+				.bind(projectId, JSON.stringify([...new Set(kinds)]), defaultBranch ?? null),
+		])
+		const counts = indexed?.results?.[0]
+		return {
+			edges: counts?.edges ?? 0,
+			scenarios: counts?.scenarios ?? 0,
+			updatedAt: counts?.updated_at ?? null,
+			unindexed: missing?.results?.[0]?.unindexed ?? 0,
+		}
 	}
 
 	/**

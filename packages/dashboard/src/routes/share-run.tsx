@@ -51,6 +51,7 @@ function ShareRunPage({ slug, runId }: { slug: string; runId: string }) {
 				scenarios={scenarios.data}
 				scenariosLoading={scenarios.isLoading}
 				loadSteps={scenarioId => shareRpc.scenarios.steps({ scenarioId })}
+				loadFootprint={scenarioId => shareRpc.scenarios.footprint({ scenarioId })}
 			/>
 		</>
 	)
