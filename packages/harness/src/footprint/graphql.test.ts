@@ -1,15 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { deriveModels, extractQueries, looksLikeGraphql, parseOperations } from './graphql.js'
+import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, type GqlFieldNode } from './graphql.js'
 
 describe('parseOperations', () => {
 	test('reads a named query and its root fields', () => {
 		const ops = parseOperations(`query InvoiceList($limit: Int) { listInvoice(limit: $limit) { id total } }`)
-		expect(ops).toEqual([{ type: 'query', name: 'InvoiceList', rootFields: ['listInvoice'] }])
+		expect(ops).toMatchObject([{ type: 'query', name: 'InvoiceList', rootFields: ['listInvoice'] }])
 	})
 
 	test('reads an anonymous shorthand query', () => {
 		const ops = parseOperations(`{ me { id } }`)
-		expect(ops).toEqual([{ type: 'query', rootFields: ['me'] }])
+		expect(ops).toMatchObject([{ type: 'query', rootFields: ['me'] }])
 	})
 
 	test('resolves aliases to the underlying field name', () => {
@@ -17,17 +17,25 @@ describe('parseOperations', () => {
 		expect(ops[0]?.rootFields).toEqual(['listInvoice'])
 	})
 
-	test('unwraps a Contember transaction so writes name real entities', () => {
-		const ops = parseOperations(`
+	test('unwraps a transparent wrapper so writes name real entities', () => {
+		// The wrapper NAME is a framework convention and lives in a plugin now
+		// (`plugins/contember.ts`); the unwrapping mechanism is what's tested here.
+		const ops = parseOperations(
+			`
 			mutation Pay($id: UUID!) {
 				transaction {
 					updateInvoice(by: {id: $id}, data: {paid: true}) { ok }
 					createPayment(data: {invoice: {connect: {id: $id}}}) { ok }
 				}
 			}
-		`)
+		`,
+			{ transparentFields: ['transaction'] },
+		)
 		expect(ops[0]?.type).toBe('mutation')
 		expect(ops[0]?.rootFields).toEqual(['updateInvoice', 'createPayment'])
+		// The wrapper contributes no node of its own: a resolver walking a path
+		// through the schema must not have to step over the plumbing.
+		expect(ops[0]?.fields?.map((field) => field.path)).toEqual([['updateInvoice'], ['createPayment']])
 	})
 
 	test('splices named fragments in at the level they appear', () => {
@@ -80,7 +88,7 @@ describe('parseOperations', () => {
 
 	test('picks the selected operation out of a multi-operation document', () => {
 		const doc = `query A { listInvoice { id } } query B { listArticle { id } }`
-		expect(parseOperations(doc, { operationName: 'B' })).toEqual([{ type: 'query', name: 'B', rootFields: ['listArticle'] }])
+		expect(parseOperations(doc, { operationName: 'B' })).toMatchObject([{ type: 'query', name: 'B', rootFields: ['listArticle'] }])
 		expect(parseOperations(doc)).toHaveLength(2)
 	})
 
@@ -97,7 +105,7 @@ describe('parseOperations', () => {
 		// Searching for the next brace would find the default's, and read `active`
 		// as the operation's root field.
 		const ops = parseOperations('query Q($filter: Filter = {active: true}) { listInvoice { id } }')
-		expect(ops).toEqual([{ type: 'query', name: 'Q', rootFields: ['listInvoice'] }])
+		expect(ops).toMatchObject([{ type: 'query', name: 'Q', rootFields: ['listInvoice'] }])
 	})
 
 	test('skips directives between the variables and the selection set', () => {
@@ -155,20 +163,32 @@ describe('deriveModels', () => {
 		])
 	})
 
-	test('unwraps validateCreate/validateUpdate to the entity, as a read', () => {
-		// Naively this parses as the verb `validate` on an entity `CreateContentBlock`.
-		expect(deriveModels({
-			type: 'query',
-			rootFields: ['validateCreateContentBlock', 'validateUpdateImage'],
-		})).toEqual([
-			{ name: 'ContentBlock', write: false },
-			{ name: 'Image', write: false },
-		])
+	test('claims no model for a field the verb convention cannot read', () => {
+		// `validateCreateX` is one of these for the built-in rule — Contember's
+		// convention for it lives in `plugins/contember.ts`, tested there.
+		expect(deriveModels({ type: 'query', rootFields: ['validateCreateImage', 'me', 'viewer'] })).toEqual([])
 	})
 
-	test('a validation alongside a real write still reports the write', () => {
-		expect(deriveModels({ type: 'mutation', rootFields: ['validateCreateImage', 'createImage'] }))
-			.toEqual([{ name: 'Image', write: true }])
+	test('a plugin rule wins over the verb heuristic, and cannot downgrade a real write', () => {
+		const models = deriveModels(
+			{ type: 'mutation', rootFields: ['validateCreateImage', 'createImage'] },
+			{ field: (node) => (node.name === 'validateCreateImage' ? { name: 'Image', write: false } : undefined) },
+		)
+		expect(models).toEqual([{ name: 'Image', write: true }])
+	})
+
+	test('a rule returning null vetoes the field instead of falling through', () => {
+		const models = deriveModels(
+			{ type: 'query', rootFields: ['listInvoice'] },
+			{ field: (node) => (node.name === 'listInvoice' ? null : undefined) },
+		)
+		expect(models).toEqual([])
+	})
+
+	test('plugin verbs extend the built-in set', () => {
+		expect(deriveModels({ type: 'query', rootFields: ['loadInvoice'] })).toEqual([])
+		expect(deriveModels({ type: 'query', rootFields: ['loadInvoice'] }, { readVerbs: ['load'] }))
+			.toEqual([{ name: 'Invoice', write: false }])
 	})
 })
 
@@ -274,5 +294,89 @@ describe('looksLikeGraphql without a body', () => {
 		['/api/content', 'application/json'],
 	])('%s with %s is not GraphQL', (pathname, contentType) => {
 		expect(looksLikeGraphql(pathname, undefined, contentType)).toBe(false)
+	})
+})
+
+describe('selection tree', () => {
+	// The tree is what makes a nested relation visible to a resolver. Without it
+	// `getInjury { account { company } }` reports one model and a change to
+	// `Company` selects nothing that renders company names.
+	const paths = (nodes: readonly GqlFieldNode[] = []): string[] =>
+		nodes.flatMap((node) => [node.path.join('.'), ...paths(node.children)])
+
+	test('records the path of every nested field', () => {
+		const ops = parseOperations(`
+			query InjuryDetail($id: UUID!) {
+				getInjury(by: { id: $id }) {
+					account { name company { name } }
+					correctiveActions { state }
+				}
+			}
+		`)
+		expect(paths(ops[0]?.fields)).toEqual([
+			'getInjury',
+			'getInjury.account',
+			'getInjury.account.name',
+			'getInjury.account.company',
+			'getInjury.account.company.name',
+			'getInjury.correctiveActions',
+			'getInjury.correctiveActions.state',
+		])
+	})
+
+	test('records argument keys as dotted paths', () => {
+		const ops = parseOperations(`
+			query ListInjury {
+				listInjury(filter: { account: { company: { name: { eq: "acme" } } } }, first: 20) { id }
+			}
+		`)
+		// The keys of a filter are relation names — a dependency signal worth as
+		// much as the selection set. `acme` is not, and is not here.
+		expect(ops[0]?.fields?.[0]?.args).toEqual(['filter.account.company.name.eq', 'first'])
+	})
+
+	test('reads keys out of a list of objects', () => {
+		const ops = parseOperations(`query { listInjury(filter: { or: [{ account: { id: { eq: 1 } } }] }) { id } }`)
+		expect(ops[0]?.fields?.[0]?.args).toEqual(['filter.or.account.id.eq'])
+	})
+
+	test('keeps a scalar list argument as its own key', () => {
+		const ops = parseOperations(`query { listInjury(ids: [1, 2, 3]) { id } }`)
+		expect(ops[0]?.fields?.[0]?.args).toEqual(['ids'])
+	})
+
+	test('marks an operation truncated when the tree hits its cap', () => {
+		// 600 nested fields, past MAX_FIELD_NODES.
+		const many = Array.from({ length: 600 }, (_, i) => `f${i}`).join(' ')
+		const ops = parseOperations(`query { listInjury { ${many} } }`)
+		expect(ops[0]?.truncated).toBe(true)
+	})
+
+	test('a truncated subtree never costs a later root field', () => {
+		// Root fields are what the model derivation reads: losing one loses a whole
+		// entity, where losing depth only loses detail. So the budget is charged
+		// below the top level only.
+		const many = Array.from({ length: 600 }, (_, i) => `f${i}`).join(' ')
+		const ops = parseOperations(`query { listInjury { ${many} } listCompany { id } }`)
+		expect(ops[0]?.rootFields).toEqual(['listInjury', 'listCompany'])
+	})
+
+	test('no argument VALUE reaches the tree, at any depth', () => {
+		const document = `
+			query Search($token: String!) {
+				listCustomer(filter: {
+					email: { eq: "person@example.com" }
+					apiKey: { eq: "sk-live-abcdef" }
+					session: { eq: $token }
+				}) { id }
+			}
+		`
+		const serialized = JSON.stringify(parseOperations(document))
+		expect(serialized).not.toContain('person@example.com')
+		expect(serialized).not.toContain('sk-live-abcdef')
+		expect(serialized).not.toContain('$token')
+		// The keys, which ARE the dependency signal, survive.
+		expect(serialized).toContain('filter.email.eq')
+		expect(serialized).toContain('filter.session.eq')
 	})
 })

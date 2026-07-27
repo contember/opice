@@ -25,17 +25,60 @@ export interface ParsedOperation {
 	type: 'query' | 'mutation' | 'subscription'
 	name?: string
 	rootFields: string[]
+	/**
+	 * The selection tree. Deliberately NOT stored in the footprint: its only
+	 * consumer is a plugin's `resolve` hook, which runs here during collection.
+	 * Keeping it out of the blob is what lets it be generous — a stored tree would
+	 * be 500 nodes times 2000 requests.
+	 */
+	fields?: GqlFieldNode[]
+	/** A cap was hit while building the tree, so it is a sample. Marks `models` partial. */
+	truncated?: boolean
 }
 
 /**
- * Root fields that are pure plumbing: their *children* are the real operations.
- * Contember wraps every mutation in `transaction { … }`, so without unwrapping,
- * every write in a Contember app would report the single model "transaction".
+ * One field of a selection set.
+ *
+ * `path` is what makes this useful for dependency tracking: a resolver that
+ * knows the schema walks `['getInjury', 'account', 'company']` through the
+ * entity graph and lands on `Company` exactly, where a name-shape heuristic
+ * would have to guess (`correctiveActions` → `CorrectiveAction` needs
+ * singularization; `createdBy` → `Author` is unknowable).
  */
-const DEFAULT_TRANSPARENT_FIELDS = new Set(['transaction'])
+export interface GqlFieldNode {
+	/** Field name, alias already resolved. */
+	name: string
+	/** Path from the operation root, transparent wrappers removed. */
+	path: string[]
+	/** Argument object key paths — names only, never values. See {@link parseArgumentKeys}. */
+	args?: string[]
+	children?: GqlFieldNode[]
+}
 
-/** Introspection + meta fields — never models. */
-const IGNORED_ROOT_FIELDS = new Set(['__schema', '__type', '__typename', '_info', 'query', 'ok', 'errorMessage'])
+/**
+ * Per-operation cap on tree nodes. A document that selects a thousand fields is
+ * a report, not a dependency; hitting this marks the operation truncated, which
+ * marks the model dimension partial, because a sampled tree is not a tree.
+ */
+const MAX_FIELD_NODES = 500
+/** How deep the tree goes. Past this a path is long enough that nothing resolves it anyway. */
+const MAX_FIELD_DEPTH = 8
+/** Per-field cap on argument key paths — a generated filter can be enormous. */
+const MAX_FIELD_ARGS = 32
+
+/**
+ * Fields that never name a model **in any schema**, so they stay built in and a
+ * plugin cannot remove them: `__schema`/`__type`/`__typename` are introspection,
+ * defined by the spec.
+ *
+ * (`query` is here for behaviour parity with the pre-plugin collector, where it
+ * sat in the same list. Whether it is spec-level or a framework convention that
+ * belongs in a plugin is unresolved — see the design doc's open questions.)
+ *
+ * Framework conventions live in plugins: Contember's `_info`, `ok` and
+ * `errorMessage` come from `plugins/contember.ts`.
+ */
+const BUILTIN_IGNORED_FIELDS = new Set(['__schema', '__type', '__typename', 'query'])
 
 export interface ExtractedQueries {
 	/** Query documents found in the request, each with the operation the client selected (if any). */
@@ -178,6 +221,85 @@ interface GqlField {
 	name: string
 	/** The field's sub-selection body (without the braces), when it has one. */
 	selection?: string
+	/** Argument key paths, names only. */
+	args?: string[]
+}
+
+/**
+ * Argument object keys, as dotted paths — `by.id`, `filter.account.company.name.eq`.
+ *
+ * **Keys only, never values.** A filter's keys are relation names, which is a
+ * dependency signal worth as much as the selection set: a query filtering on
+ * `account.company.name` depends on `Company` whether or not it selects it. Its
+ * *values* are tenant names, emails and search terms, and the footprint is
+ * uploaded and rendered on a dashboard. String literals are already blanked out
+ * by {@link blankOutLiterals} before this sees them, but the rule is enforced
+ * here too rather than relying on that: this function only ever emits names.
+ */
+export function parseArgumentKeys(block: string): string[] {
+	const out: string[] = []
+	collectArgumentKeys(block, [], out)
+	return out
+}
+
+function collectArgumentKeys(body: string, prefix: string[], out: string[]): void {
+	if (prefix.length >= MAX_FIELD_DEPTH) return
+	let i = 0
+	while (i < body.length && out.length < MAX_FIELD_ARGS) {
+		i = skipTrivia(body, i)
+		if (i >= body.length) break
+		if (!NAME_START_RE.test(body[i] as string)) {
+			i++
+			continue
+		}
+		const key = readName(body, i)
+		i = skipTrivia(body, key.next)
+		// Not a `key: value` pair — an enum member or a list element. Nothing to name.
+		if (body[i] !== ':') continue
+		i = skipTrivia(body, i + 1)
+		const path = [...prefix, key.name]
+		if (body[i] === '{') {
+			const end = matchBlock(body, i, '{', '}')
+			collectArgumentKeys(body.slice(i + 1, end - 1), path, out)
+			i = end
+			continue
+		}
+		if (body[i] === '[') {
+			const end = matchBlock(body, i, '[', ']')
+			// A list of objects (`or: [{ a: … }, { b: … }]`) contributes its keys at
+			// this path; a list of scalars contributes only the key itself.
+			const before = out.length
+			collectArgumentKeys(body.slice(i + 1, end - 1), path, out)
+			if (out.length === before) out.push(path.join('.'))
+			i = end
+			continue
+		}
+		out.push(path.join('.'))
+		i = skipArgumentValue(body, i)
+	}
+}
+
+/** Index just past a scalar/variable/enum argument value — up to the next comma at this level. */
+function skipArgumentValue(body: string, from: number): number {
+	let i = from
+	while (i < body.length) {
+		const ch = body[i] as string
+		if (ch === ',') return i + 1
+		if (ch === '{') {
+			i = matchBlock(body, i, '{', '}')
+			continue
+		}
+		if (ch === '[') {
+			i = matchBlock(body, i, '[', ']')
+			continue
+		}
+		if (ch === '(') {
+			i = matchBlock(body, i, '(', ')')
+			continue
+		}
+		i++
+	}
+	return i
 }
 
 /**
@@ -242,8 +364,11 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 			fieldName = actual.name
 			i = skipTrivia(body, actual.next)
 		}
+		let args: string[] | undefined
 		if (body[i] === '(') {
-			i = skipTrivia(body, matchBlock(body, i, '(', ')'))
+			const end = matchBlock(body, i, '(', ')')
+			args = parseArgumentKeys(body.slice(i + 1, end - 1))
+			i = skipTrivia(body, end)
 		}
 		i = skipDirectives(body, i)
 		let selection: string | undefined
@@ -252,7 +377,13 @@ function parseSelectionSet(body: string, fragments: Map<string, string>, seen: S
 			selection = body.slice(i + 1, end - 1)
 			i = end
 		}
-		if (fieldName) fields.push(selection === undefined ? { name: fieldName } : { name: fieldName, selection })
+		if (fieldName) {
+			fields.push({
+				name: fieldName,
+				...(selection === undefined ? {} : { selection }),
+				...(args && args.length > 0 ? { args } : {}),
+			})
+		}
 	}
 	return fields
 }
@@ -274,8 +405,13 @@ function collectFragments(text: string): Map<string, string> {
 export interface ParseOptions {
 	/** Only keep the operation the client selected (a document may define several). */
 	operationName?: string
-	/** Fields whose children are the real operations. Defaults to `transaction`. */
+	/** Fields whose children are the real operations. Contributed by plugins (Contember: `transaction`). */
 	transparentFields?: Iterable<string>
+	/**
+	 * Fields that never name a model, contributed by plugins on top of the
+	 * built-in introspection set (Contember: `_info`, `ok`, `errorMessage`).
+	 */
+	ignoredRootFields?: Iterable<string>
 }
 
 /**
@@ -288,7 +424,8 @@ export interface ParseOptions {
 export function parseOperations(document: string, options: ParseOptions = {}): ParsedOperation[] {
 	const text = blankOutLiterals(document)
 	const fragments = collectFragments(text)
-	const transparent = options.transparentFields ? new Set(options.transparentFields) : DEFAULT_TRANSPARENT_FIELDS
+	const transparent = new Set(options.transparentFields ?? [])
+	const ignored = new Set([...BUILTIN_IGNORED_FIELDS, ...(options.ignoredRootFields ?? [])])
 	const operations: ParsedOperation[] = []
 	let i = 0
 	while (i < text.length) {
@@ -298,7 +435,7 @@ export function parseOperations(document: string, options: ParseOptions = {}): P
 		if (ch === '{') {
 			// Anonymous shorthand query.
 			const end = matchBlock(text, i, '{', '}')
-			operations.push({ type: 'query', rootFields: rootFieldsOf(text.slice(i + 1, end - 1), fragments, transparent) })
+			operations.push({ type: 'query', ...selectionOf(text.slice(i + 1, end - 1), fragments, transparent, ignored) })
 			i = end
 			continue
 		}
@@ -342,7 +479,7 @@ export function parseOperations(document: string, options: ParseOptions = {}): P
 		operations.push({
 			type,
 			...(name ? { name } : {}),
-			rootFields: rootFieldsOf(text.slice(braceStart + 1, end - 1), fragments, transparent),
+			...selectionOf(text.slice(braceStart + 1, end - 1), fragments, transparent, ignored),
 		})
 		i = end
 	}
@@ -353,20 +490,71 @@ export function parseOperations(document: string, options: ParseOptions = {}): P
 	return operations
 }
 
-/** Top-level field names of a selection body, with transparent wrappers unwrapped. */
-function rootFieldsOf(body: string, fragments: Map<string, string>, transparent: Set<string>): string[] {
-	const out: string[] = []
+/** An operation's selection: the tree, plus the root field names derived from it. */
+function selectionOf(
+	body: string,
+	fragments: Map<string, string>,
+	transparent: Set<string>,
+	ignored: Set<string>,
+): { rootFields: string[]; fields: GqlFieldNode[]; truncated?: boolean } {
+	const budget = { nodes: 0, truncated: false }
+	const fields = buildTree(body, fragments, transparent, ignored, [], budget)
+	return {
+		rootFields: [...new Set(fields.map((field) => field.name))],
+		fields,
+		...(budget.truncated ? { truncated: true } : {}),
+	}
+}
+
+/**
+ * Build the selection tree, splicing fragments and unwrapping transparent
+ * wrappers so a node's `path` is the path through the *schema*, not through the
+ * document's plumbing.
+ *
+ * The node budget is charged only BELOW the top level. Root fields are what the
+ * model derivation reads, and a document whose first field drags a 500-node
+ * subtree behind it must not push a later root field out of the list — that
+ * would lose a whole entity, where truncating depth only loses detail.
+ */
+function buildTree(
+	body: string,
+	fragments: Map<string, string>,
+	transparent: Set<string>,
+	ignored: Set<string>,
+	parentPath: string[],
+	budget: { nodes: number; truncated: boolean },
+): GqlFieldNode[] {
+	if (parentPath.length >= MAX_FIELD_DEPTH) {
+		budget.truncated = true
+		return []
+	}
+	const nodes: GqlFieldNode[] = []
 	for (const field of parseSelectionSet(body, fragments)) {
-		if (IGNORED_ROOT_FIELDS.has(field.name)) continue
+		if (ignored.has(field.name)) continue
 		if (transparent.has(field.name) && field.selection !== undefined) {
-			for (const inner of parseSelectionSet(field.selection, fragments)) {
-				if (!IGNORED_ROOT_FIELDS.has(inner.name)) out.push(inner.name)
-			}
+			// The wrapper contributes nothing itself; its children sit at ITS level.
+			nodes.push(...buildTree(field.selection, fragments, transparent, ignored, parentPath, budget))
 			continue
 		}
-		out.push(field.name)
+		if (parentPath.length > 0) {
+			if (budget.nodes >= MAX_FIELD_NODES) {
+				budget.truncated = true
+				break
+			}
+			budget.nodes++
+		}
+		const path = [...parentPath, field.name]
+		const children = field.selection === undefined
+			? []
+			: buildTree(field.selection, fragments, transparent, ignored, path, budget)
+		nodes.push({
+			name: field.name,
+			path,
+			...(field.args && field.args.length > 0 ? { args: field.args } : {}),
+			...(children.length > 0 ? { children } : {}),
+		})
 	}
-	return [...new Set(out)]
+	return nodes
 }
 
 /**
@@ -377,50 +565,75 @@ function rootFieldsOf(body: string, fragments: Map<string, string>, transparent:
  */
 const READ_VERBS = ['list', 'get', 'paginate', 'find', 'fetch', 'search']
 const WRITE_VERBS = ['create', 'update', 'delete', 'upsert', 'remove', 'add', 'set', 'save']
-const VERB_RE = new RegExp(`^(${[...READ_VERBS, ...WRITE_VERBS].join('|')})([A-Z][A-Za-z0-9_]*)$`)
-const WRITE_SET = new Set(WRITE_VERBS)
+
+/** Verb regexes are per verb-set, not per call — the set is stable for a whole run. */
+const verbCache = new Map<string, RegExp>()
+
+function verbPattern(read: readonly string[], write: readonly string[]): RegExp {
+	const key = `${read.join('|')}::${write.join('|')}`
+	const hit = verbCache.get(key)
+	if (hit) return hit
+	const compiled = new RegExp(`^(${[...read, ...write].join('|')})([A-Z][A-Za-z0-9_]*)$`)
+	verbCache.set(key, compiled)
+	return compiled
+}
+
+/** How plugins extend the built-in derivation. See `plugins/types.ts`. */
+export interface ModelDerivation {
+	readVerbs?: Iterable<string>
+	writeVerbs?: Iterable<string>
+	/**
+	 * Plugin rule chain, tried before the verb heuristic. `null` means
+	 * "definitively not a model" and stops the fall-through; `undefined` means
+	 * "not mine".
+	 */
+	field?(node: GqlFieldNode, operation: ParsedOperation): FootprintModel | null | undefined
+}
 
 /**
- * Contember's content API exposes `validateCreateArticle` / `validateUpdateArticle`
- * on the *Query* root: a dry run that checks an input against the entity's rules
- * without writing. Read naively that parses as the verb `validate` applied to an
- * entity called `CreateArticle`, which is not a thing. Stripping the prefix first
- * recovers the real entity — and it stays a READ, because validating is exactly
- * the operation that promises not to write.
- */
-const VALIDATE_RE = /^validate(?:Create|Update|Upsert|Delete)([A-Z][A-Za-z0-9_]*)$/
-
-/**
- * Derive the models an operation touches from its root fields.
+ * Derive the models an operation touches from its top-level fields.
  *
  * The built-in heuristic only claims a model when the field follows the
  * verb+Entity convention — a field it can't read (`viewer`, `me`, `node`) yields
  * NO model rather than a guessed one. That's deliberate: a wrong model on the
- * dashboard is worse than a missing one, and a repo whose schema doesn't follow
- * the convention can supply an exact `mapOperation` in `browser-footprint.ts`.
- * The raw `rootFields` are always reported either way, so nothing is lost.
+ * dashboard is worse than a missing one. Framework conventions that the verb
+ * shape can't express (Contember's `validateCreateArticle`) are plugin rules,
+ * not constants here. The raw `rootFields` are always reported either way, so
+ * nothing is lost.
  */
-export function deriveModels(operation: ParsedOperation): FootprintModel[] {
+export function deriveModels(operation: ParsedOperation, options: ModelDerivation = {}): FootprintModel[] {
+	const writeVerbs = [...WRITE_VERBS, ...(options.writeVerbs ?? [])]
+	const pattern = verbPattern([...READ_VERBS, ...(options.readVerbs ?? [])], writeVerbs)
+	const writeSet = new Set(writeVerbs)
 	const byName = new Map<string, boolean>()
-	for (const field of operation.rootFields) {
-		const validated = VALIDATE_RE.exec(field)
-		if (validated) {
-			// A validation is never a write, whatever it wraps — but it must not
-			// downgrade an entity a sibling field really does write.
-			const entity = validated[1] as string
-			byName.set(entity, byName.get(entity) ?? false)
+	// A model already seen as written stays written: a validation (a read) must
+	// not downgrade an entity a sibling field really does write.
+	const add = (model: FootprintModel) => byName.set(model.name, (byName.get(model.name) ?? false) || model.write)
+	for (const node of topLevelNodes(operation)) {
+		const ruled = options.field?.(node, operation)
+		if (ruled !== undefined) {
+			if (ruled !== null) add(ruled)
 			continue
 		}
-		const match = VERB_RE.exec(field)
+		const match = pattern.exec(node.name)
 		if (!match) continue
 		const verb = match[1] as string
 		const entity = match[2] as string
 		// A mutation's reads are still writes in effect — the operation as a whole
 		// changes state — but the verb is the sharper signal, so it wins.
-		const write = WRITE_SET.has(verb) || operation.type === 'mutation'
-		byName.set(entity, (byName.get(entity) ?? false) || write)
+		add({ name: entity, write: writeSet.has(verb) || operation.type === 'mutation' })
 	}
 	return [...byName].map(([name, write]) => ({ name, write }))
+}
+
+/**
+ * The nodes to derive models from. Falls back to synthesizing them from
+ * `rootFields` for an operation built by hand rather than by {@link parseOperations}
+ * — a user's `mapOperation` receives one, and so do older tests.
+ */
+function topLevelNodes(operation: ParsedOperation): GqlFieldNode[] {
+	if (operation.fields && operation.fields.length > 0) return operation.fields
+	return operation.rootFields.map((name) => ({ name, path: [name] }))
 }
 
 /** Attach derived models to a parsed operation. */

@@ -23,8 +23,11 @@ import type { BrowserContext, Page, Request } from 'playwright'
 import { isIgnored, type FootprintConfig, type FootprintMode } from './config.js'
 import { COMPONENT_BINDING, COMPONENT_SCRIPT } from './components.js'
 import { collectJsCoverage, startJsCoverage } from './coverage.js'
-import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, toFootprintOperation } from './graphql.js'
+import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, toFootprintOperation, type ParsedOperation } from './graphql.js'
 import { moduleUrlToSourcePath } from './modules.js'
+import { PluginChain } from './plugins/chain.js'
+import { resolvePlugins } from './plugins/index.js'
+import type { Dependency, GraphqlConventions, RequestObservation } from './plugins/types.js'
 import type {
 	FootprintCollectorKind,
 	FootprintDimension,
@@ -47,6 +50,8 @@ const MAX_REQUESTS = 2000
 const MAX_FILES = 5000
 /** Bodies larger than this aren't scanned for GraphQL — a file upload isn't a query. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024
+/** Dependencies one scenario's plugins may emit. A runaway resolver is still a runaway. */
+const MAX_PLUGIN_DEPENDENCIES = 5000
 
 export interface CollectorOptions {
 	scenario: string
@@ -96,11 +101,19 @@ export class FootprintCollector {
 	private oversizedBodies = 0
 	/** GraphQL requests recognised but whose document never reached us (a GET with `?query=`). */
 	private unreadableOperations = 0
+	/** Operations whose selection tree hit a cap, so what a resolver saw was a sample. */
+	private truncatedSelections = 0
+	/** Parsed operations per recorded request, for the plugin `resolve` pass. Never stored. */
+	private readonly parsedByRequest = new Map<FootprintRequest, ParsedOperation[]>()
 	private disposed = false
 
 	private constructor(
 		private readonly context: BrowserContext,
 		private readonly options: CollectorOptions,
+		/** Plugins bound to this scenario. See `plugins/types.ts`. */
+		private readonly plugins: PluginChain,
+		/** Parser conventions the plugins contribute, unioned. */
+		private readonly conventions: Required<GraphqlConventions>,
 	) {
 		this.origins = new Set<string>()
 		const base = safeOrigin(options.baseUrl)
@@ -118,7 +131,14 @@ export class FootprintCollector {
 	 */
 	static async attach(context: BrowserContext, page: Page, options: CollectorOptions): Promise<FootprintCollector | null> {
 		if (options.mode === 'off') return null
-		const collector = new FootprintCollector(context, options)
+		const plugins = resolvePlugins(options.config)
+		const bound = await PluginChain.bind(plugins, {
+			scenario: options.scenario,
+			...(options.testFile ? { testFile: options.testFile } : {}),
+			...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+			mode: options.mode,
+		})
+		const collector = new FootprintCollector(context, options, bound, PluginChain.conventions(plugins))
 		try {
 			await collector.start(page)
 		} catch (err) {
@@ -151,7 +171,11 @@ export class FootprintCollector {
 				const names = Array.isArray(payload) ? payload : (payload as { names?: unknown })?.names
 				if (!Array.isArray(names)) return
 				for (const name of names) {
-					if (typeof name === 'string' && name) this.components.add(name)
+					if (typeof name !== 'string' || !name) continue
+					// A plugin may clean the name (`withRouter(Foo)` → `Foo`) or drop it.
+					const mapped = this.plugins.component(name)
+					if (mapped === null) continue
+					this.components.add(mapped ?? name)
 				}
 				if (!Array.isArray(payload) && (payload as { truncated?: unknown })?.truncated === true) {
 					this.componentsTruncated = true
@@ -236,9 +260,15 @@ export class FootprintCollector {
 			resourceType,
 			durationMs: null,
 		}
-		const operations = this.parseGraphql(request, url)
+		const parsed: ParsedOperation[] = []
+		const operations = this.parseGraphql(request, url, parsed)
 		if (operations.length > 0) record.operations = operations
-		if (this.push(record)) this.pending.set(request, { record, startedAt: Date.now() })
+		if (!this.push(record)) return
+		this.pending.set(request, { record, startedAt: Date.now() })
+		// Kept beside the record, not inside it: the selection tree and argument key
+		// paths are what a plugin's `resolve` reads, and they are deliberately never
+		// stored in the footprint (500 nodes times 2000 requests).
+		if (parsed.length > 0) this.parsedByRequest.set(record, parsed)
 	}
 
 	/** A dev server's module request doubles as the identity of a source file. */
@@ -263,20 +293,27 @@ export class FootprintCollector {
 			)
 			return
 		}
-		if (!mapped.path || isIgnored(mapped.path, this.options.config.ignore)) return
+		if (!mapped.path) return
+		// A plugin gets to rewrite the path (a served path that isn't the repo's) or
+		// drop it. `ignore` runs after, because a repo writes its ignore rules in
+		// terms of final repo-relative paths.
+		const fromPlugin = this.plugins.file(mapped.path)
+		if (fromPlugin === null) return
+		const filePath = fromPlugin ?? mapped.path
+		if (isIgnored(filePath, this.options.config.ignore)) return
 		// The `has` check comes FIRST: at exactly the cap, a repeat request for a
 		// module already recorded drops nothing, and counting it as truncation would
 		// mark an otherwise complete footprint partial and stop it refreshing the
 		// index. Only a path that would have been ADDED can be dropped.
-		if (this.modules.has(mapped.path)) return
+		if (this.modules.has(filePath)) return
 		if (this.modules.size >= MAX_FILES) {
 			this.truncatedFiles++
 			return
 		}
-		this.modules.set(mapped.path, { path: mapped.path, source: 'module' })
+		this.modules.set(filePath, { path: filePath, source: 'module' })
 	}
 
-	private parseGraphql(request: Request, url: string): FootprintOperation[] {
+	private parseGraphql(request: Request, url: string, collected: ParsedOperation[]): FootprintOperation[] {
 		let pathname: string
 		try {
 			pathname = new URL(url).pathname
@@ -328,9 +365,14 @@ export class FootprintCollector {
 		for (const document of extracted.documents) {
 			const parseOptions = {
 				...(document.operationName ? { operationName: document.operationName } : {}),
-				...(this.options.config.transparentFields ? { transparentFields: this.options.config.transparentFields } : {}),
+				// The repo's own `transparentFields` replaces the plugins' set; absent
+				// it, the plugins' union applies (Contember's `transaction` among them).
+				transparentFields: this.options.config.transparentFields ?? this.conventions.transparentFields,
+				ignoredRootFields: this.conventions.ignoredRootFields,
 			}
 			for (const parsed of parseOperations(document.query, parseOptions)) {
+				if (parsed.truncated) this.truncatedSelections++
+				collected.push(parsed)
 				let mapped: FootprintModel[] | null | undefined
 				try {
 					mapped = this.options.config.mapOperation?.(parsed)
@@ -342,10 +384,19 @@ export class FootprintCollector {
 					this.mapperFailures++
 					this.warnings.add(`mapOperation threw (falling back to the built-in model derivation): ${message(err)}`)
 				}
-				operations.push(toFootprintOperation(parsed, mapped ?? deriveModels(parsed)))
+				operations.push(toFootprintOperation(parsed, mapped ?? this.deriveModels(parsed)))
 			}
 		}
 		return operations
+	}
+
+	/** The built-in verb+Entity derivation, with the plugin rule chain ahead of it. */
+	private deriveModels(operation: ParsedOperation): FootprintModel[] {
+		return deriveModels(operation, {
+			readVerbs: this.conventions.readVerbs,
+			writeVerbs: this.conventions.writeVerbs,
+			field: (node) => this.plugins.model(node, operation),
+		})
 	}
 
 	private readonly onResponse = (response: { request(): Request; status(): number }): void => {
@@ -384,6 +435,8 @@ export class FootprintCollector {
 	}
 
 	private templateFor(url: string): { route: string; params?: string[] } | null {
+		// The repo's own hook first — it is the most specific thing in the tree —
+		// then plugins, then the built-in templating.
 		const override = this.options.config.normalizeUrl
 		if (override) {
 			try {
@@ -394,8 +447,25 @@ export class FootprintCollector {
 				this.warnings.add(`normalizeUrl threw (falling back to the built-in templating): ${message(err)}`)
 			}
 		}
+		const fromPlugin = this.plugins.route(url)
+		if (fromPlugin === null) return null
+		if (fromPlugin !== undefined) return splitCustomRoute(fromPlugin)
 		const appOrigin = this.isAppOrigin(url) ? safeOrigin(url) ?? undefined : undefined
-		return toRouteTemplate(url, appOrigin, this.options.config.redactSegment)
+		return toRouteTemplate(url, appOrigin, this.redactSegment)
+	}
+
+	/**
+	 * The repo's `redactSegment` OR any plugin's. Redaction can only ever be
+	 * ADDED — returning false never keeps a segment the built-ins would have
+	 * collapsed — so this is a disjunction and order cannot matter.
+	 */
+	private readonly redactSegment = (segment: string, context: { index: number; segments: readonly string[] }): boolean => {
+		// A throw here is deliberately NOT caught: `toRouteTemplate` handles it by
+		// redacting, which is the side that cannot leak. Swallowing it and carrying
+		// on would keep a segment the caller asked us to judge and couldn't.
+		const own = this.options.config.redactSegment
+		if (own && own(segment, context) === true) return true
+		return this.plugins.segment(segment, context.index, context.segments)
 	}
 
 	/**
@@ -497,6 +567,14 @@ export class FootprintCollector {
 				`${this.persistedQueries} persisted GraphQL request(s) carried only a hash — their fields and models are not in this footprint.`,
 			)
 		}
+		const models = aggregateModels(this.requests)
+		this.applyDependencies(files, models)
+		if (this.truncatedSelections > 0) {
+			this.warnings.add(
+				`${this.truncatedSelections} GraphQL operation(s) had a selection too large to walk in full — a resolver saw a sample of their fields.`,
+			)
+		}
+		for (const warning of this.plugins.warnings) this.warnings.add(warning)
 		const sortedFiles = [...files.values()].sort((a, b) => a.path.localeCompare(b.path))
 		const footprint: ScenarioFootprint = {
 			scenario: this.options.scenario,
@@ -506,7 +584,7 @@ export class FootprintCollector {
 			components: [...this.components].sort(),
 			requests: this.requests,
 			endpoints: aggregateEndpoints(this.requests),
-			models: aggregateModels(this.requests),
+			models,
 		}
 		if (this.warnings.size > 0) footprint.warnings = [...this.warnings]
 		// The same facts as the warnings above, in a form a consumer can act on.
@@ -528,9 +606,86 @@ export class FootprintCollector {
 			componentsTruncated: this.componentsTruncated,
 			oversizedBodies: this.oversizedBodies,
 			unreadableOperations: this.unreadableOperations,
+			truncatedSelections: this.truncatedSelections,
 		})
-		if (partial.length > 0) footprint.partial = partial
+		// A plugin that threw leaves us not knowing what it would have contributed,
+		// so the dimensions it speaks for are no longer authoritative. Partial only
+		// ever refuses to replace edges; reporting them complete would delete some.
+		const degraded = new Set<FootprintDimension>([...partial, ...this.plugins.degraded])
+		if (degraded.size > 0) footprint.partial = [...degraded]
 		return footprint
+	}
+
+	/**
+	 * Fold the plugins' dependencies into the footprint.
+	 *
+	 * Runs once at the end rather than per request event: by now the statuses are
+	 * known, and a hook that throws can't take the page's request handler with it.
+	 */
+	private applyDependencies(files: Map<string, FootprintFile>, models: FootprintModel[]): void {
+		if (!this.plugins.has('resolve')) return
+		const byModel = new Map(models.map((model, index) => [model.name, index]))
+		let emitted = 0
+		for (const request of this.requests) {
+			if (emitted >= MAX_PLUGIN_DEPENDENCIES) {
+				// NOT `truncatedFiles++`: a dropped dependency could have been a model
+				// just as easily as a file, and marking only the file dimension partial
+				// would leave the model edges looking authoritative on a sample.
+				this.plugins.degradeAll(
+					`plugin dependencies past the per-scenario cap of ${MAX_PLUGIN_DEPENDENCIES} were dropped — this footprint is a sample.`,
+				)
+				break
+			}
+			const observation: RequestObservation = {
+				method: request.method,
+				route: request.route,
+				...(request.params ? { params: request.params } : {}),
+				status: request.status,
+				resourceType: request.resourceType,
+				step: request.step,
+				...(this.parsedByRequest.has(request) ? { graphql: this.parsedByRequest.get(request) } : {}),
+			}
+			for (const dependency of this.plugins.resolve(observation)) {
+				emitted++
+				this.applyDependency(dependency, files, models, byModel)
+			}
+		}
+	}
+
+	private applyDependency(
+		dependency: Dependency,
+		files: Map<string, FootprintFile>,
+		models: FootprintModel[],
+		byModel: Map<string, number>,
+	): void {
+		if (dependency.kind === 'component') {
+			this.components.add(dependency.name)
+			return
+		}
+		if (dependency.kind === 'model') {
+			const index = byModel.get(dependency.name)
+			if (index === undefined) {
+				byModel.set(dependency.name, models.length)
+				models.push({ name: dependency.name, write: dependency.write === true })
+				return
+			}
+			const existing = models[index] as FootprintModel
+			existing.write = existing.write || dependency.write === true
+			return
+		}
+		// A file the collector MEASURED is left alone: coverage and the module
+		// collector observed what the browser did, where a plugin infers what the
+		// repo implies, and measurement wins where the two overlap.
+		if (files.has(dependency.path)) return
+		if (files.size >= MAX_FILES) {
+			this.truncatedFiles++
+			return
+		}
+		// `exercised` is true because a resolver's claim IS a usage claim — the
+		// scenario called this endpoint or queried this entity. That is a different
+		// statement from the module collector's "the browser loaded this", which is
+		// exactly the one that saturates and gets filtered out of impact selection.
+		files.set(dependency.path, { path: dependency.path, source: 'plugin', exercised: true })
 	}
 
 	/** Detach every listener. Idempotent — `finish` calls it, a discarded attempt calls it directly. */
@@ -621,6 +776,8 @@ export function derivePartialDimensions(signals: {
 	oversizedBodies?: number
 	/** GraphQL requests whose document never reached the collector (a GET with `?query=`). */
 	unreadableOperations?: number
+	/** Operations whose selection tree hit a cap — what a resolver saw was a sample. */
+	truncatedSelections?: number
 }): FootprintDimension[] {
 	const partial = new Set<FootprintDimension>()
 	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
@@ -634,11 +791,14 @@ export function derivePartialDimensions(signals: {
 	// A persisted query is a perfectly visible endpoint whose document — and so
 	// whose models — never crossed the wire. Only the model side suffers, and the
 	// same is true of a mapper that threw.
+	// A truncated selection tree belongs here too: a resolver that walks relations
+	// saw a sample of them, so the models it derived are a sample of the set.
 	if (
 		signals.persistedQueries > 0
 		|| signals.mapperFailures > 0
 		|| (signals.oversizedBodies ?? 0) > 0
 		|| (signals.unreadableOperations ?? 0) > 0
+		|| (signals.truncatedSelections ?? 0) > 0
 	) partial.add('models')
 	if (signals.componentsTruncated) partial.add('components')
 	return [...partial]

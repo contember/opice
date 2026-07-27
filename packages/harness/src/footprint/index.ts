@@ -10,7 +10,23 @@
 
 export { FootprintCollector, aggregateEndpoints, aggregateModels, type CollectorOptions } from './collector.js'
 export { footprintDir, isIgnored, loadFootprintConfig, resolveMode, type FootprintConfig, type FootprintMode } from './config.js'
-export { deriveModels, extractQueries, looksLikeGraphql, parseOperations, type ParsedOperation } from './graphql.js'
+export {
+	deriveModels,
+	extractQueries,
+	looksLikeGraphql,
+	parseOperations,
+	type GqlFieldNode,
+	type ParsedOperation,
+} from './graphql.js'
+export { contember, contemberSchema, defaultPlugins, fileRoutes, resolvePlugins } from './plugins/index.js'
+export type {
+	Dependency,
+	FootprintHooks,
+	FootprintPlugin,
+	GraphqlConventions,
+	PluginContext,
+	RequestObservation,
+} from './plugins/types.js'
 export { moduleUrlToSourcePath, normalizeSourceMapPath } from './modules.js'
 export { toRouteTemplate } from './url.js'
 export type {

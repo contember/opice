@@ -76,9 +76,12 @@ export interface FootprintFile {
 	/**
 	 * How it was observed. 'module' — requested as an ES module by the dev server
 	 * (loaded; not necessarily executed). 'coverage' — V8 reported executed bytes
-	 * in it. A file seen both ways is reported once as 'coverage'.
+	 * in it. A file seen both ways is reported once as 'coverage'. 'plugin' — a
+	 * plugin's resolver named it from something the browser did (an API route file
+	 * behind a request); inferred from the repo rather than measured in the page,
+	 * so a measured entry for the same path always wins.
 	 */
-	source: 'module' | 'coverage'
+	source: 'module' | 'coverage' | 'plugin'
 	/** Fraction of the file's bytes V8 saw execute (0..1). Only with source 'coverage'. */
 	executed?: number
 	/**

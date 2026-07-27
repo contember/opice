@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
 import { isTruthy } from '../env.js'
 import { findUserFile } from '../find-file.js'
 import type { ParsedOperation } from './graphql.js'
+import type { FootprintPlugin } from './plugins/types.js'
 import type { FootprintModel } from './types.js'
 
 /**
@@ -32,6 +33,14 @@ import type { FootprintModel } from './types.js'
 export type FootprintMode = 'off' | 'network' | 'full'
 
 export interface FootprintConfig {
+	/**
+	 * Plugins for this repo, ADDED to the built-in set (see `plugins/index.ts`).
+	 * They run after the hooks below, which stay the most specific thing in the
+	 * tree — a repo's own rule outranks a plugin it installed.
+	 */
+	plugins?: FootprintPlugin[]
+	/** Built-in plugins to switch off, by name. The only way to lose a default. */
+	without?: string[]
 	/**
 	 * Origins that count as "the app" besides the scenario's own base URL — an
 	 * API on a second port, a CDN serving the app's own modules. Requests to
