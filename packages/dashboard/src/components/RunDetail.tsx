@@ -557,6 +557,10 @@ function FootprintPanel({
 							{() => detail.files.map(f => (
 								<div className="fp-line" key={f.path}>
 									<code>{f.path}</code>
+									{/* Inferred from the repo, not measured in the page — worth saying so. */}
+									{f.source === 'plugin' && (
+										<span className="fp-times" title="Named by a footprint plugin from the request, not observed in the browser">via plugin</span>
+									)}
 									{typeof f.executed === 'number' && (
 										<span className="fp-times" title="Share of the file V8 saw execute">{Math.round(f.executed * 100)}%</span>
 									)}
