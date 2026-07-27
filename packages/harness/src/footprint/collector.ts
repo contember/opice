@@ -23,6 +23,7 @@ import type { BrowserContext, Page, Request } from 'playwright'
 import { isIgnored, type FootprintConfig, type FootprintMode } from './config.js'
 import { COMPONENT_BINDING, COMPONENT_SCRIPT } from './components.js'
 import { collectJsCoverage, startJsCoverage } from './coverage.js'
+import { DegradationLedger, MAX_FILES, MAX_REQUESTS } from './degradation.js'
 import { deriveModels, extractQueries, looksLikeGraphql, parseOperations, toFootprintOperation, type ParsedOperation } from './graphql.js'
 import { moduleUrlToSourcePath } from './modules.js'
 import { PluginChain } from './plugins/chain.js'
@@ -40,14 +41,9 @@ import type {
 } from './types.js'
 import { isApiResourceType, toRouteTemplate } from './url.js'
 
-/**
- * Caps on what one scenario may record. A runaway polling loop or an app that
- * lazy-loads a thousand modules must not turn a footprint into a multi-megabyte
- * blob. Hitting a cap is always reported as a warning — a silently truncated
- * footprint would read as "the scenario touches this much", which would be a lie.
- */
-const MAX_REQUESTS = 2000
-const MAX_FILES = 5000
+// Two more caps on what one scenario may record. `MAX_REQUESTS`/`MAX_FILES` live
+// in `degradation.ts`, beside the warning that reports them; neither of these two
+// is reported by count, so neither needs a signal of its own.
 /** Bodies larger than this aren't scanned for GraphQL — a file upload isn't a query. */
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 /** Dependencies one scenario's plugins may emit. A runaway resolver is still a runaway. */
@@ -73,36 +69,16 @@ export class FootprintCollector {
 	/** path → how it was seen. Coverage results are merged over these at finish. */
 	private readonly modules = new Map<string, FootprintFile>()
 	private readonly components = new Set<string>()
-	private readonly warnings = new Set<string>()
+	/**
+	 * Everything that went wrong with collection itself. Both halves of the report —
+	 * the warnings a human reads and the partial dimensions the index acts on — come
+	 * out of here, so a new signal is declared in one place. See `degradation.ts`.
+	 */
+	private readonly degradation = new DegradationLedger()
 	private readonly origins: Set<string>
 	private readonly collectors = new Set<FootprintCollectorKind>()
 	private activeStep: number | null = null
 	private coverageStarted = false
-	private truncatedRequests = 0
-	private truncatedFiles = 0
-	private persistedQueries = 0
-	/** Script requests whose source path could not be recovered — a bundle, not a dev server. Coverage may still resolve these. */
-	private unmappableScripts = 0
-	/** Stylesheet requests whose source could not be recovered. NOTHING else can resolve these — V8 coverage is JS-only. */
-	private unmappableStyles = 0
-	/** Operations whose user-supplied `mapOperation` threw; their models fell back to the built-in derivation. */
-	private mapperFailures = 0
-	/** Set when the coverage pass itself failed, so the file dimension can't claim completeness. */
-	private coverageFailed = false
-	/** Set when the scenario opened a page coverage never instrumented (a popup, a new tab). */
-	private uninstrumentedPages = false
-	/** Set once the coverage pass has returned — its verdict on bundles supersedes the module collector's. */
-	private coverageRan = false
-	/** Bundles coverage could not resolve to sources, from its own source-map pass. */
-	private unmappedBundles = 0
-	/** Set when the in-page fiber walk hit its node cap, so the component list is a sample. */
-	private componentsTruncated = false
-	/** GraphQL request bodies too large to scan, so their operations are unknown. */
-	private oversizedBodies = 0
-	/** GraphQL requests recognised but whose document never reached us (a GET with `?query=`). */
-	private unreadableOperations = 0
-	/** Operations whose selection tree hit a cap, so what a resolver saw was a sample. */
-	private truncatedSelections = 0
 	/** Parsed operations per recorded request, for the plugin `resolve` pass. Never stored. */
 	private readonly parsedByRequest = new Map<FootprintRequest, ParsedOperation[]>()
 	private disposed = false
@@ -178,26 +154,26 @@ export class FootprintCollector {
 					this.components.add(mapped ?? name)
 				}
 				if (!Array.isArray(payload) && (payload as { truncated?: unknown })?.truncated === true) {
-					this.componentsTruncated = true
+					this.degradation.note('componentsTruncated')
 				}
 			})
 			await this.context.addInitScript(COMPONENT_SCRIPT)
 			this.collectors.add('components')
 		} catch (err) {
-			this.warnings.add(`component collection unavailable: ${message(err)}`)
+			this.degradation.warn(`component collection unavailable: ${message(err)}`)
 		}
 		// Coverage instruments THIS page. A popup or a new tab is a page it never
 		// sees, so its scripts are invisible to the source-map pass — and if they
 		// are bundled, nothing else can name them either. Noted here so the file
 		// dimension can refuse to claim completeness in that case rather than
 		// silently omitting the popup's sources from the index.
-		this.context.on('page', () => { this.uninstrumentedPages = true })
+		this.context.on('page', () => { this.degradation.note('uninstrumentedPages') })
 
 		if (await startJsCoverage(page)) {
 			this.coverageStarted = true
 			this.collectors.add('coverage')
 		} else {
-			this.warnings.add('V8 JS coverage is unavailable in this browser — file footprint falls back to loaded modules.')
+			this.degradation.warn('V8 JS coverage is unavailable in this browser — file footprint falls back to loaded modules.')
 		}
 	}
 
@@ -286,9 +262,11 @@ export class FootprintCollector {
 			// nothing about CSS. Folding them together let a build with mappable JS
 			// and a bundled stylesheet report the file dimension complete while every
 			// CSS source was missing from it.
-			if (resourceType === 'stylesheet') this.unmappableStyles++
-			else this.unmappableScripts++
-			this.warnings.add(
+			if (resourceType === 'stylesheet') this.degradation.note('unmappableStyles')
+			else this.degradation.note('unmappableScripts')
+			// Phrased here rather than declared on the signal: it fires on the raw
+			// observation, before coverage has had its second chance at the scripts.
+			this.degradation.warn(
 				'the app under test is serving bundled assets — file-level footprint needs a dev server or source maps.',
 			)
 			return
@@ -307,7 +285,7 @@ export class FootprintCollector {
 		// index. Only a path that would have been ADDED can be dropped.
 		if (this.modules.has(filePath)) return
 		if (this.modules.size >= MAX_FILES) {
-			this.truncatedFiles++
+			this.degradation.note('truncatedFiles')
 			return
 		}
 		this.modules.set(filePath, { path: filePath, source: 'module' })
@@ -340,12 +318,12 @@ export class FootprintCollector {
 			// Anything else is a file upload, and counting it would mark the model
 			// dimension partial for a scenario that never lost any GraphQL at all,
 			// freezing its model edges for good.
-			if (looksLikeGraphql(pathname, undefined, contentType)) this.oversizedBodies++
+			if (looksLikeGraphql(pathname, undefined, contentType)) this.degradation.note('oversizedBodies')
 			return []
 		}
 		if (!looksLikeGraphql(pathname, body, contentType)) return []
 		const extracted = extractQueries(body, contentType)
-		this.persistedQueries += extracted.persisted
+		this.degradation.note('persistedQueries', extracted.persisted)
 		// A GraphQL request this recognises but whose document never reached us —
 		// a GET carrying `?query=…`, where Playwright reports no post data. It
 		// yields neither operations nor persisted-query evidence, so without this
@@ -359,7 +337,7 @@ export class FootprintCollector {
 		const method = request.method().toUpperCase()
 		const carriesBody = method !== 'OPTIONS' && method !== 'HEAD'
 		if (carriesBody && extracted.documents.length === 0 && extracted.persisted === 0) {
-			this.unreadableOperations++
+			this.degradation.note('unreadableOperations')
 		}
 		const operations: FootprintOperation[] = []
 		for (const document of extracted.documents) {
@@ -371,7 +349,7 @@ export class FootprintCollector {
 				ignoredRootFields: this.conventions.ignoredRootFields,
 			}
 			for (const parsed of parseOperations(document.query, parseOptions)) {
-				if (parsed.truncated) this.truncatedSelections++
+				if (parsed.truncated) this.degradation.note('truncatedSelections')
 				collected.push(parsed)
 				let mapped: FootprintModel[] | null | undefined
 				try {
@@ -381,8 +359,8 @@ export class FootprintCollector {
 					// uncaught it escapes to `onRequest`'s catch, which drops the WHOLE
 					// request — so a bug in user configuration would quietly erase the
 					// endpoint too, and the footprint would still call itself complete.
-					this.mapperFailures++
-					this.warnings.add(`mapOperation threw (falling back to the built-in model derivation): ${message(err)}`)
+					this.degradation.note('mapperFailures')
+					this.degradation.warn(`mapOperation threw (falling back to the built-in model derivation): ${message(err)}`)
 				}
 				operations.push(toFootprintOperation(parsed, mapped ?? this.deriveModels(parsed)))
 			}
@@ -420,7 +398,7 @@ export class FootprintCollector {
 
 	private push(record: FootprintRequest): boolean {
 		if (this.requests.length >= MAX_REQUESTS) {
-			this.truncatedRequests++
+			this.degradation.note('truncatedRequests')
 			return false
 		}
 		this.requests.push(record)
@@ -444,7 +422,7 @@ export class FootprintCollector {
 				if (custom === null) return null
 				if (custom !== undefined) return splitCustomRoute(custom)
 			} catch (err) {
-				this.warnings.add(`normalizeUrl threw (falling back to the built-in templating): ${message(err)}`)
+				this.degradation.warn(`normalizeUrl threw (falling back to the built-in templating): ${message(err)}`)
 			}
 		}
 		const fromPlugin = this.plugins.route(url)
@@ -507,74 +485,42 @@ export class FootprintCollector {
 			// No page could confirm the hook. Treated as "could not tell" rather than
 			// "found none": a page that closed early reports the same way, and both
 			// are safer read as partial than as an authoritative empty set.
-			if (!installed) this.componentsTruncated = true
+			if (!installed) this.degradation.note('componentsTruncated')
 		}
 		const files = new Map<string, FootprintFile>(this.modules)
 		if (this.coverageStarted) {
 			try {
 				const coverage = await collectJsCoverage(page, this.context, this.options.config)
 				// Coverage is the authority on whether a bundle was resolvable: it is
-				// the pass that reads the source maps. `unmappableFiles` below only
-				// counts what the MODULE collector couldn't name, which for a bundled
-				// app is every script — including the ones coverage then maps perfectly.
-				// `failed` is not the same as "resolved nothing": a pass that could not
-				// be read at all resolved no bundles either, and taking its empty file
-				// list as authoritative would let it wipe the index.
-				if (coverage.failed) this.coverageFailed = true
-				else this.coverageRan = true
-				this.unmappedBundles = coverage.unmappedBundles
+				// the pass that reads the source maps. The derived `unmappableFiles`
+				// signal only counts what the MODULE collector couldn't name, which for
+				// a bundled app is every script — including the ones coverage then maps
+				// perfectly. `failed` is not the same as "resolved nothing": a pass that
+				// could not be read at all resolved no bundles either, and taking its
+				// empty file list as authoritative would let it wipe the index.
+				if (coverage.failed) this.degradation.note('coverageFailed')
+				else this.degradation.note('coverageRan')
+				this.degradation.note('unmappedBundles', coverage.unmappedBundles)
 				for (const file of coverage.files) {
 					if (files.size >= MAX_FILES && !files.has(file.path)) {
-						this.truncatedFiles++
+						this.degradation.note('truncatedFiles')
 						continue
 					}
 					// Coverage is the stronger claim (executed, not merely loaded), so it
 					// replaces a module-derived entry for the same path.
 					files.set(file.path, file)
 				}
-				for (const warning of coverage.warnings) this.warnings.add(warning)
+				for (const warning of coverage.warnings) this.degradation.warn(warning)
 			} catch (err) {
 				// Coverage was started, so the file dimension was expected to come from
 				// it; failing here means the file list is whatever the module collector
 				// happened to see, which against a bundle is nothing.
-				this.coverageFailed = true
-				this.warnings.add(`JS coverage collection failed: ${message(err)}`)
+				this.degradation.note('coverageFailed')
+				this.degradation.warn(`JS coverage collection failed: ${message(err)}`)
 			}
-		}
-		if (this.truncatedRequests > 0) {
-			this.warnings.add(`${this.truncatedRequests} request(s) dropped — the per-scenario cap of ${MAX_REQUESTS} was reached.`)
-		}
-		if (this.truncatedFiles > 0) {
-			this.warnings.add(`${this.truncatedFiles} file(s) dropped — the per-scenario cap of ${MAX_FILES} was reached.`)
-		}
-		if (this.oversizedBodies > 0) {
-			this.warnings.add(
-				`${this.oversizedBodies} GraphQL request(s) had a body too large to scan — their fields and models are not in this footprint.`,
-			)
-		}
-		if (this.unreadableOperations > 0) {
-			this.warnings.add(
-				`${this.unreadableOperations} GraphQL request(s) carried no readable document — their fields and models are not in this footprint.`,
-			)
-		}
-		if (this.componentsTruncated) {
-			this.warnings.add(
-				'the React tree exceeded the per-walk node cap — components past it are not in this footprint.',
-			)
-		}
-		if (this.persistedQueries > 0) {
-			this.warnings.add(
-				`${this.persistedQueries} persisted GraphQL request(s) carried only a hash — their fields and models are not in this footprint.`,
-			)
 		}
 		const models = aggregateModels(this.requests)
 		this.applyDependencies(files, models)
-		if (this.truncatedSelections > 0) {
-			this.warnings.add(
-				`${this.truncatedSelections} GraphQL operation(s) had a selection too large to walk in full — a resolver saw a sample of their fields.`,
-			)
-		}
-		for (const warning of this.plugins.warnings) this.warnings.add(warning)
 		const sortedFiles = [...files.values()].sort((a, b) => a.path.localeCompare(b.path))
 		const footprint: ScenarioFootprint = {
 			scenario: this.options.scenario,
@@ -586,32 +532,15 @@ export class FootprintCollector {
 			endpoints: aggregateEndpoints(this.requests),
 			models,
 		}
-		if (this.warnings.size > 0) footprint.warnings = [...this.warnings]
+		// The plugins keep their own tally (the chain owns it, since a hook that
+		// throws is its business), so both halves are merged in here at the end.
+		const warnings = new Set<string>([...this.degradation.warnings(), ...this.plugins.warnings])
+		if (warnings.size > 0) footprint.warnings = [...warnings]
 		// The same facts as the warnings above, in a form a consumer can act on.
-		const partial = derivePartialDimensions({
-			truncatedFiles: this.truncatedFiles,
-			// What the MODULE collector could not name only counts against us when
-			// nothing else could name it either. For SCRIPTS, coverage is that
-			// second chance, so when it ran its own tally supersedes this one —
-			// unless the scenario opened a page coverage never instrumented, whose
-			// bundles it cannot have resolved and cannot speak for. Stylesheets have
-			// no second chance at all — coverage is JS-only — so their count always
-			// stands.
-			unmappableFiles: (this.coverageRan && !this.uninstrumentedPages ? this.unmappedBundles : this.unmappableScripts)
-				+ this.unmappableStyles,
-			coverageFailed: this.coverageFailed,
-			truncatedRequests: this.truncatedRequests,
-			persistedQueries: this.persistedQueries,
-			mapperFailures: this.mapperFailures,
-			componentsTruncated: this.componentsTruncated,
-			oversizedBodies: this.oversizedBodies,
-			unreadableOperations: this.unreadableOperations,
-			truncatedSelections: this.truncatedSelections,
-		})
 		// A plugin that threw leaves us not knowing what it would have contributed,
 		// so the dimensions it speaks for are no longer authoritative. Partial only
 		// ever refuses to replace edges; reporting them complete would delete some.
-		const degraded = new Set<FootprintDimension>([...partial, ...this.plugins.degraded])
+		const degraded = new Set<FootprintDimension>([...this.degradation.dimensions(), ...this.plugins.degraded])
 		if (degraded.size > 0) footprint.partial = [...degraded]
 		return footprint
 	}
@@ -628,9 +557,9 @@ export class FootprintCollector {
 		let emitted = 0
 		for (const request of this.requests) {
 			if (emitted >= MAX_PLUGIN_DEPENDENCIES) {
-				// NOT `truncatedFiles++`: a dropped dependency could have been a model
-				// just as easily as a file, and marking only the file dimension partial
-				// would leave the model edges looking authoritative on a sample.
+				// NOT a `truncatedFiles` note: a dropped dependency could have been a
+				// model just as easily as a file, and marking only the file dimension
+				// partial would leave the model edges looking authoritative on a sample.
 				this.plugins.degradeAll(
 					`plugin dependencies past the per-scenario cap of ${MAX_PLUGIN_DEPENDENCIES} were dropped — this footprint is a sample.`,
 				)
@@ -678,7 +607,7 @@ export class FootprintCollector {
 		// repo implies, and measurement wins where the two overlap.
 		if (files.has(dependency.path)) return
 		if (files.size >= MAX_FILES) {
-			this.truncatedFiles++
+			this.degradation.note('truncatedFiles')
 			return
 		}
 		// `exercised` is true because a resolver's claim IS a usage claim — the
@@ -742,66 +671,6 @@ function safeOrigin(url: string | undefined): string | null {
 
 function message(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
-}
-
-/**
- * Which dimensions this run collected but cannot vouch for.
- *
- * The index replaces a scenario's edges wholesale, so a dimension listed here is
- * left exactly as a previous run left it. Every signal below has a matching
- * human-readable warning; this is the half a machine can act on, and it is a
- * pure function of the counters so it can be reasoned about without a browser.
- */
-export function derivePartialDimensions(signals: {
-	/** Files dropped past the per-scenario cap. */
-	truncatedFiles: number
-	/**
-	 * Files nothing could name. When coverage ran, this is ITS count of
-	 * unresolvable bundles — the module collector cannot name a bundled script by
-	 * definition, so its own tally would condemn every production app, including
-	 * the ones whose source maps resolve perfectly.
-	 */
-	unmappableFiles: number
-	/** The coverage pass was started and then failed. */
-	coverageFailed: boolean
-	/** Requests dropped past the per-scenario cap. */
-	truncatedRequests: number
-	/** GraphQL requests that carried a hash instead of a document. */
-	persistedQueries: number
-	/** Operations whose user-supplied `mapOperation` threw. */
-	mapperFailures: number
-	/** The in-page React walk hit its node cap, so the component list is a sample. */
-	componentsTruncated?: boolean
-	/** GraphQL bodies too large to scan — their operations, and so their models, are unknown. */
-	oversizedBodies?: number
-	/** GraphQL requests whose document never reached the collector (a GET with `?query=`). */
-	unreadableOperations?: number
-	/** Operations whose selection tree hit a cap — what a resolver saw was a sample. */
-	truncatedSelections?: number
-}): FootprintDimension[] {
-	const partial = new Set<FootprintDimension>()
-	// Files: dropped past the cap, unrecoverable from a bundle, or a coverage pass
-	// that was supposed to supply them and didn't.
-	if (signals.truncatedFiles > 0 || signals.unmappableFiles > 0 || signals.coverageFailed) partial.add('files')
-	// Requests feed both dimensions, so a truncated stream makes both a sample.
-	if (signals.truncatedRequests > 0) {
-		partial.add('endpoints')
-		partial.add('models')
-	}
-	// A persisted query is a perfectly visible endpoint whose document — and so
-	// whose models — never crossed the wire. Only the model side suffers, and the
-	// same is true of a mapper that threw.
-	// A truncated selection tree belongs here too: a resolver that walks relations
-	// saw a sample of them, so the models it derived are a sample of the set.
-	if (
-		signals.persistedQueries > 0
-		|| signals.mapperFailures > 0
-		|| (signals.oversizedBodies ?? 0) > 0
-		|| (signals.unreadableOperations ?? 0) > 0
-		|| (signals.truncatedSelections ?? 0) > 0
-	) partial.add('models')
-	if (signals.componentsTruncated) partial.add('components')
-	return [...partial]
 }
 
 /**
