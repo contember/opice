@@ -450,6 +450,45 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 }
 
 /**
+ * How long a skip report may hold its test open.
+ *
+ * A skip report is best-effort, but "best-effort" has to cover a SLOW platform,
+ * not just a failing one: the reporter's own budget (a 10s request timeout, plus
+ * retry backoff on a 5xx or a worker cold-start) outlasts bun's default 5s test
+ * timeout, and a timeout is not a rejection any `catch` here can swallow — bun
+ * kills the test first. Awaiting the report unbounded therefore turns a slow
+ * uplink into a *failed* `skipped (tier)` test: a scenario that never ran,
+ * reported as broken, on whichever files happened to draw the slow requests.
+ * Well under the 5s default so the race, not the runner, is what ends the wait.
+ */
+const SKIP_REPORT_BUDGET_MS = 3_000
+
+/**
+ * Resolve when `promise` settles or when `budgetMs` elapses, whichever comes
+ * first — and never reject. Abandoning a straggler is the same trade
+ * {@link Reporter.flush} makes: a report that loses the race settles in the
+ * background (or dies with the process), costing one row on the dashboard,
+ * which beats failing a test over reporting.
+ */
+export async function settleWithin(promise: Promise<unknown>, budgetMs: number): Promise<void> {
+	// Attach the catch to the promise itself, not to the race: a straggler that
+	// rejects after the budget still needs a handler, or it surfaces as an
+	// unhandled rejection long after this test has moved on.
+	const settled = promise.then(() => {}, () => {})
+	let timer: ReturnType<typeof setTimeout> | undefined
+	const budget = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, budgetMs)
+		// Don't let the pending timer hold the process open once the report wins.
+		timer.unref?.()
+	})
+	try {
+		await Promise.race([settled, budget])
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
+/**
  * Register a scenario the tier filter excluded. It's reported to the platform as
  * `skipped` (so the dashboard shows it alongside what ran) but never opens a
  * browser. The report runs in a real — instant, browser-free — `test`, not a
@@ -463,8 +502,10 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
 	const reason = `tier '${tier}' above the selected tier '${getSelectedTier()}'`
 	describe(meta.name, () => {
 		test('skipped (tier)', async () => {
-			try {
-				await reporter.skipScenario({
+			// Bounded, and never rethrown: reporting a skip must not fail the run —
+			// see SKIP_REPORT_BUDGET_MS for why a bare try/catch isn't enough.
+			await settleWithin(
+				reporter.skipScenario({
 					name: meta.name,
 					hash: meta.hash,
 					testFile,
@@ -473,11 +514,11 @@ function registerSkipped(meta: BrowserTestMeta, tier: Tier, testFile: string | u
 					roles: meta.roles,
 					tier,
 					reason,
-				})
-			} catch {
-				// Best-effort: reporting a skip must never fail the run.
-			}
-		})
+				}),
+				SKIP_REPORT_BUDGET_MS,
+			)
+			// Explicit, so this never silently rides on bun's default timeout again.
+		}, { timeout: SKIP_REPORT_BUDGET_MS * 2 })
 	})
 }
 
