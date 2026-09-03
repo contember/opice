@@ -179,7 +179,7 @@ export class FileReporter implements Reporter {
 	}
 
 	/** No platform round-trip to fail — local file writes never redden a run. */
-	hadFailures(): boolean {
+	reportingFailed(): boolean {
 		return false
 	}
 
