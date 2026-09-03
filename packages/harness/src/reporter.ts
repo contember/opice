@@ -35,10 +35,12 @@ const VIDEO_REQUEST_TIMEOUT_MS = 30_000
 const FLUSH_BUDGET_MS = 15_000
 /**
  * Backoff between retries of a transient reporter failure (network error, 5xx,
- * 429). Length = number of retries; kept short so retries stay inside the
- * afterAll / flush budgets above.
+ * 429). Length = number of retries. A connection-level failure returns in
+ * milliseconds, so these waits ARE the retry window: it has to outlast a brief
+ * disturbance on the path to the platform while still fitting inside
+ * {@link FLUSH_BUDGET_MS}.
  */
-const REPORT_BACKOFF_MS = [300, 800]
+const REPORT_BACKOFF_MS = [300, 1000, 3000]
 
 export interface ReporterConfig {
 	endpoint: string
@@ -66,8 +68,10 @@ export interface ReporterConfig {
  * failure mode: a misconfigured token or an unreachable endpoint means the run
  * is silently NOT recorded, while CI stays green. Strict mode (opt in via
  * `OPICE_REPORT_STRICT` / `opice test --fail-on-report-error`) makes that loud —
- * any reporting failure fails the run (the harness throws from a scenario's
- * `afterAll`; the CLI escalates a failed `POST /finish` to a non-zero exit).
+ * a config/auth failure, or a run nothing was recorded of, fails the run (the
+ * harness throws from a scenario's `afterAll`; the CLI escalates a failed
+ * `POST /finish` to a non-zero exit). A single lost report does not: see
+ * {@link Reporter.reportingFailed}.
  */
 let strictReporting = false
 
@@ -165,18 +169,19 @@ export interface Reporter {
 	/**
 	 * Upload a scenario's walkthrough video (opt-in, OPICE_VIDEO) to the platform.
 	 * Best-effort like a screenshot — a failure is logged but never fails the run
-	 * (it doesn't count toward {@link hadFailures}). No-op unless reporting to the
-	 * platform.
+	 * (it doesn't count toward {@link Reporter.reportingFailed}). No-op unless
+	 * reporting to the platform.
 	 */
 	uploadVideo(input: VideoUpload): Promise<void>
 	finishScenario(input: ScenarioFinish): Promise<void>
 	flush(): Promise<void>
 	/**
-	 * True if any report to the platform failed (network error or non-2xx). Used
-	 * by the harness to fail the run under strict reporting — see
-	 * {@link isStrictReporting}. Always false for the no-op reporter.
+	 * True if reporting broke in a way strict reporting must fail the run on: a
+	 * config/auth failure no retry can fix, or transient failures with not one
+	 * successful report. An isolated lost report is neither — it costs a step on
+	 * the dashboard, not the build. Always false for the no-op reporter.
 	 */
-	hadFailures(): boolean
+	reportingFailed(): boolean
 }
 
 class NoopReporter implements Reporter {
@@ -188,7 +193,7 @@ class NoopReporter implements Reporter {
 	async uploadVideo(_input: VideoUpload): Promise<void> {}
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
-	hadFailures(): boolean {
+	reportingFailed(): boolean {
 		return false
 	}
 }
@@ -213,13 +218,17 @@ class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
 	private warnedUnreachable = false
-	/** Count of failed reports (network error or non-2xx). Drives strict mode. */
+	/** Reports that reached the platform. Zero means the dashboard has nothing of this run. */
+	private successes = 0
+	/** Failed reports (network error or non-2xx), for the log summary. */
 	private failures = 0
+	/** Failures no retry can fix (auth, config, a non-JSON 200). */
+	private fatalFailures = 0
 
 	constructor(private readonly config: ReporterConfig) {}
 
-	hadFailures(): boolean {
-		return this.failures > 0
+	reportingFailed(): boolean {
+		return this.fatalFailures > 0 || (this.failures > 0 && this.successes === 0)
 	}
 
 	private async ensureRun(): Promise<string> {
@@ -290,7 +299,11 @@ class HttpReporter implements Reporter {
 		// Track synchronously so flush() awaits the entire pipeline (including
 		// encodeScreenshot's fs.readFile and the upload), not just whatever
 		// fragment has run by the time afterAll fires.
-		const promise = this.recordStepInternal(event)
+		//
+		// Fire-and-forget by contract: the caller discards this promise, so a lost
+		// step must resolve — a rejection reaches bun as "Unhandled error between
+		// tests" and reds the file. noteFailure already logged and counted it.
+		const promise = this.recordStepInternal(event).catch(() => {})
 		this.track(promise)
 		return promise
 	}
@@ -421,18 +434,21 @@ class HttpReporter implements Reporter {
 		// backoff — a momentary blip or a worker cold-start shouldn't read as a lost
 		// report. NON-transient failures (a 3xx to Access, a 4xx, a non-JSON 200)
 		// are config/auth problems a retry can't fix, so they surface immediately —
-		// which is exactly what strict mode is meant to make loud. `noteFailure` (and
-		// the failure count strict mode reads) only fires once retries are spent, so
-		// a blip that clears on retry isn't recorded as a failure at all.
+		// which is exactly what strict mode is meant to make loud. `noteFailure` only
+		// fires once retries are spent, so a blip that clears on retry isn't recorded
+		// as a failure at all — and it carries the classification strict mode reads.
 		for (let attempt = 0; ; attempt++) {
 			const result = await this.attempt(method, path, body)
-			if ('data' in result) return result.data
+			if ('data' in result) {
+				this.successes++
+				return result.data
+			}
 			const delay = REPORT_BACKOFF_MS[attempt]
 			if (result.retryable && delay !== undefined) {
 				await new Promise((resolve) => setTimeout(resolve, delay))
 				continue
 			}
-			this.noteFailure(call, result.detail)
+			this.noteFailure(call, result.detail, !result.retryable)
 			throw result.error
 		}
 	}
@@ -516,11 +532,12 @@ class HttpReporter implements Reporter {
 	 * NOT recorded, the most confusing failure mode in onboarding: the test
 	 * passes but nothing shows on the dashboard). The first failure prints the
 	 * full hint with the usual culprits; the rest a concise one-liner so a
-	 * recurring failure is visible without flooding the log. Counts toward
-	 * {@link hadFailures}, which strict mode fails the run on.
+	 * recurring failure is visible without flooding the log. Feeds
+	 * {@link HttpReporter.reportingFailed}, which strict mode fails the run on.
 	 */
-	private noteFailure(call: string, detail: string): void {
+	private noteFailure(call: string, detail: string, fatal: boolean): void {
 		this.failures++
+		if (fatal) this.fatalFailures++
 		if (this.warnedUnreachable) {
 			console.error(`[opice] reporter error (${call}): ${detail} — this report was NOT recorded.`)
 			return
@@ -528,7 +545,9 @@ class HttpReporter implements Reporter {
 		this.warnedUnreachable = true
 		console.error(
 			`[opice] reporter could not reach the platform (${call}: ${detail}). `
-			+ `This run will NOT be recorded on the dashboard.\n`
+			+ (fatal
+				? `Nothing from this run will reach the dashboard.\n`
+				: `This report is lost (${REPORT_BACKOFF_MS.length + 1} attempts spent).\n`)
 			+ `[opice] ${this.maskedConfig()}\n`
 			+ `[opice] Common causes:\n`
 			+ `[opice]   - the test runner's global setup installs a DOM (happy-dom/jsdom) or mocks\n`
@@ -537,7 +556,8 @@ class HttpReporter implements Reporter {
 			+ `[opice]   - the OPICE_DSN service token isn't authorized by the platform's /api/v1\n`
 			+ `[opice]     Cloudflare Access policy (a 302 to the Access login), or it's wrong/expired.\n`
 			+ `[opice]   - an unreachable endpoint.\n`
-			+ `[opice] (set OPICE_REPORT_STRICT=1 / opice test --fail-on-report-error to fail the run on this.)`,
+			+ `[opice] (OPICE_REPORT_STRICT / opice test --fail-on-report-error fails the run on a config/auth\n`
+			+ `[opice]  failure, or on a run the dashboard never received anything of.)`,
 		)
 	}
 

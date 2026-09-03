@@ -395,12 +395,12 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				}
 			}
 			currentScenarioId = null
-			// Strict reporting: a swallowed report failure (here or in any earlier
-			// hook/step) must turn the run red. afterAll always runs (beforeAll
-			// catches its own report failures), so throwing here is enough to make
-			// bun exit non-zero even when every assertion passed. The detail was
+			// Strict reporting: reporting broken badly enough that the dashboard won't
+			// have this run (see reportingFailed) must turn it red. afterAll always runs
+			// (beforeAll catches its own report failures), so throwing here is enough to
+			// make bun exit non-zero even when every assertion passed. The detail was
 			// already logged at the point of failure (reporter.noteFailure).
-			if (isStrictReporting() && reporter.hadFailures()) {
+			if (isStrictReporting() && reporter.reportingFailed()) {
 				throw new Error(
 					`[opice] reporting to the platform failed and strict reporting is on `
 					+ `(OPICE_REPORT_STRICT / opice test --fail-on-report-error) — failing the run. `
