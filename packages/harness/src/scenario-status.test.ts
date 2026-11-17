@@ -70,6 +70,10 @@ test('a failed attempt followed by a passing retry finishes passed and flaky', (
 	expect(scenario('throws, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
 })
 
+test('a timed-out attempt followed by a passing retry finishes passed and flaky', () => {
+	expect(scenario('times out, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
+})
+
 test('a timed-out body that returns later does not complete the next scenario', () => {
 	expect(scenario('times out, returns during the next')).toMatchObject({ status: 'failed', attempts: 1 })
 	expect(scenario('throws after the previous body returned')).toMatchObject({ status: 'failed', attempts: 1 })

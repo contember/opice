@@ -22,13 +22,19 @@ browserTest({ name: 'throws outside a step', url, retries: 0 }, async () => {
 	throw new Error('thrown outside any step')
 })
 
-// A throw, not a timeout, fails the first attempt: bun kills the browser when a
-// test times out, and the retry's setup can race that disconnect.
 let retriedAttempts = 0
 browserTest({ name: 'throws, then passes on retry', url, retries: 1 }, async () => {
 	retriedAttempts++
 	await step('a passing step', () => {})
 	if (retriedAttempts === 1) throw new Error('thrown outside any step')
+})
+
+// bun terminates the shared browser when a test times out; the retry must launch a new one.
+let timedOutAttempts = 0
+browserTest({ name: 'times out, then passes on retry', url, timeout, retries: 1 }, async () => {
+	timedOutAttempts++
+	await step('a passing step', () => {})
+	if (timedOutAttempts === 1) await Bun.sleep(outlivesTimeout)
 })
 
 // The first body returns while the second scenario runs; it must not mark the

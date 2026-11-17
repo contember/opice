@@ -198,6 +198,17 @@ async function getBrowser(): Promise<Browser> {
 }
 
 /**
+ * Close the shared browser so the next scenario launches a new one. bun terminates
+ * the processes a test file spawned when one of its tests times out, and the
+ * browser still reports itself connected until Playwright sees that exit.
+ */
+export async function discardBrowser(): Promise<void> {
+	const b = browser
+	browser = null
+	await b?.close().catch(() => {})
+}
+
+/**
  * Open a fresh isolated context + page for a scenario, reusing the shared
  * browser. Called from `beforeAll`. Any context left over from a previous
  * scenario whose teardown didn't complete is closed first so state never

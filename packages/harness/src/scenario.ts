@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
+import { closePage, discardBrowser, getContext, launchPage, recordVideoStep } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { decideScenarioRun, parseSelectList } from './select.js'
@@ -221,9 +221,10 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
-// Body form: the current attempt's token, and whether its body returned. A timeout
-// abandons the body without throwing; the token keeps a late return from counting.
-let currentWalkthrough: object | null = null
+// Body form: the current attempt's token (settled once its body returns or throws),
+// and whether its body returned. A timeout abandons the body unsettled; the token
+// keeps a late return from counting.
+let currentWalkthrough: { settled: boolean } | null = null
 let currentWalkthroughCompleted = false
 
 /**
@@ -342,6 +343,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// Read before any await: an abandoned body may still return while the
 			// hook closes the page.
 			const walkthroughCompleted = currentWalkthroughCompleted
+			const walkthroughAbandoned = currentWalkthrough?.settled === false
 			currentWalkthrough = null
 			let videoPath: string | undefined
 			try {
@@ -349,6 +351,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			} catch {
 				// ignore close errors
 			}
+			// The final attempt timed out, so bun terminated the shared browser.
+			if (walkthroughAbandoned) await discardBrowser()
 			// Ship the scenario's walkthrough video (opt-in, OPICE_VIDEO) to the
 			// platform. KICK IT OFF now but don't await yet — the PUT is independent
 			// of the step/screenshot uploads flush() drains, so they should overlap
@@ -445,19 +449,25 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
-				const walkthrough = {}
+				// The previous attempt timed out, so bun terminated the shared browser.
+				if (currentWalkthrough?.settled === false) await discardBrowser()
+				const walkthrough = { settled: false }
 				currentWalkthrough = walkthrough
 				currentWalkthroughCompleted = false
 				try {
-					await openScenario(meta)
-				} catch (e) {
-					// Setup failed: record it (afterAll finishes the scenario) and fail
-					// the attempt so bun retries or, once spent, leaves the run red.
-					await recordSetupFailure(reporter, e)
-					throw e
+					try {
+						await openScenario(meta)
+					} catch (e) {
+						// Setup failed: record it (afterAll finishes the scenario) and fail
+						// the attempt so bun retries or, once spent, leaves the run red.
+						await recordSetupFailure(reporter, e)
+						throw e
+					}
+					await body()
+					if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
+				} finally {
+					walkthrough.settled = true
 				}
-				await body()
-				if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared
