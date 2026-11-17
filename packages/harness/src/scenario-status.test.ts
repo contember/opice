@@ -4,12 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
 
-/**
- * The finish status a scenario reports must agree with bun's verdict on its
- * walkthrough. A timeout or a throw outside any step records no failed step, so
- * these drive real scenarios through `bun test` (real browser) and read the
- * statuses the file reporter wrote.
- */
+// Runs the fixture through `bun test` (real browser) and reads the statuses the file reporter wrote.
 // Same extension as this file, so the emitted dist copy runs the emitted fixture.
 const fixture = path.join(import.meta.dir, 'fixtures', `walkthrough-status.fixture${path.extname(import.meta.path)}`)
 
@@ -39,7 +34,8 @@ beforeAll(async () => {
 	exitCode = await proc.exited
 	output = stdout + stderr
 	finished = []
-	for (const part of await fs.readdir(partsDir)) {
+	// A fixture process that crashed wrote no part; the exit-code test then shows its output.
+	for (const part of await fs.readdir(partsDir).catch(() => [])) {
 		if (!part.endsWith('.json')) continue
 		const records = z.array(Finished).parse(JSON.parse(await fs.readFile(path.join(partsDir, part), 'utf-8')))
 		finished.push(...records)
@@ -72,4 +68,9 @@ test('a throw outside any step finishes failed', () => {
 
 test('a failed attempt followed by a passing retry finishes passed and flaky', () => {
 	expect(scenario('throws, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
+})
+
+test('a timed-out body that returns later does not complete the next scenario', () => {
+	expect(scenario('times out, returns during the next')).toMatchObject({ status: 'failed', attempts: 1 })
+	expect(scenario('throws after the previous body returned')).toMatchObject({ status: 'failed', attempts: 1 })
 })

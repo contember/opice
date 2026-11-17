@@ -30,3 +30,16 @@ browserTest({ name: 'throws, then passes on retry', url, retries: 1 }, async () 
 	await step('a passing step', () => {})
 	if (retriedAttempts === 1) throw new Error('thrown outside any step')
 })
+
+// The first body returns while the second scenario runs; it must not mark the
+// second one complete, which then throws outside a step.
+browserTest({ name: 'times out, returns during the next', url, timeout, retries: 0 }, async () => {
+	await step('a passing step', () => {})
+	await Bun.sleep(timeout + 1_500)
+})
+
+browserTest({ name: 'throws after the previous body returned', url, retries: 0 }, async () => {
+	await step('a passing step', () => {})
+	await Bun.sleep(3_000)
+	throw new Error('thrown outside any step')
+})

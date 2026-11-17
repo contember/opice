@@ -221,10 +221,8 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
-// Body form: the walkthrough invocation whose result counts, and whether its body
-// returned. A timeout never throws into the wrapper (bun abandons the body), so
-// only a completed final attempt may finish `passed`; the token keeps an
-// abandoned body that returns later from marking a newer attempt complete.
+// Body form: the current attempt's token, and whether its body returned. A timeout
+// abandons the body without throwing; the token keeps a late return from counting.
 let currentWalkthrough: object | null = null
 let currentWalkthroughCompleted = false
 
@@ -399,6 +397,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// best-effort
 				}
 				const durationMs = Date.now() - currentScenarioStart
+				// bun may credit a timed-out attempt's late return to its retry and pass the
+				// run; the retry's own body did not return, so this stays failed.
 				const status = walkthroughCompleted && currentScenarioFailures === 0 ? 'passed' : 'failed'
 				try {
 					// attempts = final attempt index + 1. A passed scenario with
