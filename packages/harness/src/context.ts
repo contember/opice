@@ -198,14 +198,28 @@ async function getBrowser(): Promise<Browser> {
 }
 
 /**
- * Close the shared browser so the next scenario launches a new one. bun terminates
- * the processes a test file spawned when one of its tests times out, and the
- * browser still reports itself connected until Playwright sees that exit.
+ * Close the shared browser so the next attempt or scenario launches a new one. bun
+ * terminates the processes a test file spawned when one of its tests times out, and
+ * the browser still reports itself connected until Playwright sees that exit.
  */
 export async function discardBrowser(): Promise<void> {
+	await dropStaleContext()
 	const b = browser
 	browser = null
 	await b?.close().catch(() => {})
+}
+
+/**
+ * A leftover context is a discarded attempt: drop its half-recorded video rather
+ * than saving it — only the final attempt, closed via closePage, is worth keeping.
+ */
+async function dropStaleContext(): Promise<void> {
+	if (!context) return
+	const staleVideo = page?.video() ?? null
+	await context.close().catch(() => {})
+	await staleVideo?.delete().catch(() => {})
+	context = null
+	page = null
 }
 
 /**
@@ -215,16 +229,7 @@ export async function discardBrowser(): Promise<void> {
  * bleeds across scenarios.
  */
 export async function launchPage(label?: string, opts?: { roles?: string[]; baseUrl?: string }): Promise<Page> {
-	if (context) {
-		// A leftover context is a discarded attempt (a retry relaunches here): drop
-		// its half-recorded video rather than saving it — only the final attempt,
-		// closed via closePage, is worth keeping.
-		const staleVideo = page?.video() ?? null
-		await context.close().catch(() => {})
-		await staleVideo?.delete().catch(() => {})
-		context = null
-		page = null
-	}
+	await dropStaleContext()
 	const b = await getBrowser()
 	// Resolve the scenario's roles to a stored session (cookies + localStorage) and
 	// seed the context with it, so the walkthrough opens already authenticated. Null

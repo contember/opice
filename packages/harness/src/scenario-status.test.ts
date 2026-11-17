@@ -84,3 +84,7 @@ test('a step hung on the browser until its timeout does not decide the retry or 
 	expect(scenario('hangs in a step')).toMatchObject({ status: 'failed', attempts: 1 })
 	expect(scenario('passes after a hung scenario')).toMatchObject({ status: 'passed', attempts: 1 })
 })
+
+test('a late return of a timed-out attempt does not decide its retry', () => {
+	expect(scenario('returns just after its timeout, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
+})

@@ -399,8 +399,6 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// best-effort
 				}
 				const durationMs = Date.now() - currentScenarioStart
-				// bun may credit a timed-out attempt's late return to its retry and pass the
-				// run; the retry's own body did not return, so this stays failed.
 				const status = walkthroughCompleted && currentScenarioFailures === 0 ? 'passed' : 'failed'
 				try {
 					// attempts = final attempt index + 1. A passed scenario with
@@ -464,12 +462,12 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 						throw e
 					}
 					await body()
-					if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
 				} catch (e) {
-					// A replaced attempt timed out; settling it would let bun charge its error to the current one.
-					if (currentWalkthrough !== walkthrough) await new Promise<never>(() => {})
+					await holdIfReplaced(walkthrough)
 					throw e
 				}
+				await holdIfReplaced(walkthrough)
+				currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared
@@ -477,6 +475,14 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			fn()
 		}
 	})
+}
+
+/**
+ * A replaced attempt timed out; settling it, by a late return or error, would let
+ * bun charge that result to the attempt now current. So it never settles.
+ */
+async function holdIfReplaced(walkthrough: object): Promise<void> {
+	if (currentWalkthrough !== walkthrough) await new Promise<never>(() => {})
 }
 
 /**
@@ -717,9 +723,11 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		}
 	} finally {
 		const durationMs = Date.now() - start
+		// A replaced attempt's page is gone; the current one belongs to a later attempt.
+		const ownPage = currentWalkthrough === walkthrough
 		let screenshotPath: string | undefined
 		try {
-			screenshotPath = await screenshot()
+			if (ownPage) screenshotPath = await screenshot()
 		} catch {
 			// screenshot failure shouldn't fail the test
 		}
@@ -741,7 +749,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		}
 		// Record into the video manifest (no-op unless OPICE_VIDEO is on). Awaited
 		// so the cursor anchor is read at the step's end, before the next action.
-		await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
+		if (ownPage) await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
 	}
 }
 

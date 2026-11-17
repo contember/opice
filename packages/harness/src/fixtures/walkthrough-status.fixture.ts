@@ -70,3 +70,12 @@ browserTest({ name: 'hangs in a step', url, timeout, retries: 0 }, async () => {
 browserTest({ name: 'passes after a hung scenario', url, retries: 0 }, async () => {
 	await step('a passing step', () => {})
 })
+
+// Returns just after its timeout, while the retry is setting up.
+let lateAttempts = 0
+browserTest({ name: 'returns just after its timeout, then passes on retry', url, timeout, retries: 1 }, async () => {
+	lateAttempts++
+	const first = lateAttempts === 1
+	await step('a passing step', () => {})
+	if (first) await Bun.sleep(timeout + 100)
+})
