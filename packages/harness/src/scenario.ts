@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { closePage, getContext, launchPage, recordVideoStep } from './context.js'
+import { closePage, discardBrowser, getContext, launchPage, recordVideoStep } from './context.js'
 import { screenshot } from './element.js'
 import { getReporter, isStrictReporting, type Reporter } from './reporter.js'
 import { decideScenarioRun, parseSelectList } from './select.js'
@@ -221,8 +221,8 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
-// Body form: the current attempt's token, and whether its body returned. A timeout
-// abandons the body without throwing; the token keeps a late return from counting.
+// Body form: the current attempt's token, and whether its body returned. bun abandons
+// a timed-out body; the token keeps its late steps and return out of later attempts.
 let currentWalkthrough: object | null = null
 let currentWalkthroughCompleted = false
 
@@ -349,6 +349,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			} catch {
 				// ignore close errors
 			}
+			// A failed final attempt may have timed out, and bun then terminated the shared browser.
+			if (!walkthroughCompleted) await discardBrowser()
 			// Ship the scenario's walkthrough video (opt-in, OPICE_VIDEO) to the
 			// platform. KICK IT OFF now but don't await yet — the PUT is independent
 			// of the step/screenshot uploads flush() drains, so they should overlap
@@ -397,8 +399,6 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// best-effort
 				}
 				const durationMs = Date.now() - currentScenarioStart
-				// bun may credit a timed-out attempt's late return to its retry and pass the
-				// run; the retry's own body did not return, so this stays failed.
 				const status = walkthroughCompleted && currentScenarioFailures === 0 ? 'passed' : 'failed'
 				try {
 					// attempts = final attempt index + 1. A passed scenario with
@@ -445,19 +445,29 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
+				// Take the token before any await, so a late error of the previous attempt finds it replaced.
+				const previousFailed = currentWalkthrough !== null && !currentWalkthroughCompleted
 				const walkthrough = {}
 				currentWalkthrough = walkthrough
 				currentWalkthroughCompleted = false
 				try {
-					await openScenario(meta)
+					// A failed attempt may have timed out, and bun then terminated the shared browser.
+					if (previousFailed) await discardBrowser()
+					try {
+						await openScenario(meta)
+					} catch (e) {
+						// Setup failed: record it (afterAll finishes the scenario) and fail
+						// the attempt so bun retries or, once spent, leaves the run red.
+						if (currentWalkthrough === walkthrough) await recordSetupFailure(reporter, e)
+						throw e
+					}
+					await body()
 				} catch (e) {
-					// Setup failed: record it (afterAll finishes the scenario) and fail
-					// the attempt so bun retries or, once spent, leaves the run red.
-					await recordSetupFailure(reporter, e)
+					await holdIfReplaced(walkthrough)
 					throw e
 				}
-				await body()
-				if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
+				await holdIfReplaced(walkthrough)
+				currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared
@@ -465,6 +475,14 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			fn()
 		}
 	})
+}
+
+/**
+ * A replaced attempt timed out; settling it, by a late return or error, would let
+ * bun charge that result to the attempt now current. So it never settles.
+ */
+async function holdIfReplaced(walkthrough: object): Promise<void> {
+	if (currentWalkthrough !== walkthrough) await new Promise<never>(() => {})
 }
 
 /**
@@ -644,6 +662,10 @@ async function runUnit(unit: RunUnit): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
+	// A timed-out attempt's body runs on; its steps belong to it, not to the attempt now current.
+	const walkthrough = currentWalkthrough
+	const scenarioId = currentScenarioId
+	const attempt = currentAttempt
 	// A reason *with* a body is a .fixme (tolerated failure). A reason *without*
 	// a body is .blocked (a pending stub that can't be authored yet).
 	const fixme = unit.reason !== undefined && unit.fn !== undefined
@@ -696,21 +718,23 @@ async function runUnit(unit: RunUnit): Promise<void> {
 			status = 'fixme'
 		} else {
 			status = 'failed'
-			currentScenarioFailures++
+			if (currentWalkthrough === walkthrough) currentScenarioFailures++
 			throw e
 		}
 	} finally {
 		const durationMs = Date.now() - start
+		// A replaced attempt's page is gone; the current one belongs to a later attempt.
+		const ownPage = currentWalkthrough === walkthrough
 		let screenshotPath: string | undefined
 		try {
-			screenshotPath = await screenshot()
+			if (ownPage) screenshotPath = await screenshot()
 		} catch {
 			// screenshot failure shouldn't fail the test
 		}
-		if (currentScenarioId) {
+		if (scenarioId) {
 			void reporter.recordStep({
-				scenarioId: currentScenarioId,
-				attempt: currentAttempt,
+				scenarioId,
+				attempt,
 				sequence,
 				kind: unit.kind,
 				name: unit.name,
@@ -725,7 +749,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		}
 		// Record into the video manifest (no-op unless OPICE_VIDEO is on). Awaited
 		// so the cursor anchor is read at the step's end, before the next action.
-		await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
+		if (ownPage) await recordVideoStep({ name: unit.name, kind: unit.kind, sequence, startMs: start, durationMs, status })
 	}
 }
 

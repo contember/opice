@@ -40,7 +40,7 @@ beforeAll(async () => {
 		const records = z.array(Finished).parse(JSON.parse(await fs.readFile(path.join(partsDir, part), 'utf-8')))
 		finished.push(...records)
 	}
-}, 60_000)
+}, 120_000)
 
 afterAll(async () => {
 	await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
@@ -70,7 +70,21 @@ test('a failed attempt followed by a passing retry finishes passed and flaky', (
 	expect(scenario('throws, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
 })
 
+test('a timed-out attempt followed by a passing retry finishes passed and flaky', () => {
+	expect(scenario('times out, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
+})
+
 test('a timed-out body that returns later does not complete the next scenario', () => {
 	expect(scenario('times out, returns during the next')).toMatchObject({ status: 'failed', attempts: 1 })
 	expect(scenario('throws after the previous body returned')).toMatchObject({ status: 'failed', attempts: 1 })
+})
+
+test('a step hung on the browser until its timeout does not decide the retry or the next scenario', () => {
+	expect(scenario('hangs in a step, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
+	expect(scenario('hangs in a step')).toMatchObject({ status: 'failed', attempts: 1 })
+	expect(scenario('passes after a hung scenario')).toMatchObject({ status: 'passed', attempts: 1 })
+})
+
+test('a late return of a timed-out attempt does not decide its retry', () => {
+	expect(scenario('returns just after its timeout, then passes on retry')).toMatchObject({ status: 'passed', attempts: 2 })
 })
