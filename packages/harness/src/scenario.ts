@@ -221,6 +221,10 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
+// Body form: the current attempt's token, and whether its body returned. A timeout
+// abandons the body without throwing; the token keeps a late return from counting.
+let currentWalkthrough: object | null = null
+let currentWalkthroughCompleted = false
 
 /**
  * Register a top-level browser test scenario. Two forms, picked automatically:
@@ -288,6 +292,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			currentScenarioFailures = 0
 			currentScenarioStepSeq = 0
 			currentAttempt = 0
+			currentWalkthrough = null
+			// The legacy registrar's own tests are not wrapped, so only counted
+			// failures can fail it.
+			currentWalkthroughCompleted = !isBody
 			try {
 				currentScenarioId = await reporter.startScenario({
 					name: meta.name,
@@ -331,6 +339,10 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 		}, 30_000)
 
 		afterAll(async () => {
+			// Read before any await: an abandoned body may still return while the
+			// hook closes the page.
+			const walkthroughCompleted = currentWalkthroughCompleted
+			currentWalkthrough = null
 			let videoPath: string | undefined
 			try {
 				videoPath = await closePage()
@@ -385,7 +397,9 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					// best-effort
 				}
 				const durationMs = Date.now() - currentScenarioStart
-				const status = currentScenarioFailures > 0 ? 'failed' : 'passed'
+				// bun may credit a timed-out attempt's late return to its retry and pass the
+				// run; the retry's own body did not return, so this stays failed.
+				const status = walkthroughCompleted && currentScenarioFailures === 0 ? 'passed' : 'failed'
 				try {
 					// attempts = final attempt index + 1. A passed scenario with
 					// attempts > 1 failed at least once first → flaky.
@@ -431,6 +445,9 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
+				const walkthrough = {}
+				currentWalkthrough = walkthrough
+				currentWalkthroughCompleted = false
 				try {
 					await openScenario(meta)
 				} catch (e) {
@@ -440,6 +457,7 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 					throw e
 				}
 				await body()
+				if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
 			}, testOptions)
 		} else {
 			// Legacy registrar: it registers its own test()/hooks; the shared
