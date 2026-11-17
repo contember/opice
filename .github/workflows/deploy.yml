@@ -29,6 +29,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/deploy/prod' && 'prod' || 'stage') }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
