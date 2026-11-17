@@ -221,10 +221,9 @@ let currentScenarioStepSeq = 0
 // them and the dashboard shows only the final one. The legacy form never
 // retries, so it stays 0.
 let currentAttempt = 0
-// Body form: the current attempt's token (settled once its body returns or throws),
-// and whether its body returned. A timeout abandons the body unsettled; the token
-// keeps a late return from counting.
-let currentWalkthrough: { settled: boolean } | null = null
+// Body form: the current attempt's token, and whether its body returned. bun abandons
+// a timed-out body; the token keeps its late steps and return out of later attempts.
+let currentWalkthrough: object | null = null
 let currentWalkthroughCompleted = false
 
 /**
@@ -343,7 +342,6 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			// Read before any await: an abandoned body may still return while the
 			// hook closes the page.
 			const walkthroughCompleted = currentWalkthroughCompleted
-			const walkthroughAbandoned = currentWalkthrough?.settled === false
 			currentWalkthrough = null
 			let videoPath: string | undefined
 			try {
@@ -351,8 +349,8 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 			} catch {
 				// ignore close errors
 			}
-			// The final attempt timed out, so bun terminated the shared browser.
-			if (walkthroughAbandoned) await discardBrowser()
+			// A failed final attempt may have timed out, and bun then terminated the shared browser.
+			if (!walkthroughCompleted) await discardBrowser()
 			// Ship the scenario's walkthrough video (opt-in, OPICE_VIDEO) to the
 			// platform. KICK IT OFF now but don't await yet — the PUT is independent
 			// of the step/screenshot uploads flush() drains, so they should overlap
@@ -449,24 +447,28 @@ export function browserTest(meta: BrowserTestMeta, fn: () => void | Promise<void
 				currentScenarioStepSeq = 0
 				currentScenarioPending = 0
 				currentScenarioBlocked = 0
-				// The previous attempt timed out, so bun terminated the shared browser.
-				if (currentWalkthrough?.settled === false) await discardBrowser()
-				const walkthrough = { settled: false }
+				// Take the token before any await, so a late error of the previous attempt finds it replaced.
+				const previousFailed = currentWalkthrough !== null && !currentWalkthroughCompleted
+				const walkthrough = {}
 				currentWalkthrough = walkthrough
 				currentWalkthroughCompleted = false
 				try {
+					// A failed attempt may have timed out, and bun then terminated the shared browser.
+					if (previousFailed) await discardBrowser()
 					try {
 						await openScenario(meta)
 					} catch (e) {
 						// Setup failed: record it (afterAll finishes the scenario) and fail
 						// the attempt so bun retries or, once spent, leaves the run red.
-						await recordSetupFailure(reporter, e)
+						if (currentWalkthrough === walkthrough) await recordSetupFailure(reporter, e)
 						throw e
 					}
 					await body()
 					if (currentWalkthrough === walkthrough) currentWalkthroughCompleted = true
-				} finally {
-					walkthrough.settled = true
+				} catch (e) {
+					// A replaced attempt timed out; settling it would let bun charge its error to the current one.
+					if (currentWalkthrough !== walkthrough) await new Promise<never>(() => {})
+					throw e
 				}
 			}, testOptions)
 		} else {
@@ -654,6 +656,10 @@ async function runUnit(unit: RunUnit): Promise<void> {
 	const reporter = getReporter()
 	// Capture order at call time, before the fire-and-forget record below.
 	const sequence = currentScenarioStepSeq++
+	// A timed-out attempt's body runs on; its steps belong to it, not to the attempt now current.
+	const walkthrough = currentWalkthrough
+	const scenarioId = currentScenarioId
+	const attempt = currentAttempt
 	// A reason *with* a body is a .fixme (tolerated failure). A reason *without*
 	// a body is .blocked (a pending stub that can't be authored yet).
 	const fixme = unit.reason !== undefined && unit.fn !== undefined
@@ -706,7 +712,7 @@ async function runUnit(unit: RunUnit): Promise<void> {
 			status = 'fixme'
 		} else {
 			status = 'failed'
-			currentScenarioFailures++
+			if (currentWalkthrough === walkthrough) currentScenarioFailures++
 			throw e
 		}
 	} finally {
@@ -717,10 +723,10 @@ async function runUnit(unit: RunUnit): Promise<void> {
 		} catch {
 			// screenshot failure shouldn't fail the test
 		}
-		if (currentScenarioId) {
+		if (scenarioId) {
 			void reporter.recordStep({
-				scenarioId: currentScenarioId,
-				attempt: currentAttempt,
+				scenarioId,
+				attempt,
 				sequence,
 				kind: unit.kind,
 				name: unit.name,
