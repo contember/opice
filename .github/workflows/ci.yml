@@ -41,3 +41,23 @@ jobs:
       - name: Build dashboard
         working-directory: packages/dashboard
         run: bun run build
+
+      - name: Resolve Playwright version
+        id: playwright
+        working-directory: packages/harness
+        run: echo "version=$(bun -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # The harness launches headless chromium, which is the headless shell.
+      - name: Install Playwright chromium
+        working-directory: packages/harness
+        run: bun x playwright install --with-deps --only-shell chromium
+
+      # apps/self-test drives the deployed stage dashboard and needs OPICE_SELF_READ_TOKEN.
+      - name: Test packages
+        run: bun test ./packages
