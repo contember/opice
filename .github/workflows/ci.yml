@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   check:
-    # Playwright 1.60 cannot install chromium on ubuntu-latest (26.04).
+    # Playwright 1.60 cannot install chromium on ubuntu-latest (26.04); unpin once on >= 1.61.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
