@@ -54,10 +54,11 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
-      # The harness launches headless chromium, which is the headless shell.
+      # The harness launches headless chromium, which is the headless shell. No --with-deps:
+      # the runner image already has its libraries, and the apt install took up to 8 min.
       - name: Install Playwright chromium
         working-directory: packages/harness
-        run: bun x playwright install --with-deps --only-shell chromium
+        run: bun x playwright install --only-shell chromium
 
       # apps/self-test drives the deployed stage dashboard and needs OPICE_SELF_READ_TOKEN.
       - name: Test packages
