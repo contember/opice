@@ -155,7 +155,7 @@ describe('reporting', () => {
 		expect(await statuses(other, foreign.runId)).toEqual(['running'])
 	})
 
-	test("revoking names a share link of its own run; another run's link is 404 and stays live", async () => {
+	test("revoking names a share of its own run; another run's share is 404 and stays live", async () => {
 		const project = await newProject('revoke-crossed')
 		const ci = ciKey(project.id)
 		const first = await ci.reports.startRun({ projectId: project.id })
@@ -164,14 +164,14 @@ describe('reporting', () => {
 		await operatorApi.shares.create({ runId: second.runId, expiresInDays: 7 })
 		const shared = (await operatorApi.shares.list({ runId: second.runId })).shares
 		expect(shared.length).toBe(1)
-		const linkId = shared[0]?.id ?? ''
+		const shareId = shared[0]?.id ?? ''
 		// Stored in milliseconds, about the seven days asked for.
 		const expiresAt = shared[0]?.expiresAt ?? 0
 		expect(expiresAt).toBeGreaterThan(before + 6 * 86_400_000)
 		expect(expiresAt).toBeLessThan(before + 8 * 86_400_000)
 
-		expect(await statusOf(operatorApi.shares.revoke({ runId: first.runId, linkId }))).toBe(404)
-		expect((await operatorApi.shares.list({ runId: second.runId })).shares.map((share) => share.id)).toEqual([linkId])
+		expect(await statusOf(operatorApi.shares.revoke({ runId: first.runId, shareId }))).toBe(404)
+		expect((await operatorApi.shares.list({ runId: second.runId })).shares.map((share) => share.id)).toEqual([shareId])
 	})
 
 	test('a share link reads its run and nothing of another run', async () => {
@@ -197,9 +197,12 @@ describe('reporting', () => {
 
 		const { shares } = await operatorApi.shares.list({ runId })
 		expect(shares.length).toBe(1)
-		const linkId = shares[0]?.id ?? ''
-		expect(await operatorApi.shares.revoke({ runId, linkId })).toEqual({ revoked: true })
+		const shareId = shares[0]?.id ?? ''
+		expect(await operatorApi.shares.revoke({ runId, shareId })).toEqual({ revoked: true })
 		expect((await operatorApi.shares.list({ runId })).shares).toEqual([])
+		// The link no longer reaches the run once the proxy's token for it expires; the kit's IAM refuses it at once.
+		expect(await statusOf(visitor.run())).toBe(401)
+		expect(await operatorApi.shares.revoke({ runId, shareId })).toEqual({ revoked: false })
 	})
 
 	test('a CI key reads but cannot write the dashboard, and a viewer cannot report', async () => {

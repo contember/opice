@@ -295,7 +295,7 @@ const ProjectPaging = z.strictObject({
 const NewShare = z.strictObject({ runId: z.string().min(1).max(100), expiresInDays: z.int().min(1).max(365).optional() })
 const Shared = z.strictObject({ url: z.string(), expiresAt: z.int() })
 const Shares = z.strictObject({ shares: z.array(ShareSummary) })
-const RevokeShare = z.strictObject({ runId: z.string().min(1).max(100), linkId: z.string().min(1).max(200) })
+const RevokeShare = z.strictObject({ runId: z.string().min(1).max(100), shareId: z.string().min(1).max(100) })
 const Revoked = z.strictObject({ revoked: z.boolean() })
 
 const DEFAULT_SHARE_DAYS = 30
@@ -467,7 +467,7 @@ export const shares = app.group({ callers: ['human'] }, (r) => ({
 			return {
 				shares: rows
 					.filter((row) => row.revoked_at === null && row.expires_at > now)
-					.map((row) => ({ id: row.link_id, runId: row.run_id, createdAt: row.created_at, expiresAt: row.expires_at })),
+					.map((row) => ({ id: row.id, runId: row.run_id, createdAt: row.created_at, expiresAt: row.expires_at })),
 			}
 		}),
 	revoke: r.mutation({
@@ -477,21 +477,21 @@ export const shares = app.group({ callers: ['human'] }, (r) => ({
 		issues: 'shared',
 	})
 		.handle(async ({ input, ctx }) => {
-			const now = Date.now()
-			const recorded = await allRows((after) =>
-				ctx.db.target.run_shares.list({ where: [['link_id', '=', input.linkId]], limit: 500, after })
-			)
-			// Only a link this run recorded is revoked here, so a link id of another run never reaches IAM through it.
-			if (recorded.length === 0) {
-				throw new NotFoundError('this run has no such share link')
+			// The share is a row of the target run, so the link revoked is one this run recorded, never an id from input.
+			const share = await ctx.db.target.run_shares.get(input.shareId)
+			if (share.revoked_at !== null) {
+				return { revoked: false }
 			}
-			const live = recorded.filter((share) => share.revoked_at === null)
-			for (const share of live) {
-				await ctx.db.target.run_shares.update(share.id, { revoked_at: now })
+			await ctx.db.target.run_shares.update(share.id, { revoked_at: Date.now() })
+			try {
+				await ctx.links.revoke(share.link_id)
+			} catch (error) {
+				// A link IAM no longer holds can reach nothing; the row is what was left to end.
+				if (!(error instanceof NotFoundError)) {
+					throw error
+				}
 			}
-			// IAM refuses a link the caller neither issued nor manages; revoking one again answers the same.
-			await ctx.links.revoke(input.linkId)
-			return { revoked: live.length > 0 }
+			return { revoked: true }
 		}),
 }))
 

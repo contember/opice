@@ -11,6 +11,5 @@ export const rows = {
 	'machine.reads.screenshot': { stepId: 'steps' },
 	'shared.steps': { scenarioId: 'scenarios' },
 	'shared.screenshot': { stepId: 'steps' },
+	'api.shares.revoke': { shareId: 'run_shares' },
 }
-
-export const links = { 'api.shares.revoke': ['linkId'] }

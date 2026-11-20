@@ -87,7 +87,7 @@ function ShareManager({ runId }: { runId: string }) {
 	})
 
 	const revoke = useMutation({
-		mutationFn: (linkId: string) => api.shares.revoke({ runId, linkId }),
+		mutationFn: (shareId: string) => api.shares.revoke({ runId, shareId }),
 		onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shares.list', runId] }),
 	})
 
