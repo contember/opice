@@ -7,8 +7,8 @@
  *
  * The CLI handles end-of-run finalization: the reporter writes a
  * handoff file under $TMPDIR with the runId and credentials, the
- * `opice test` wrapper picks it up after `bun test` exits and POSTs
- * /api/v1/<slug>/runs/<id>/finish so the dashboard sees the run as completed.
+ * `opice test` wrapper picks it up after `bun test` exits and calls
+ * `reports.finishRun` so the dashboard sees the run as completed.
  *
  * When env vars aren't configured, the reporter falls back to a no-op so
  * harness behavior matches the bindx prototype.
@@ -31,6 +31,23 @@ const REQUEST_TIMEOUT_MS = 10_000
  * Still bounded so a stalled upload can't hang the scenario's afterAll forever.
  */
 const VIDEO_REQUEST_TIMEOUT_MS = 30_000
+/** The platform's machine mount: each report is `POST <endpoint>/machine/reports.<name>`. */
+export const MACHINE_PREFIX = '/machine'
+
+/** One file field of a multipart report (a step's screenshot, a scenario's video). */
+interface UploadFile {
+	field: string
+	name: string
+	body: Blob
+}
+
+/** The platform's multipart form: a nameless `input` part holding the JSON fields, then the file part. */
+function multipart(input: Record<string, unknown>, file: UploadFile): FormData {
+	const form = new FormData()
+	form.append('input', JSON.stringify(input))
+	form.append(file.field, file.body, file.name)
+	return form
+}
 /** Total cap on `flush()` waiting for pending step uploads (afterAll-bounded). */
 const FLUSH_BUDGET_MS = 15_000
 /**
@@ -45,9 +62,8 @@ const REPORT_BACKOFF_MS = [300, 1000, 3000]
 export interface ReporterConfig {
 	endpoint: string
 	projectId: string
-	/** Service-token credentials (the OPICE_DSN userinfo / OPICE_CLIENT_ID+SECRET). */
-	clientId: string
-	clientSecret: string
+	/** The platform service key (`px_…`, the OPICE_DSN userinfo / OPICE_KEY), sent as a bearer token. */
+	key: string
 	branch?: string
 	commit?: string
 	/** 'ci' for runs from automation, 'local' for opted-in dev runs. */
@@ -206,11 +222,10 @@ function handoffPath(pid = process.pid): string {
 
 export interface RunHandoff {
 	endpoint: string
-	/** Project slug — the CLI builds /api/v1/<project>/runs/<id>/finish from it. */
+	/** Project id, for the CLI's log line. */
 	project: string
-	/** Service-token credentials so the CLI can POST /finish with the CF-Access-Client-* headers. */
-	clientId: string
-	clientSecret: string
+	/** The service key the CLI calls `reports.finishRun` with. */
+	key: string
 	runId: string
 }
 
@@ -239,7 +254,8 @@ class HttpReporter implements Reporter {
 	}
 
 	private async startRun(): Promise<string> {
-		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs`, {
+		const response = await this.fetch('reports.startRun', {
+			projectId: this.config.projectId,
 			branch: this.config.branch,
 			commit: this.config.commit,
 			source: this.config.source,
@@ -253,8 +269,7 @@ class HttpReporter implements Reporter {
 			const handoff: RunHandoff = {
 				endpoint: this.config.endpoint,
 				project: this.config.projectId,
-				clientId: this.config.clientId,
-				clientSecret: this.config.clientSecret,
+				key: this.config.key,
 				runId,
 			}
 			writeFileSync(handoffPath(), JSON.stringify(handoff), 'utf-8')
@@ -266,7 +281,8 @@ class HttpReporter implements Reporter {
 
 	async startScenario(input: ScenarioStart): Promise<string> {
 		const runId = await this.ensureRun()
-		const response = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios`, {
+		const response = await this.fetch('reports.startScenario', {
+			runId,
 			name: input.name,
 			hash: input.hash,
 			testFile: input.testFile,
@@ -282,7 +298,8 @@ class HttpReporter implements Reporter {
 		const runId = await this.ensureRun()
 		// A skipped scenario is created already-finished on the platform — no
 		// steps follow, so we don't keep the returned id.
-		await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios`, {
+		await this.fetch('reports.skipScenario', {
+			runId,
 			name: input.name,
 			hash: input.hash,
 			testFile: input.testFile,
@@ -290,14 +307,13 @@ class HttpReporter implements Reporter {
 			seeds: input.seeds,
 			roles: input.roles,
 			tier: input.tier,
-			skipped: true,
 			reason: input.reason,
 		})
 	}
 
 	recordStep(event: StepEvent): Promise<void> {
 		// Track synchronously so flush() awaits the entire pipeline (including
-		// encodeScreenshot's fs.readFile and the upload), not just whatever
+		// readFile and the upload), not just whatever
 		// fragment has run by the time afterAll fires.
 		//
 		// Fire-and-forget by contract: the caller discards this promise, so a lost
@@ -311,9 +327,11 @@ class HttpReporter implements Reporter {
 	private async recordStepInternal(event: StepEvent): Promise<void> {
 		const runId = await this.ensureRun()
 		const screenshot = event.screenshotPath
-			? await this.encodeScreenshot(event.screenshotPath)
+			? await this.readFile(event.screenshotPath, 'image/png')
 			: undefined
-		const result = await this.fetch('POST', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${event.scenarioId}/steps`, {
+		const step = {
+			runId,
+			scenarioId: event.scenarioId,
 			attempt: event.attempt,
 			sequence: event.sequence,
 			kind: event.kind,
@@ -324,70 +342,44 @@ class HttpReporter implements Reporter {
 			intent: event.intent,
 			manual: event.manual,
 			reason: event.reason,
-			screenshot,
-		})
-		// The step itself was recorded; only its screenshot upload to R2 failed
-		// (a transient R2 error the platform swallowed). Surface it in the run log
-		// so the gap on the dashboard isn't a mystery — but it's NOT a reporting
-		// failure (the step is there), so it doesn't touch the strict-mode count.
-		if (screenshot && result['screenshotFailed'] === true) {
-			console.error(`[opice] screenshot upload failed for step "${event.name}" — the step was recorded without it (transient storage error).`)
+		}
+		if (!screenshot) {
+			await this.fetch('reports.step', step)
+			return
+		}
+		try {
+			await this.fetch('reports.step', step, { field: 'screenshot', name: 'screenshot.png', body: screenshot }, { quiet: true })
+		} catch (err) {
+			// The step matters more than its picture: record it without the file, marked, so the gap on the dashboard
+			// isn't a mystery. Only a failure of this second call counts as a lost report.
+			console.error(`[opice] screenshot upload failed for step "${event.name}" (${err instanceof Error ? err.message : String(err)}) — recording the step without it.`)
+			await this.fetch('reports.step', { ...step, screenshotFailed: true })
 		}
 	}
 
 	/**
-	 * Stream a scenario's walkthrough video to the platform as a binary PUT (it
-	 * doesn't fit the JSON-body shape `fetch` uses for every other call). Awaited
-	 * inline by the harness before the scenario finishes — there's at most one per
-	 * scenario, and a fire-and-forget upload could be cut off when the test process
-	 * exits. Best-effort: any failure (missing file, R2 hiccup, auth) is logged and
-	 * swallowed — a dropped video must never fail the run, so it does NOT touch the
-	 * strict-mode failure count.
+	 * Upload a scenario's walkthrough video as a multipart file field. Awaited inline by the harness before the
+	 * scenario finishes — there's at most one per scenario, and a fire-and-forget upload could be cut off when the test
+	 * process exits. Best-effort: any failure (missing file, storage hiccup, auth) is logged and swallowed — a dropped
+	 * video must never fail the run, so it does NOT touch the strict-mode failure count.
 	 */
 	async uploadVideo(input: VideoUpload): Promise<void> {
-		// Resolve the run id first (cheap — it's memoized once the first scenario
-		// started) so we don't hold the whole video buffer in memory across the
-		// run-start round-trip. A rejected run-start is swallowed: no run ⇒ nothing
-		// to attach the video to, but it must never throw out of this best-effort path.
+		// A rejected run-start is swallowed: no run ⇒ nothing to attach the video to.
 		const runId = await this.ensureRun().catch(() => undefined)
 		if (!runId) return
-		let body: Blob
-		try {
-			// `fs.readFile` returns a Node Buffer, which Blob accepts directly — no
-			// intermediate Uint8Array copy (Blob copies the part into its own storage
-			// once regardless).
-			body = new Blob([await fs.readFile(input.filePath)], { type: 'video/webm' })
-		} catch (err) {
-			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath} (${err instanceof Error ? err.message : String(err)})`)
+		const video = await this.readFile(input.filePath, 'video/webm')
+		if (!video) {
+			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath}`)
 			return
 		}
-		const call = `PUT /api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`
-		try {
-			const response = await fetch(`${this.config.endpoint}/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}/video`, {
-				method: 'PUT',
-				headers: {
-					'cf-access-client-id': this.config.clientId,
-					'cf-access-client-secret': this.config.clientSecret,
-					'content-type': 'video/webm',
-				},
-				body,
-				redirect: 'manual',
-				signal: AbortSignal.timeout(VIDEO_REQUEST_TIMEOUT_MS),
-			})
-			if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-				console.error(`[opice] ${call} failed: redirected to Cloudflare Access — the video was NOT uploaded (service token rejected at the edge).`)
-				return
-			}
-			if (!response.ok) {
-				console.error(`[opice] ${call} failed: ${response.status} ${(await response.text()).trim()} — the video was NOT uploaded.`)
-				return
-			}
-			const data = (await response.json().catch(() => null)) as { videoFailed?: boolean } | null
-			if (data?.videoFailed) {
-				console.error(`[opice] video upload failed for scenario ${input.scenarioId} — the platform could not store it (transient storage error).`)
-			}
-		} catch (err) {
-			console.error(`[opice] ${call} error: ${err instanceof Error ? err.message : String(err)} — the video was NOT uploaded.`)
+		const result = await this.attempt(
+			'reports.video',
+			{ runId, scenarioId: input.scenarioId },
+			{ field: 'video', name: 'video.webm', body: video },
+			VIDEO_REQUEST_TIMEOUT_MS,
+		)
+		if (!('data' in result)) {
+			console.error(`[opice] ${MACHINE_PREFIX}/reports.video failed: ${result.detail} — the video was NOT uploaded.`)
 		}
 	}
 
@@ -395,7 +387,9 @@ class HttpReporter implements Reporter {
 		const runId = await this.ensureRun()
 		// Awaited inline so the scenario status is committed before the
 		// bun:test afterAll returns.
-		await this.fetch('PATCH', `/api/v1/${this.config.projectId}/runs/${runId}/scenarios/${input.scenarioId}`, {
+		await this.fetch('reports.finishScenario', {
+			runId,
+			scenarioId: input.scenarioId,
 			status: input.status,
 			durationMs: input.durationMs,
 			attempts: input.attempts,
@@ -419,26 +413,30 @@ class HttpReporter implements Reporter {
 		promise.finally(() => this.pending.delete(promise))
 	}
 
-	private async encodeScreenshot(path: string): Promise<string | undefined> {
+	private async readFile(filePath: string, type: string): Promise<Blob | undefined> {
 		try {
-			const buf = await fs.readFile(path)
-			return buf.toString('base64')
+			// A Node Buffer goes into the Blob directly — no intermediate copy.
+			return new Blob([await fs.readFile(filePath)], { type })
 		} catch {
 			return undefined
 		}
 	}
 
-	private async fetch(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
-		const call = `${method} ${path}`
+	private async fetch(
+		procedure: string,
+		input: Record<string, unknown>,
+		file?: UploadFile,
+		options: { quiet?: boolean } = {},
+	): Promise<Record<string, unknown>> {
 		// Retry only TRANSIENT failures (network error, 5xx, 429) with a short
-		// backoff — a momentary blip or a worker cold-start shouldn't read as a lost
-		// report. NON-transient failures (a 3xx to Access, a 4xx, a non-JSON 200)
-		// are config/auth problems a retry can't fix, so they surface immediately —
-		// which is exactly what strict mode is meant to make loud. `noteFailure` only
-		// fires once retries are spent, so a blip that clears on retry isn't recorded
-		// as a failure at all — and it carries the classification strict mode reads.
+		// backoff — a momentary blip or a cold start shouldn't read as a lost
+		// report. NON-transient failures (a 3xx, a 4xx, a body that isn't the
+		// platform's answer) are config/auth problems a retry can't fix, so they
+		// surface immediately — which is exactly what strict mode is meant to make
+		// loud. `noteFailure` only fires once retries are spent, so a blip that
+		// clears on retry isn't recorded as a failure at all.
 		for (let attempt = 0; ; attempt++) {
-			const result = await this.attempt(method, path, body)
+			const result = await this.attempt(procedure, input, file, REQUEST_TIMEOUT_MS)
 			if ('data' in result) {
 				this.successes++
 				return result.data
@@ -448,80 +446,64 @@ class HttpReporter implements Reporter {
 				await new Promise((resolve) => setTimeout(resolve, delay))
 				continue
 			}
-			this.noteFailure(call, result.detail, !result.retryable)
+			if (!options.quiet) this.noteFailure(`${MACHINE_PREFIX}/${procedure}`, result.detail, !result.retryable)
 			throw result.error
 		}
 	}
 
 	/**
-	 * One round-trip to the platform. Classifies the outcome — `data` on success,
+	 * One call of a machine procedure. Classifies the outcome — `data` on success,
 	 * otherwise `retryable` tells {@link fetch} whether a retry could help — so the
 	 * retry/throw decision lives in one place.
 	 */
 	private async attempt(
-		method: string,
-		path: string,
-		body?: unknown,
+		procedure: string,
+		input: Record<string, unknown>,
+		file: UploadFile | undefined,
+		timeoutMs: number,
 	): Promise<{ data: Record<string, unknown> } | { retryable: boolean; detail: string; error: Error }> {
-		const call = `${method} ${path}`
+		const call = `${MACHINE_PREFIX}/${procedure}`
+		const fail = (retryable: boolean, detail: string) => ({ retryable, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) })
+		const authorization = `Bearer ${this.config.key}`
 		let response: Response
 		try {
-			response = await fetch(this.config.endpoint + path, {
-				method,
-				headers: {
-					// Cloudflare Access service-token pair — validated at the edge, never the origin.
-					'cf-access-client-id': this.config.clientId,
-					'cf-access-client-secret': this.config.clientSecret,
-					'content-type': 'application/json',
-				},
-				body: body == null ? undefined : JSON.stringify(body),
-				// 'manual': when Access rejects the service token it answers a 302 to its
-				// login page (an HTML 200/404 after the hop), NOT a JSON 401. The default
-				// 'follow' would chase that redirect and we'd then choke on .json() of an
-				// HTML body — a failure that slips past the !ok check below and goes
-				// silent. Keeping the 3xx lets us name it as an auth rejection instead.
+			response = await fetch(this.config.endpoint + call, {
+				method: 'POST',
+				// A multipart body sets its own content type, with the boundary.
+				headers: file ? { authorization } : { authorization, 'content-type': 'application/json' },
+				body: file ? multipart(input, file) : JSON.stringify(input),
+				// 'manual': a sign-in redirect must read as an auth failure, not be chased into an HTML page.
 				redirect: 'manual',
 				// Don't let a stalled connection hang past the afterAll budget.
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+				signal: AbortSignal.timeout(timeoutMs),
 			})
 		} catch (err) {
 			// Network error / blocked request (e.g. a test runner that installs a
 			// DOM and routes fetch through a same-origin policy) — could be a transient
 			// blip, so it's retryable.
-			const error = err instanceof Error ? err : new Error(String(err))
-			return { retryable: true, detail: error.message, error }
+			return fail(true, err instanceof Error ? err.message : String(err))
 		}
-		// A redirect (3xx, or an opaque redirect when the runtime hides the status)
-		// to Cloudflare Access means the service token was rejected at the edge —
-		// the request never reached the API. This is THE prod failure mode: the
-		// DSN's token isn't authorized by the `/api/v1` Access policy. Never transient.
 		if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
 			const location = response.headers.get('location') ?? ''
-			const detail = /cloudflareaccess\.com|\/cdn-cgi\/access\//.test(location)
-				? `redirected to Cloudflare Access login (${response.status}) — the OPICE_DSN service token was rejected at the edge. `
-					+ `Authorize it on the prod /api/v1 Access (Service Auth) policy, or check the token in OPICE_DSN.`
-				: `unexpected redirect (${response.status}${location ? ` → ${location}` : ''})`
-			return { retryable: false, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
+			return fail(false, `unexpected redirect (${response.status}${location ? ` → ${location}` : ''}) — the service key was not accepted`)
+		}
+		if (response.status === 401 || response.status === 403) {
+			return fail(false, `${response.status} ${(await response.text()).trim()} — the OPICE_DSN service key is unknown, revoked, or holds no report.write in project ${this.config.projectId}`)
 		}
 		if (!response.ok) {
-			const detail = `${response.status} ${await response.text()}`.trim()
-			// 5xx and 429 are the platform asking us to back off and retry (e.g. a
-			// transient R2 internal error bubbling up as a 500); other 4xx mean the
-			// request itself is wrong (auth, validation) — a retry won't change that.
-			const retryable = response.status >= 500 || response.status === 429
-			return { retryable, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
+			// 5xx and 429 are the platform asking us to back off and retry; other 4xx
+			// mean the request itself is wrong (validation) — a retry won't change that.
+			return fail(response.status >= 500 || response.status === 429, `${response.status} ${(await response.text()).trim()}`)
 		}
-		// Parse defensively: a 200 that isn't JSON (an auth/login HTML page slipped
-		// through, a proxy error page) must count as a failure, not a swallowed
-		// throw — otherwise strict mode never sees it. Not transient.
-		try {
-			return { data: (await response.json()) as Record<string, unknown> }
-		} catch {
+		// Parse defensively: a 200 that isn't the platform's `{ result }` (a login or
+		// proxy page) must count as a failure, not a swallowed throw. Not transient.
+		const body: unknown = await response.json().catch(() => undefined)
+		const result = body !== null && typeof body === 'object' && 'result' in body ? body.result : undefined
+		if (result === null || typeof result !== 'object') {
 			const ct = response.headers.get('content-type') ?? 'unknown'
-			const detail = `${response.status} but body wasn't JSON (content-type: ${ct}) — `
-				+ `likely an auth/login or proxy page, not the opice API`
-			return { retryable: false, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) }
+			return fail(false, `${response.status} but the body wasn't the platform's answer (content-type: ${ct})`)
 		}
+		return { data: { ...result } }
 	}
 
 	/**
@@ -553,8 +535,8 @@ class HttpReporter implements Reporter {
 			+ `[opice]   - the test runner's global setup installs a DOM (happy-dom/jsdom) or mocks\n`
 			+ `[opice]     fetch, so the cross-origin POST is blocked (look for "Cross-Origin Request\n`
 			+ `[opice]     Blocked" / an OPTIONS … 401). Scope that setup so it skips the e2e dir.\n`
-			+ `[opice]   - the OPICE_DSN service token isn't authorized by the platform's /api/v1\n`
-			+ `[opice]     Cloudflare Access policy (a 302 to the Access login), or it's wrong/expired.\n`
+			+ `[opice]   - the OPICE_DSN service key is unknown or revoked, or holds no report.write\n`
+			+ `[opice]     in this project (a 401/403). Keys come from the platform console.\n`
 			+ `[opice]   - an unreachable endpoint.\n`
 			+ `[opice] (OPICE_REPORT_STRICT / opice test --fail-on-report-error fails the run on a config/auth\n`
 			+ `[opice]  failure, or on a run the dashboard never received anything of.)`,
@@ -564,19 +546,14 @@ class HttpReporter implements Reporter {
 	/**
 	 * A masked one-line summary of the resolved reporter config, printed on the
 	 * first failure so you can tell *which* DSN reached the harness without leaking
-	 * it. endpoint + project are shown whole (not secret); the clientId keeps its
-	 * head+tail so a real Cloudflare Access service token's `.access` suffix is
-	 * visible (and a wrong shape stands out); the clientSecret is reduced to its
-	 * length + char-class — never its bytes (CI log hygiene; GH only masks the
+	 * it. endpoint + project are shown whole (not secret); the key only by its
+	 * prefix and length — never its secret bytes (CI log hygiene; GH only masks the
 	 * exact secret string, not a prefix).
 	 */
 	private maskedConfig(): string {
-		const id = this.config.clientId
-		const secret = this.config.clientSecret
-		const maskedId = id.length <= 14 ? `${id.slice(0, 1)}…(len ${id.length})` : `${id.slice(0, 6)}…${id.slice(-8)} (len ${id.length})`
-		const secretShape = !secret ? '(empty!)' : `len ${secret.length}, ${/^[0-9a-f]+$/i.test(secret) ? 'hex' : 'non-hex'}`
-		return `resolved config (masked): endpoint=${this.config.endpoint} project=${this.config.projectId} `
-			+ `clientId=${maskedId} clientSecret=(${secretShape})`
+		const key = this.config.key
+		const shape = key.startsWith('px_') ? `px_… (len ${key.length})` : `not a px_ key (len ${key.length})`
+		return `resolved config (masked): endpoint=${this.config.endpoint} project=${this.config.projectId} key=${shape}`
 	}
 }
 
@@ -627,9 +604,11 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const dsn = parseOpiceDsn(env['OPICE_DSN'])
 	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint
 	const projectId = env['OPICE_PROJECT'] ?? dsn?.project
-	const clientId = env['OPICE_CLIENT_ID'] ?? dsn?.clientId
-	const clientSecret = env['OPICE_CLIENT_SECRET'] ?? dsn?.clientSecret
-	if (!endpoint || !projectId || !clientId || !clientSecret) {
+	const key = env['OPICE_KEY'] ?? dsn?.key
+	if (env['OPICE_DSN'] && !dsn) {
+		console.error('[opice] OPICE_DSN is not a DSN of this platform (https://<px_ key>@<host>/<project id>); a DSN with a password is the old platform\'s.')
+	}
+	if (!endpoint || !projectId || !key) {
 		if (strictReporting) warnStrictNoop('reporter credentials are not configured (no OPICE_DSN / OPICE_* vars)')
 		return new NoopReporter()
 	}
@@ -648,8 +627,7 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const reporter = new HttpReporter({
 		endpoint,
 		projectId,
-		clientId,
-		clientSecret,
+		key,
 		branch: env['OPICE_BRANCH'] ?? env['GITHUB_REF_NAME'],
 		commit: env['OPICE_COMMIT'] ?? env['GITHUB_SHA'],
 		source: isCI ? 'ci' : 'local',

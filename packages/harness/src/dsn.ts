@@ -1,17 +1,16 @@
 /**
  * An opice DSN packs everything a project needs to report into one string:
  *
- *   OPICE_DSN=https://<clientId>:<clientSecret>@<host>/<slug>
+ *   OPICE_DSN=https://<key>@<host>/<projectId>
  *
- * The DSN is a Cloudflare Access SERVICE TOKEN: the client id + secret ride in the
- * userinfo (sent as the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers),
- * the host is the platform endpoint, and the first path segment is the project slug.
- * It's the single value the dashboard hands you to drop into `.env`; the individual
- * `OPICE_*` vars still win when set, so a DSN is purely a convenience fallback.
+ * The key is a platform service key (`px_…`, minted by an installation administrator in the console), sent as
+ * `Authorization: Bearer <key>`; the host is the platform; the first path segment is the project id. The individual
+ * `OPICE_*` vars (and opice.config.json) still win when present.
+ *
+ * Kept in sync with `@opice/cli`'s copy; duplicated to avoid a CLI→harness dependency.
  */
 export interface OpiceDsn {
-	clientId: string
-	clientSecret: string
+	key: string
 	endpoint: string
 	project: string
 }
@@ -24,9 +23,9 @@ export function parseOpiceDsn(raw: string | undefined | null): OpiceDsn | null {
 	} catch {
 		return null
 	}
-	const clientId = decodeURIComponent(url.username)
-	const clientSecret = decodeURIComponent(url.password)
+	const key = decodeURIComponent(url.username)
 	const project = url.pathname.replace(/^\/+/, '').split('/')[0] ?? ''
-	if (!clientId || !clientSecret || !project) return null
-	return { clientId, clientSecret, endpoint: `${url.protocol}//${url.host}`, project }
+	// A password is the old platform's Access service-token pair, which this platform cannot use.
+	if (!key || url.password || !project) return null
+	return { key, endpoint: `${url.protocol}//${url.host}`, project }
 }
