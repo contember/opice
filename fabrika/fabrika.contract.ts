@@ -14,4 +14,8 @@ export const contract = app.contract((c) => ({
 		screenshots: c.files({ types: ['image/png'], maxBytes: 2097152 }),
 	},
 	jobs: { reapStaleRuns },
+	csp: {
+		styleSrc: [{ origin: 'https://fonts.googleapis.com', purpose: 'The stylesheet of the Inter and JetBrains Mono typefaces the pages are set in' }],
+		fontSrc: [{ origin: 'https://fonts.gstatic.com', purpose: 'The font files that stylesheet loads' }],
+	},
 }))
