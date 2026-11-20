@@ -298,7 +298,6 @@ const Shares = z.strictObject({ shares: z.array(ShareSummary) })
 const RevokeShare = z.strictObject({ runId: z.string().min(1).max(100), linkId: z.string().min(1).max(200) })
 const Revoked = z.strictObject({ revoked: z.boolean() })
 
-const DAY_MS = 86_400_000
 const DEFAULT_SHARE_DAYS = 30
 
 export const session = app.group({ callers: ['human'] }, (r) => ({
@@ -452,7 +451,8 @@ export const shares = app.group({ callers: ['human'] }, (r) => ({
 			const now = Date.now()
 			// IAM does not roll back with the transaction: a link whose row fails to commit is listed nowhere and expires.
 			const link = await ctx.links.issue(ctx.target, { mount: 'shared', days })
-			const expiresAt = now + days * DAY_MS
+			// IAM answers the expiry in Unix seconds; rows keep milliseconds.
+			const expiresAt = link.expiresAt * 1000
 			await ctx.db.target.run_shares.insert({ link_id: link.id, created_at: now, expires_at: expiresAt })
 			return { url: link.url, expiresAt }
 		}),
@@ -478,9 +478,14 @@ export const shares = app.group({ callers: ['human'] }, (r) => ({
 	})
 		.handle(async ({ input, ctx }) => {
 			const now = Date.now()
-			const live = (await allRows((after) =>
+			const recorded = await allRows((after) =>
 				ctx.db.target.run_shares.list({ where: [['link_id', '=', input.linkId]], limit: 500, after })
-			)).filter((share) => share.revoked_at === null)
+			)
+			// Only a link this run recorded is revoked here, so a link id of another run never reaches IAM through it.
+			if (recorded.length === 0) {
+				throw new NotFoundError('this run has no such share link')
+			}
+			const live = recorded.filter((share) => share.revoked_at === null)
 			for (const share of live) {
 				await ctx.db.target.run_shares.update(share.id, { revoked_at: now })
 			}
@@ -546,9 +551,17 @@ export const reapStaleRuns = app.cron('*/5 * * * *', { actions: ['report.write']
 		const runs = ctx.db.over(ctx.within('report.write', 'project')).runs
 		let after: string | undefined
 		do {
-			const page = await runs.list({ where: [['status', '=', 'running']], limit: 500, after })
+			const page = await runs.list({
+				where: [
+					['status', '=', 'running'],
+					['reaped_at', 'is', null],
+					['finished_at', 'is', null],
+				],
+				limit: 500,
+				after,
+			})
 			for (const listed of page.items) {
-				if (listed.reaped_at !== null || !isStale(storedRun(listed), now)) {
+				if (!isStale(storedRun(listed), now)) {
 					continue
 				}
 				const ref = await ctx.ref('report.write', 'run', listed.id)

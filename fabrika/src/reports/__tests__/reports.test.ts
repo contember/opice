@@ -135,6 +135,45 @@ describe('reporting', () => {
 		expect(await statusOf(ci.reports.step({ runId: second.runId, scenarioId, name: 'misplaced', status: 'passed', durationMs: 1 }))).toBe(404)
 	})
 
+	test("finishing a scenario names a scenario of its own run, and another run's or project's is 404 and unchanged", async () => {
+		const project = await newProject('finished-crossed')
+		const ci = ciKey(project.id)
+		const first = await ci.reports.startRun({ projectId: project.id })
+		const second = await ci.reports.startRun({ projectId: project.id })
+		const { scenarioId } = await ci.reports.startScenario({ runId: first.runId, name: 'in the first run' })
+		expect(await statusOf(ci.reports.finishScenario({ runId: second.runId, scenarioId, status: 'failed', durationMs: 1 }))).toBe(404)
+
+		const theirs = await newProject('finished-theirs')
+		const other = ciKey(theirs.id)
+		const foreign = await other.reports.startRun({ projectId: theirs.id })
+		const hidden = await other.reports.startScenario({ runId: foreign.runId, name: 'theirs' })
+		expect(await statusOf(ci.reports.finishScenario({ runId: first.runId, scenarioId: hidden.scenarioId, status: 'failed', durationMs: 1 }))).toBe(404)
+		expect(await statusOf(ci.reports.finishScenario({ runId: foreign.runId, scenarioId: hidden.scenarioId, status: 'failed', durationMs: 1 }))).toBe(404)
+
+		const statuses = async (reader: typeof ci, runId: string) => (await reader.reads.scenarios({ runId })).scenarios.map((listed) => listed.status)
+		expect(await statuses(ci, first.runId)).toEqual(['running'])
+		expect(await statuses(other, foreign.runId)).toEqual(['running'])
+	})
+
+	test("revoking names a share link of its own run; another run's link is 404 and stays live", async () => {
+		const project = await newProject('revoke-crossed')
+		const ci = ciKey(project.id)
+		const first = await ci.reports.startRun({ projectId: project.id })
+		const second = await ci.reports.startRun({ projectId: project.id })
+		const before = Date.now()
+		await operatorApi.shares.create({ runId: second.runId, expiresInDays: 7 })
+		const shared = (await operatorApi.shares.list({ runId: second.runId })).shares
+		expect(shared.length).toBe(1)
+		const linkId = shared[0]?.id ?? ''
+		// Stored in milliseconds, about the seven days asked for.
+		const expiresAt = shared[0]?.expiresAt ?? 0
+		expect(expiresAt).toBeGreaterThan(before + 6 * 86_400_000)
+		expect(expiresAt).toBeLessThan(before + 8 * 86_400_000)
+
+		expect(await statusOf(operatorApi.shares.revoke({ runId: first.runId, linkId }))).toBe(404)
+		expect((await operatorApi.shares.list({ runId: second.runId })).shares.map((share) => share.id)).toEqual([linkId])
+	})
+
 	test('a share link reads its run and nothing of another run', async () => {
 		const project = await newProject('shared')
 		const ci = ciKey(project.id)
@@ -203,6 +242,7 @@ describe('the reaper', () => {
 				{ ...base, from: 'stale', status: 'running', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: null },
 				{ ...base, from: 'active', status: 'running', startedAt: longAgo, lastActivityAt: Date.now(), finishedAt: null },
 				{ ...base, from: 'finished', status: 'passed', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: longAgo },
+				{ ...base, from: 'reaped', status: 'running', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: longAgo, reapedAt: longAgo },
 			],
 		})
 		const idOf = (from: string) => ids.find((pair) => pair.from === from)?.to ?? ''
@@ -213,6 +253,8 @@ describe('the reaper', () => {
 		expect((await ci.reads.run({ runId: idOf('stale') })).finishedAt).not.toBeNull()
 		expect((await ci.reads.run({ runId: idOf('active') })).status).toBe('running')
 		expect((await ci.reads.run({ runId: idOf('finished') })).status).toBe('passed')
+		// A run reaped before keeps the time it was reaped at.
+		expect((await ci.reads.run({ runId: idOf('reaped') })).finishedAt).toBe(longAgo)
 	})
 })
 
