@@ -30,26 +30,29 @@ SQLite migrations replay D1 migrations 0001–0011 as one schema. Times stay int
 
 - `projects` (dimension `project`): `slug` unique, `name`, `created_at`.
 - `runs` (dimension `run` in `project`): the D1 columns.
-- `scenarios` (child of `runs`): the D1 columns; `video` is a file column (kind `videos`).
-- `steps` (child of `scenarios`): the D1 columns; `screenshot` is a file column (kind `screenshots`).
+- `scenarios` (child of `runs`): the D1 columns but the video key.
+- `steps` (child of `runs`, a child table hangs under a dimension table): the D1 columns, plus `scenario_id`, which the
+  handlers check against the run; `screenshot` is a file column (kind `screenshots`, PNG, at most 2 MiB).
 - `run_shares` (child of `runs`): the IAM link id, who issued it, expiry, revocation. It replaces the `capabilities`
   mirror; ingest and read keys are not mirrored (IAM lists them).
 
 ## Surface
 
-- `/api` (human): `session.me`, `projects.list|get|create`, `runs.listForProject|listAll|get|scenarios|steps`,
-  `files.screenshot|video` (GET), `shares.create|list|revoke`.
-- `/machine` (machine): `reports.startRun|startScenario|skipScenario|finishScenario|step|video|finishRun`,
-  `reads.run|scenarios|steps|screenshot|video`, `migration.*` (the one-off import, removed after the data move).
-- `/s` (link mount on `run`): `run`, `scenarios`, `steps`, `screenshot`, `video`, and the share SPA.
+- `/api` (human): `session.me`, `projects.list|get|create`, `runs.listForProject|listAll|get|scenarios|steps|screenshot`
+  (the screenshot is a GET file), `shares.create|list|revoke`.
+- `/machine` (machine): `reports.startRun|startScenario|finishScenario|step|finishRun` (a skipped scenario is
+  `startScenario` with `skipped: true`), `reads.run|scenarios|steps|screenshot`, `migration.*` (the one-off import,
+  removed after the data move).
+- `/s` (link mount on `run`): `run`, `scenarios`, `steps`, `screenshot`, and the share SPA.
 - `/` the operator SPA (member). `/healthz`.
 - Job `reapStaleRuns` every 5 minutes.
 
-The reporter's DSN becomes `https://<px_key>@<host>/<projectId>`. A step's screenshot and a scenario's video are
-multipart file fields of `reports.step` and `reports.video`.
+The reporter's DSN becomes `https://<px_key>@<host>/<projectId>`. A step's screenshot is a multipart file field of
+`reports.step`.
 
 ## Not carried over
 
+- Walkthrough videos: the framework's file store does not admit WebM yet; the harness keeps them on disk.
 - Minting, rotating and listing DSNs in the dashboard (the console does it).
 - Project-wide share links (only run links were ever issued).
 - `GET /install.md`: the onboarding guide moves into the repository's docs.
