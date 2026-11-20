@@ -53,7 +53,7 @@ function RunPage({ projectRef, runId }: { projectRef: string; runId: string }) {
 				scenarios={scenarios.data}
 				scenariosLoading={scenarios.isLoading}
 				loadSteps={async scenarioId => (await api.runs.steps({ runId, scenarioId })).steps}
-				loadScreenshot={async stepId => URL.createObjectURL(await download(api.runs.screenshot, { runId, stepId }))}
+				loadScreenshot={stepId => download(api.runs.screenshot, { runId, stepId })}
 			/>
 
 			<ShareManager runId={r.id} />

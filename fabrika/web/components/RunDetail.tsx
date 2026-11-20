@@ -66,7 +66,7 @@ export type LoadSteps = (scenarioId: string) => Promise<Step[]>
  * share view's file answers only to the link key as a bearer token, which an
  * `<img src>` can't send. `screenshotUrl` only says whether there is one.
  */
-export type LoadScreenshot = (stepId: string) => Promise<string>
+export type LoadScreenshot = (stepId: string) => Promise<Blob>
 
 // A passed scenario that needed more than one attempt is flaky — it failed at
 // least once before passing within the retry budget.
@@ -471,6 +471,14 @@ function LoadedShot({ stepId, caption, load }: { stepId: string; caption: string
 		queryFn: () => load(stepId),
 		staleTime: Infinity,
 	})
-	if (!image.data) return null
-	return <Polaroid src={image.data} caption={caption} />
+	const [src, setSrc] = useState<string | null>(null)
+	// The object URL lives as long as the image is shown, so a long session doesn't keep every screenshot it opened.
+	useEffect(() => {
+		if (!image.data) return
+		const url = URL.createObjectURL(image.data)
+		setSrc(url)
+		return () => URL.revokeObjectURL(url)
+	}, [image.data])
+	if (!src) return null
+	return <Polaroid src={src} caption={caption} />
 }

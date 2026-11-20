@@ -41,7 +41,7 @@ export function ShareRun({ client }: { client: ShareClient }) {
 						scenarios={scenarios.data}
 						scenariosLoading={scenarios.isLoading}
 						loadSteps={async scenarioId => (await client.steps({ scenarioId })).steps}
-						loadScreenshot={async stepId => URL.createObjectURL(await download(client.screenshot, { stepId }))}
+						loadScreenshot={stepId => download(client.screenshot, { stepId })}
 					/>
 				</>
 			)}
