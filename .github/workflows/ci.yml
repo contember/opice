@@ -63,3 +63,31 @@ jobs:
       # apps/self-test drives the deployed stage dashboard and needs OPICE_SELF_READ_TOKEN.
       - name: Test packages
         run: bun test ./packages
+
+  fabrika:
+    # The platform application installs on its own (fabrika/ has its own bun.lock, outside the root workspaces).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: fabrika
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test --isolate
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Check the contract application
+        run: bunx fabrika-check .
+
+      - name: Build the SPAs
+        run: bun run build:web

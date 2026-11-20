@@ -6,12 +6,17 @@
  * carries its `intent`, so there's no separate scenario file).
  *
  * Two read modes:
- *   - SERVICE TOKEN (OPICE_READ_DSN): a propustka service-token principal → REST
- *     GET /api/v1/<slug>/… with the CF-Access-Client-* headers.
- *   - CAPABILITY SHARE: a pasted dashboard link's `?token=` (or OPICE_READ_TOKEN)
- *     → the anonymous read RPC at /s/rpc.
+ *   - SERVICE KEY (OPICE_READ_DSN): a px_ key holding report.read in the project →
+ *     the machine reads (`/machine/reads.*`), with the run id from the URL or argument.
+ *   - SHARE LINK: a pasted share link `<origin>/s/#<key>` (or its key in OPICE_READ_TOKEN)
+ *     → the link mount's procedures, which read the link's own run.
+ *
+ * A screenshot answers only with that key as a bearer token, so `--screenshots <dir>` downloads each failed step's
+ * picture with it and prints the local path.
  */
 
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { loadConfig } from '../config'
 import { parseOpiceDsn } from '../dsn'
 
@@ -21,7 +26,6 @@ interface Run {
 	commitSha: string | null
 	status: string
 	totalScenarios: number
-	passedScenarios: number
 	failedScenarios: number
 }
 
@@ -35,7 +39,7 @@ interface Scenario {
 }
 
 interface Step {
-	id: number
+	id: string
 	sequence: number
 	name: string
 	status: string
@@ -45,79 +49,145 @@ interface Step {
 
 interface Target {
 	endpoint: string
-	runId: string
-	slug?: string
-	// Exactly one auth mode: a pasted share link / OPICE_READ_TOKEN is a capability on /s/rpc;
-	// OPICE_READ_DSN is a service token (CF-Access-Client-*) on /api/v1.
-	shareToken?: string
-	service?: { clientId: string; clientSecret: string }
+	auth: { kind: 'machine'; key: string; runId: string } | { kind: 'link'; key: string }
 }
 
-type ReadOp =
-	| { kind: 'run'; runId: string }
-	| { kind: 'scenarios'; runId: string }
-	| { kind: 'steps'; scenarioId: string }
+type Fields = Record<string, unknown>
+
+const isFields = (value: unknown): value is Fields => value !== null && typeof value === 'object' && !Array.isArray(value)
+const text = (value: unknown): string => typeof value === 'string' ? value : ''
+const textOrNull = (value: unknown): string | null => typeof value === 'string' ? value : null
+const count = (value: unknown): number => typeof value === 'number' ? value : 0
+
+function parseRun(value: unknown): Run {
+	if (!isFields(value)) throw new Error('the platform answered no run')
+	return {
+		id: text(value['id']),
+		branch: textOrNull(value['branch']),
+		commitSha: textOrNull(value['commitSha']),
+		status: text(value['status']),
+		totalScenarios: count(value['totalScenarios']),
+		failedScenarios: count(value['failedScenarios']),
+	}
+}
+
+function parseList<T>(value: unknown, field: string, parse: (item: Fields) => T): T[] {
+	const list = isFields(value) ? value[field] : undefined
+	if (!Array.isArray(list)) throw new Error(`the platform answered no ${field}`)
+	return list.filter(isFields).map(parse)
+}
+
+const parseScenario = (item: Fields): Scenario => ({
+	id: text(item['id']),
+	name: text(item['name']),
+	hash: textOrNull(item['hash']),
+	testFile: textOrNull(item['testFile']),
+	scenarioFile: textOrNull(item['scenarioFile']),
+	status: text(item['status']),
+})
+
+const parseStep = (item: Fields): Step => ({
+	id: text(item['id']),
+	sequence: count(item['sequence']),
+	name: text(item['name']),
+	status: text(item['status']),
+	error: textOrNull(item['error']),
+	screenshotUrl: textOrNull(item['screenshotUrl']),
+})
+
+interface Failure {
+	scenario: Scenario
+	steps: Step[]
+	/** Local file per failed step id, when --screenshots downloaded it. */
+	files: Map<string, string>
+}
 
 export async function failuresCommand(args: string[]): Promise<number> {
 	const asJson = args.includes('--json')
-	const positional = args.filter((a) => !a.startsWith('--'))
+	const shotsAt = args.indexOf('--screenshots')
+	const shotsDir = shotsAt >= 0 ? args[shotsAt + 1] : undefined
+	const positional = args.filter((a, i) => !a.startsWith('--') && !(shotsAt >= 0 && i === shotsAt + 1))
 	const ref = positional[0]
-	if (!ref) {
-		console.error('Usage: opice failures <run-url|run-id> [--json]')
+	if (!ref || (shotsAt >= 0 && !shotsDir)) {
+		console.error('Usage: opice failures <run-url|run-id> [--json] [--screenshots <dir>]')
 		return 1
 	}
 
 	const target = await resolveTarget(ref)
 	if (!target) {
-		console.error('Could not determine the platform endpoint. Pass a full run URL or run `opice` from a project with opice.config.json.')
+		console.error('Could not determine the platform endpoint or a read credential. Pass a share link or a run URL with OPICE_READ_DSN set, or run `opice` from a project with opice.config.json.')
 		return 1
 	}
 
 	let run: Run
 	let scenarios: Scenario[]
 	try {
-		run = await read<Run>(target, { kind: 'run', runId: target.runId })
-		scenarios = await read<Scenario[]>(target, { kind: 'scenarios', runId: target.runId })
+		run = parseRun(await read(target, target.auth.kind === 'machine' ? ['/machine/reads.run', { runId: target.auth.runId }] : ['/s/api/run', {}]))
+		scenarios = parseList(await read(target, target.auth.kind === 'machine' ? ['/machine/reads.scenarios', { runId: target.auth.runId }] : ['/s/api/scenarios', {}]), 'scenarios', parseScenario)
 	} catch (err) {
-		console.error(`[opice] ${(err as Error).message}`)
+		console.error(`[opice] ${err instanceof Error ? err.message : String(err)}`)
 		return 1
 	}
 
-	const failed = scenarios.filter((s) => s.status === 'failed')
-	const detailed = await Promise.all(
-		failed.map(async (s) => ({
-			scenario: s,
-			steps: await read<Step[]>(target, { kind: 'steps', scenarioId: s.id }).catch(() => [] as Step[]),
-		})),
+	const failures: Failure[] = await Promise.all(
+		scenarios.filter((s) => s.status === 'failed').map(async (scenario) => {
+			const call: [string, Fields] = target.auth.kind === 'machine'
+				? ['/machine/reads.steps', { runId: target.auth.runId, scenarioId: scenario.id }]
+				: ['/s/api/steps', { scenarioId: scenario.id }]
+			const steps = await read(target, call).then((answer) => parseList(answer, 'steps', parseStep)).catch((): Step[] => [])
+			return { scenario, steps, files: new Map<string, string>() }
+		}),
 	)
 
+	if (shotsDir) await downloadScreenshots(failures, target, shotsDir)
+
 	if (asJson) {
-		console.log(JSON.stringify({ run, failures: detailed.map((d) => digestEntry(d, target)) }, null, 2))
+		console.log(JSON.stringify({ run, failures: failures.map((f) => digestEntry(f, target)) }, null, 2))
 		return 0
 	}
 
-	printDigest(run, detailed, target)
+	printDigest(run, failures, target)
 	return 0
 }
 
-function digestEntry(d: { scenario: Scenario; steps: Step[] }, target: Target) {
-	const failedSteps = d.steps.filter((s) => s.status === 'failed')
+async function downloadScreenshots(failures: Failure[], target: Target, dir: string): Promise<void> {
+	await fs.mkdir(dir, { recursive: true })
+	for (const [index, failure] of failures.entries()) {
+		for (const step of failure.steps) {
+			if (step.status !== 'failed' || !step.screenshotUrl) continue
+			const file = path.join(dir, `${index + 1}-step-${step.sequence + 1}.png`)
+			const response = await fetch(absoluteScreenshot(step.screenshotUrl, target), {
+				headers: { authorization: `Bearer ${target.auth.key}` },
+			}).catch(() => null)
+			if (!response?.ok) {
+				console.error(`[opice] screenshot of "${step.name}" not downloaded (${response ? response.status : 'network error'})`)
+				continue
+			}
+			await fs.writeFile(file, new Uint8Array(await response.arrayBuffer()))
+			failure.files.set(step.id, file)
+		}
+	}
+}
+
+function digestEntry(failure: Failure, target: Target) {
+	const failedSteps = failure.steps.filter((s) => s.status === 'failed')
 	return {
-		name: d.scenario.name,
-		hash: d.scenario.hash,
-		testFile: d.scenario.testFile,
-		scenarioFile: d.scenario.scenarioFile,
-		stepCount: d.steps.length,
+		name: failure.scenario.name,
+		hash: failure.scenario.hash,
+		testFile: failure.scenario.testFile,
+		scenarioFile: failure.scenario.scenarioFile,
+		stepCount: failure.steps.length,
 		failedSteps: failedSteps.map((s) => ({
 			sequence: s.sequence,
 			name: s.name,
 			error: s.error,
 			screenshot: s.screenshotUrl ? absoluteScreenshot(s.screenshotUrl, target) : null,
+			screenshotFile: failure.files.get(s.id) ?? null,
 		})),
 	}
 }
 
-function printDigest(run: Run, detailed: { scenario: Scenario; steps: Step[] }[], target: Target): void {
+function printDigest(run: Run, failures: Failure[], target: Target): void {
 	const out: string[] = []
 	out.push(`Run ${run.id} — ${run.status.toUpperCase()}`)
 	const meta = [run.branch, run.commitSha ? `commit ${run.commitSha.slice(0, 7)}` : null].filter(Boolean).join(' · ')
@@ -125,13 +195,13 @@ function printDigest(run: Run, detailed: { scenario: Scenario; steps: Step[] }[]
 	out.push(`${run.failedScenarios}/${run.totalScenarios} scenarios failed`)
 	out.push('')
 
-	if (detailed.length === 0) {
+	if (failures.length === 0) {
 		out.push('No failed scenarios recorded for this run.')
 		console.log(out.join('\n'))
 		return
 	}
 
-	for (const { scenario, steps } of detailed) {
+	for (const { scenario, steps, files } of failures) {
 		const failedSteps = steps.filter((s) => s.status === 'failed')
 		out.push(`✗ ${scenario.name}${scenario.hash ? `  [#${scenario.hash}]` : ''}`)
 		if (scenario.testFile) out.push(`  test:     ${scenario.testFile}`)
@@ -141,7 +211,9 @@ function printDigest(run: Run, detailed: { scenario: Scenario; steps: Step[] }[]
 			if (s.error) {
 				for (const line of s.error.split('\n')) out.push(`    ${line}`)
 			}
-			if (s.screenshotUrl) out.push(`    screenshot: ${absoluteScreenshot(s.screenshotUrl, target)}`)
+			const file = files.get(s.id)
+			if (file) out.push(`    screenshot: ${file}`)
+			else if (s.screenshotUrl) out.push(`    screenshot: ${absoluteScreenshot(s.screenshotUrl, target)} (needs the key as a bearer token; use --screenshots <dir>)`)
 		}
 		out.push('')
 	}
@@ -149,76 +221,43 @@ function printDigest(run: Run, detailed: { scenario: Scenario; steps: Step[] }[]
 }
 
 function absoluteScreenshot(relativeOrAbsolute: string, target: Target): string {
-	const base = relativeOrAbsolute.startsWith('http') ? relativeOrAbsolute : `${target.endpoint}${relativeOrAbsolute}`
-	// A share link can carry its token in the URL; a service token needs headers, so leave it bare.
-	if (!target.shareToken) return base
-	return `${base}${base.includes('?') ? '&' : '?'}token=${target.shareToken}`
+	return relativeOrAbsolute.startsWith('http') ? relativeOrAbsolute : `${target.endpoint}${relativeOrAbsolute}`
 }
 
 async function resolveTarget(ref: string): Promise<Target | null> {
 	const readDsn = parseOpiceDsn(process.env['OPICE_READ_DSN'])
-	const service = readDsn ? { clientId: readDsn.clientId, clientSecret: readDsn.clientSecret } : undefined
-	const envShareToken = process.env['OPICE_READ_TOKEN']
+	const envShareKey = process.env['OPICE_READ_TOKEN']
 
 	if (/^https?:\/\//.test(ref)) {
 		const url = new URL(ref)
-		const urlToken = url.searchParams.get('token')
-		const match = url.pathname.match(/\/p\/([^/]+)\/r\/([^/]+)/)
-		const slug = match ? decodeURIComponent(match[1]!) : (process.env['OPICE_PROJECT'] ?? readDsn?.project)
-		const runId = match ? decodeURIComponent(match[2]!) : url.pathname.split('/').filter(Boolean).pop()
+		// A share link is `<origin>/s/#<key>`: the key names its run.
+		const linkKey = url.pathname.startsWith('/s') ? url.hash.slice(1) : ''
+		if (linkKey) return { endpoint: url.origin, auth: { kind: 'link', key: decodeURIComponent(linkKey) } }
+		const match = url.pathname.match(/\/r\/([^/]+)/)
+		const runId = match ? decodeURIComponent(match[1]!) : url.pathname.split('/').filter(Boolean).pop()
 		if (!runId) return null
-		// A pasted share link (?token=) or OPICE_READ_TOKEN → capability; otherwise the read DSN.
-		const shareToken = urlToken ?? envShareToken
-		if (shareToken) return { endpoint: url.origin, runId, slug, shareToken }
-		return { endpoint: url.origin, runId, slug, service }
+		if (envShareKey) return { endpoint: url.origin, auth: { kind: 'link', key: envShareKey } }
+		return readDsn ? { endpoint: url.origin, auth: { kind: 'machine', key: readDsn.key, runId } } : null
 	}
 
-	// Bare run id — endpoint + slug from config/env/DSN, auth from the read DSN or OPICE_READ_TOKEN.
+	// Bare run id — endpoint from config/env/DSN, auth from the read DSN.
 	const config = await loadConfig()
 	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? readDsn?.endpoint ?? parseOpiceDsn(process.env['OPICE_DSN'])?.endpoint
-	if (!endpoint) return null
-	const slug = process.env['OPICE_PROJECT'] ?? config?.project ?? readDsn?.project
-	if (envShareToken) return { endpoint, runId: ref, slug, shareToken: envShareToken }
-	return { endpoint, runId: ref, slug, service }
+	if (!endpoint || !readDsn) return null
+	return { endpoint, auth: { kind: 'machine', key: readDsn.key, runId: ref } }
 }
 
-/**
- * Read one resource, routed by the target's auth mode: a service token → REST GET on /api/v1
- * (which needs the project slug); a capability share token → the /s/rpc read RPC.
- */
-async function read<T>(target: Target, op: ReadOp): Promise<T> {
-	if (target.service) {
-		if (!target.slug) {
-			throw new Error('reading via OPICE_READ_DSN needs the project slug — paste a full run URL or set OPICE_PROJECT')
-		}
-		const path = op.kind === 'run'
-			? `runs/${op.runId}`
-			: op.kind === 'scenarios'
-				? `runs/${op.runId}/scenarios`
-				: `scenarios/${op.scenarioId}/steps`
-		const response = await fetch(`${target.endpoint}/api/v1/${target.slug}/${path}`, {
-			headers: {
-				'cf-access-client-id': target.service.clientId,
-				'cf-access-client-secret': target.service.clientSecret,
-			},
-		})
-		if (!response.ok) {
-			throw new Error(`${op.kind}: ${response.status} ${response.statusText}`)
-		}
-		return (await response.json()) as T
-	}
-
-	// Capability share → the anonymous read RPC.
-	const method = op.kind === 'run' ? 'runs.get' : op.kind === 'scenarios' ? 'runs.scenarios' : 'scenarios.steps'
-	const input = op.kind === 'steps' ? { scenarioId: op.scenarioId } : { runId: op.runId }
-	const url = `${target.endpoint}/s/rpc${target.shareToken ? `?token=${target.shareToken}` : ''}`
-	const response = await fetch(url, {
+/** Calls one read procedure with the target's key as a bearer token and answers its `result`. */
+async function read(target: Target, [procedurePath, input]: [string, Fields]): Promise<unknown> {
+	const response = await fetch(`${target.endpoint}${procedurePath}`, {
 		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ method, input }),
+		headers: { authorization: `Bearer ${target.auth.key}`, 'content-type': 'application/json' },
+		body: JSON.stringify(input),
 	})
-	const data = (await response.json().catch(() => null)) as { result?: T; error?: { message?: string } } | null
-	if (!data) throw new Error(`${method}: ${response.status} ${response.statusText}`)
-	if (data.error) throw new Error(`${method}: ${data.error.message ?? 'request failed'}`)
-	return data.result as T
+	const answer: unknown = await response.json().catch(() => null)
+	if (!response.ok || !isFields(answer) || !('result' in answer)) {
+		const error = isFields(answer) && isFields(answer['error']) ? text(answer['error']['message']) : ''
+		throw new Error(`${procedurePath}: ${response.status} ${error || response.statusText}`)
+	}
+	return answer['result']
 }

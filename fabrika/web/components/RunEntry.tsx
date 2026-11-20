@@ -1,0 +1,89 @@
+import { Link } from '@buzola/router'
+import { fmtDuration, fmtRelative, shortId } from '../lib/format'
+import { CalendarIcon, ClockIcon } from './Icon'
+import { StatusMark } from './StatusBadge'
+
+interface RunLike {
+	id: string
+	branch: string | null
+	commitSha: string | null
+	status: 'running' | 'passed' | 'failed' | 'incomplete' | 'warning'
+	source: 'ci' | 'local' | null
+	tier: string | null
+	totalScenarios: number
+	passedScenarios: number
+	failedScenarios: number
+	warningScenarios: number
+	incompleteScenarios: number
+	skippedScenarios: number
+	startedAt: number
+	finishedAt: number | null
+}
+
+/**
+ * One row in a run list. Used by both the per-project list and the cross-project
+ * feed; pass `projectName` to surface which project the run belongs to.
+ */
+export function RunEntry({ run: r, project, projectName }: { run: RunLike; project: string; projectName?: string }) {
+	const duration = r.finishedAt ? r.finishedAt - r.startedAt : null
+	return (
+		<div className="entry">
+			<span className="e-status">
+				<StatusMark status={r.status} />
+			</span>
+			<div className="e-body">
+				<div className="e-title">
+					<Link to="projects/run" params={{ project, runId: r.id }}>
+						{projectName && <span className="e-project">{projectName} · </span>}
+						Run {shortId(r.id)}
+						{r.commitSha && (
+							<> · <span style={{ fontWeight: 400, color: 'var(--text-soft)' }}>commit {r.commitSha.slice(0, 7)}</span></>
+						)}
+					</Link>
+				</div>
+				<div className="e-meta">
+					<span><strong className="tabular">{r.passedScenarios}</strong> passed</span>
+					{r.failedScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--fail)' }}><strong className="tabular" style={{ color: 'var(--fail)' }}>{r.failedScenarios}</strong> failed</span>
+						</>
+					)}
+					{r.warningScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--run)' }}><strong className="tabular" style={{ color: 'var(--run)' }}>{r.warningScenarios}</strong> warning</span>
+						</>
+					)}
+					{r.incompleteScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--text-soft)' }}><strong className="tabular" style={{ color: 'var(--text-soft)' }}>{r.incompleteScenarios}</strong> incomplete</span>
+						</>
+					)}
+					{r.skippedScenarios > 0 && (
+						<>
+							<span className="sep">·</span>
+							<span style={{ color: 'var(--text-soft)' }}><strong className="tabular" style={{ color: 'var(--text-soft)' }}>{r.skippedScenarios}</strong> skipped</span>
+						</>
+					)}
+					<span className="sep">·</span>
+					<span><strong className="tabular">{r.totalScenarios}</strong> total</span>
+				</div>
+			</div>
+			{r.source === 'local' && <span className="e-chip chip chip-local" title="Reported from a local dev run">local</span>}
+			{r.tier && <span className="e-chip chip" title="Tier this run selected (OPICE_TIER)">tier: {r.tier}</span>}
+			{r.branch && <span className="e-chip chip">{r.branch}</span>}
+			<div className="e-aside">
+				<span className="row">
+					<CalendarIcon className="icon" />
+					<span>{fmtRelative(r.startedAt)}</span>
+				</span>
+				<span className="row">
+					<ClockIcon className="icon" />
+					<span className="tabular">{fmtDuration(duration)}</span>
+				</span>
+			</div>
+		</div>
+	)
+}

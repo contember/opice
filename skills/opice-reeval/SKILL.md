@@ -36,9 +36,10 @@ deleting an assertion is the worst outcome this skill can produce.
 
 ## Inputs
 
-- A **failed-run URL** (paste from the dashboard, includes `?token=`), or a bare
-  **run id** plus a configured endpoint and a read credential — `OPICE_READ_DSN`
-  (the project's read key, dropped into `.env` at project setup) or `OPICE_READ_TOKEN`.
+- A **share link** of the failed run (`<host>/s/#<key>`, from the run page's share
+  manager), or a dashboard **run URL** / bare **run id** plus a read credential —
+  `OPICE_READ_DSN` (`https://<px_ key>@<host>/<project id>`, a key holding
+  `report.read` in the project, dropped into `.env` at project setup).
 - The repo checked out locally, with the playground runnable.
 
 ## Workflow
@@ -46,16 +47,17 @@ deleting an assertion is the worst outcome this skill can produce.
 ### 1. Pull the failure digest
 
 ```bash
-opice failures "<run-url-or-id>"        # human-readable
-opice failures "<run-url-or-id>" --json # if you want to parse it
+opice failures "<run-url-or-id>" --screenshots /tmp/opice-fail        # human-readable
+opice failures "<run-url-or-id>" --screenshots /tmp/opice-fail --json # if you want to parse it
 ```
 
-This gives you, per failed scenario: the failing step, the error, an absolute
-(tokened) screenshot URL, and the **source file** (`test_file`) — so you don't
+This gives you, per failed scenario: the failing step, the error, the failure
+screenshot downloaded to a local file (it answers only with the key, so a bare
+URL won't open), and the **source file** (`test_file`) — so you don't
 have to grep. The test IS the spec: each step carries its durable `intent` and
 the scenario carries its `invariant`s, so everything you need to judge "is this
 the right assertion?" is in that one file (no separate `.scenario.md`). If
-`opice failures` can't reach the platform or the token is missing, fall back to
+`opice failures` can't reach the platform or the key is missing, fall back to
 CI logs:
 
 ```bash
@@ -67,14 +69,9 @@ platform digest as the primary source and CI logs to go deeper on a stack.
 
 ### 2. Look at the failure before touching anything
 
-For each failed scenario, download the failure screenshot and read it — it
-usually tells you instantly whether the UI is broken or just shaped differently:
-
-```bash
-curl -s "<screenshot-url-with-token>" -o /tmp/opice-fail-<n>.png
-```
-
-Read `/tmp/opice-fail-<n>.png` and the step error together. Open the
+For each failed scenario, read the failure screenshot `opice failures` saved — it
+usually tells you instantly whether the UI is broken or just shaped differently.
+Read the `screenshot:` file it printed and the step error together. Open the
 `test_file` — the failing step's `intent` (and any scenario `invariant`) tells
 you what the assertion was *supposed* to prove.
 
