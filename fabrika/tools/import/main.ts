@@ -35,15 +35,23 @@ const projects = new Map((values.project ?? []).map((pair) => {
 	const [slug, id] = pair.split('=')
 	return slug && id ? [slug, id] : fail(`--project ${pair}: expected <old slug>=<new project id>`)
 }))
-const since = values['screenshots-since'] ?? new Date(Date.now() - 30 * DAY_MS).toISOString()
-const screenshotsSince = since === 'all' ? 0 : since === 'none' ? Number.MAX_SAFE_INTEGER : Date.parse(since)
-if (Number.isNaN(screenshotsSince)) fail(`--screenshots-since ${since}: expected an ISO date, all or none`)
 const concurrency = Number(values.concurrency ?? '4')
 if (!Number.isInteger(concurrency) || concurrency < 1) fail('--concurrency takes a positive integer')
 
 const source = openSource(sourcePath)
 const state = fileState(statePath)
-console.error(`[import] screenshots of runs started at or after ${since === 'none' ? '(none)' : new Date(screenshotsSince).toISOString()}`)
+// Without the flag a resume keeps the cutoff its state recorded; a first run takes 30 days before now.
+const since = values['screenshots-since']
+const recorded = state.load().screenshotsSince
+const screenshotsSince = since === undefined
+	? recorded ?? Date.now() - 30 * DAY_MS
+	: since === 'all'
+	? 0
+	: since === 'none'
+	? Number.MAX_SAFE_INTEGER
+	: Date.parse(since)
+if (Number.isNaN(screenshotsSince)) fail(`--screenshots-since ${since}: expected an ISO date, all or none`)
+console.error(`[import] screenshots of runs started at or after ${screenshotsSince === Number.MAX_SAFE_INTEGER ? '(none)' : new Date(screenshotsSince).toISOString()}`)
 
 if (values['dry-run']) {
 	console.log(JSON.stringify(dryRun({ source, state, projects, screenshotsSince }), null, 2))

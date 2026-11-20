@@ -58,6 +58,8 @@ type Totals = z.infer<typeof Totals>
 
 const ImportState = z.strictObject({
 	version: z.literal(1),
+	/** The screenshot cutoff (ms) of the first run; `null` until one starts. A resume must use the same. */
+	screenshotsSince: z.nullable(z.number()),
 	projects: z.record(z.string(), z.strictObject({ to: z.string(), createdAt: z.boolean(), runsUncertain: z.boolean() })),
 	runs: z.record(z.string(), RunState),
 	totals: Totals,
@@ -71,6 +73,7 @@ export interface StateStore {
 
 const emptyState = (): ImportState => ({
 	version: 1,
+	screenshotsSince: null,
 	projects: {},
 	runs: {},
 	totals: { runs: 0, scenarios: 0, steps: 0, screenshots: 0, screenshotBytes: 0, tooBig: 0, missing: 0, notPng: 0 },
@@ -115,18 +118,20 @@ export class UncertainOutcome extends Error {
 }
 
 /**
- * Whether a failed call may have taken effect: the connection dropped or timed out (the client answers status 0) or a
- * gateway answered, so the application may have committed. A 4xx and a 500 or 503 (a rolled-back transaction) did not.
+ * Whether a failed call may have taken effect: the connection dropped or timed out (the client answers status 0), a
+ * gateway answered, or a 500, which a layer in front of the application may answer after its commit. A 4xx, a 429 and
+ * a 503 (refused before any work) did not.
  */
 export const mayHaveTakenEffect = (error: unknown) =>
-	error instanceof RpcError && (error.httpStatus === 0 || error.httpStatus === 502 || error.httpStatus === 504)
+	error instanceof RpcError
+	&& (error.httpStatus === 0 || error.httpStatus === 500 || error.httpStatus === 502 || error.httpStatus === 504)
 
 /** Procedures whose repetition changes nothing: they set values, they insert no row. */
 const IDEMPOTENT = ['/migration.project', '/migration.screenshots']
 
 /**
- * Retries a 429, 500 or 503 (the application refused or rolled back), and, for an idempotent procedure, a dropped
- * connection or a gateway answer too. What it gives up on reaches the client as its `RpcError`.
+ * Retries a 429 or 503 (refused before any work), and, for an idempotent procedure, a dropped connection, a 500 or a
+ * gateway answer too. What it gives up on reaches the client as its `RpcError`.
  */
 export function retryingFetch(inner: RpcFetch, options: { backoffMs?: readonly number[]; timeoutMs?: number } = {}): RpcFetch {
 	const backoff = options.backoffMs ?? [1000, 3000, 10000, 30000]
@@ -146,9 +151,9 @@ export function retryingFetch(inner: RpcFetch, options: { backoffMs?: readonly n
 				}
 				throw error
 			}
-			const rolledBack = response.status === 429 || response.status === 500 || response.status === 503
-			const gateway = response.status === 502 || response.status === 504
-			if ((rolledBack || (gateway && idempotent)) && delay !== undefined) {
+			const refused = response.status === 429 || response.status === 503
+			const unknown = response.status === 500 || response.status === 502 || response.status === 504
+			if ((refused || (unknown && idempotent)) && delay !== undefined) {
 				await Bun.sleep(delay)
 				continue
 			}
@@ -238,6 +243,10 @@ const isPng = (bytes: Uint8Array) => PNG_SIGNATURE.every((byte, index) => bytes[
 // ---------------------------------------------------------------------------------------------------------------
 // The import.
 
+/** The cutoff as `--screenshots-since` spells it. */
+const cutoffLabel = (since: number) =>
+	since === 0 ? 'all' : since === Number.MAX_SAFE_INTEGER ? 'none' : new Date(since).toISOString()
+
 export interface ImportOptions {
 	readonly source: Source
 	readonly objects: ObjectSource
@@ -245,7 +254,7 @@ export interface ImportOptions {
 	readonly state: StateStore
 	/** Old project slug → the id of the project an operator created for it. */
 	readonly projects: ReadonlyMap<string, string>
-	/** Screenshots are copied for runs started at or after this time (ms); `Infinity` copies none. */
+	/** Screenshots are copied for runs started at or after this time (ms); `Number.MAX_SAFE_INTEGER` copies none. */
 	readonly screenshotsSince: number
 	readonly concurrency: number
 	/** Send again a batch whose earlier outcome was unknown (it may duplicate its rows). */
@@ -267,6 +276,15 @@ export async function runImport(options: ImportOptions): Promise<ImportSummary> 
 	const log = options.log ?? (() => {})
 	const state = options.state.load()
 	const save = () => options.state.save(state)
+	// A moved cutoff would leave runs imported earlier without screenshots it now covers, or with some it no longer does.
+	if (state.screenshotsSince !== null && state.screenshotsSince !== options.screenshotsSince) {
+		throw new Error(
+			`this state was started with --screenshots-since ${cutoffLabel(state.screenshotsSince)}, `
+				+ `not ${cutoffLabel(options.screenshotsSince)}: pass the first value again, or start a new state file`,
+		)
+	}
+	state.screenshotsSince = options.screenshotsSince
+	save()
 	const sourceProjects = options.source.projects()
 	const mapped = sourceProjects.filter((project) => options.projects.has(project.slug))
 	const unmappedProjects = sourceProjects.filter((project) => !options.projects.has(project.slug)).map((project) => project.slug)

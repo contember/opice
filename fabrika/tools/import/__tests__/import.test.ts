@@ -241,4 +241,53 @@ describe('the import', () => {
 		const target = await targetRows('gamma')
 		expect(target.runs.flatMap((entry) => entry.scenarios).length).toBe(4)
 	})
+
+	test('takes a 500 on an insert as an unknown outcome, never as rolled back', async () => {
+		const project = await operatorApi.projects.create({ slug: 'delta', name: 'Project delta' })
+		const path = sourceDatabase('delta')
+		let failed = 0
+		// The batch of scenarios commits, then something in front of the application answers 500.
+		const committedThen500: RpcFetch = async (input, init) => {
+			const response = await kit.fetch(input, init)
+			if (String(input).endsWith('/migration.scenarios') && failed++ === 0) {
+				return Response.json({ error: { type: 'internal', message: 'upstream' } }, { status: 500 })
+			}
+			return response
+		}
+		const source = openSource(path)
+		const stopped = await runImport({
+			source,
+			objects: objects('delta'),
+			client: machineClient({ key: importKey, fetch: retryingFetch(committedThen500, { backoffMs: [0, 0] }) }).migration,
+			state: memoryState(),
+			projects: new Map([['delta', project.id]]),
+			screenshotsSince: CUTOFF,
+			concurrency: 1,
+		}).catch((error: unknown) => error)
+		source.close()
+		expect(stopped).toBeInstanceOf(ImportStopped)
+		expect(stopped instanceof ImportStopped ? stopped.summary.uncertain.length : 0).toBe(1)
+		// Not sent again on its own: the committed batch is there once.
+		expect(failed).toBe(1)
+		const target = await targetRows('delta')
+		expect(target.runs.flatMap((entry) => entry.scenarios).length).toBe(2)
+	})
+
+	test('refuses to resume with another screenshot cutoff than the state recorded', async () => {
+		const project = await operatorApi.projects.create({ slug: 'epsilon', name: 'Project epsilon' })
+		const path = sourceDatabase('epsilon')
+		const state = memoryState()
+		const options = { objects: objects('epsilon'), client: client(), state, projects: new Map([['epsilon', project.id]]), concurrency: 1 }
+		const first = openSource(path)
+		await runImport({ ...options, source: first, screenshotsSince: CUTOFF })
+		first.close()
+		expect(state.current().screenshotsSince).toBe(CUTOFF)
+
+		const second = openSource(path)
+		const refused = await runImport({ ...options, source: second, screenshotsSince: CUTOFF + DAY }).catch((error: unknown) => error)
+		second.close()
+		expect(refused).toBeInstanceOf(Error)
+		expect(refused instanceof Error ? refused.message : '').toContain(new Date(CUTOFF).toISOString())
+		expect(state.current().screenshotsSince).toBe(CUTOFF)
+	})
 })

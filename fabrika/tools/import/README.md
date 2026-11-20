@@ -9,8 +9,8 @@ bucket. Rows go through the `migration.*` procedures of the machine mount; the s
 - An operator creates each project in the dashboard under its old slug and name, and notes its id. A machine key
   cannot create a project.
 - An installation administrator mints a service key (`px_…`) for the `opice` application with the global action
-  `data.import`, and puts it into truhla as `OPICE_IMPORT_KEY`, with `OPICE_IMPORT_ENDPOINT` set to the application's
-  origin. Revoke the key once the import is done.
+  `data.import`. Inject it from your secret manager as `OPICE_IMPORT_KEY`, with `OPICE_IMPORT_ENDPOINT` set to the
+  application's origin; never write it to a file. Revoke the key once the import is done.
 
 ## 2. Export the old database
 
@@ -27,8 +27,8 @@ sqlite3 "$dir/old.sqlite" < "$dir/old.sql"
 
 ## 3. Read access to the old bucket
 
-Temporary, read-only credentials scoped to the bucket, signed with an R2 API token's access key id. They go into
-truhla, never into a file:
+Temporary, read-only credentials scoped to the bucket, signed with an R2 API token's access key id. Inject them from
+your secret manager; never write them to a file:
 
 ```bash
 npx cf r2 temporary-credentials create --bucket prod-opice-screenshots --permission object-read-only \
@@ -41,17 +41,20 @@ Set `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_SESSION_TOKEN` from the a
 ## 4. Run
 
 ```bash
-truhla run -- bun tools/import/main.ts --source "$dir/old.sqlite" --state "$dir/state.json" \
+bun tools/import/main.ts --source "$dir/old.sqlite" --state "$dir/state.json" \
   --project <old slug>=<new project id> [--project …] --dry-run
-truhla run -- bun tools/import/main.ts --source "$dir/old.sqlite" --state "$dir/state.json" \
+bun tools/import/main.ts --source "$dir/old.sqlite" --state "$dir/state.json" \
   --project <old slug>=<new project id> [--project …]
 ```
 
+Run both with the variables above injected into the process environment.
+
 - `--screenshots-since <ISO date>|all|none` picks the runs whose screenshots are copied (by when the run started).
-  The default is 30 days before now; every other row is imported either way, a step without its picture.
+  The default is 30 days before the first run; every other row is imported either way, a step without its picture.
+  The state records the cutoff: a rerun without the flag keeps it, and a rerun with another value is refused.
 - `--concurrency <n>` (default 4) bounds the runs imported at once; the target is one Durable Object.
 - The state file holds ids and cursors only. Rerun with the same file to continue: nothing is inserted twice.
-- A 429, 500 or 503 is retried. A dropped connection or a gateway answer on an insert stops the import and marks the
+- A 429 or 503 is retried. A dropped connection, a 500 or a gateway answer on an insert stops the import and marks the
   run, because its rows may already be in. Look at that run on the dashboard, then rerun with `--retry-uncertain`,
   which sends that batch again.
 - A screenshot over 2 MiB, one that is not a PNG, or a missing object is skipped and counted.
