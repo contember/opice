@@ -28,6 +28,35 @@ const REQUEST_TIMEOUT_MS = 10_000
 /** The platform's machine mount: each report is `POST <endpoint>/machine/reports.<name>`. */
 export const MACHINE_PREFIX = '/machine'
 
+/**
+ * The platform's input caps: a longer value is refused with a 400, which would lose the report. Cut it instead,
+ * marked with a trailing ellipsis.
+ */
+const TEXT_CAP = 1000
+const ERROR_CAP = 100_000
+const LIST_ITEMS_CAP = 100
+const LIST_ITEM_CAP = 200
+
+function clip(value: string, max: number): string {
+	return value.length <= max ? value : `${value.slice(0, max - 1)}…`
+}
+
+/** Fits every string and string list of a report's input into the platform's caps. */
+export function fitInput(input: Record<string, unknown>): Record<string, unknown> {
+	const fitted: Record<string, unknown> = {}
+	for (const [key, value] of Object.entries(input)) {
+		fitted[key] = typeof value === 'string'
+			? clip(value, key === 'error' ? ERROR_CAP : TEXT_CAP)
+			: Array.isArray(value)
+			? value.slice(0, LIST_ITEMS_CAP).map((item) => typeof item === 'string' ? clip(item, LIST_ITEM_CAP) : item)
+			: value
+	}
+	return fitted
+}
+
+/** The platform refused a report's file (too large, not the declared type); the report itself can go without it. */
+class FileRefused extends Error {}
+
 /** One file field of a multipart report (a step's screenshot, a scenario's video). */
 interface UploadFile {
 	field: string
@@ -195,6 +224,8 @@ export interface Reporter {
 }
 
 class NoopReporter implements Reporter {
+	/** `unusable`: a DSN was set but cannot report here, which strict reporting must fail on. */
+	constructor(private readonly unusable = false) {}
 	async startScenario(input: ScenarioStart): Promise<string> {
 		return `noop-${input.name}-${Date.now()}`
 	}
@@ -204,7 +235,7 @@ class NoopReporter implements Reporter {
 	async finishScenario(_input: ScenarioFinish): Promise<void> {}
 	async flush(): Promise<void> {}
 	reportingFailed(): boolean {
-		return false
+		return this.unusable
 	}
 }
 
@@ -344,11 +375,12 @@ class HttpReporter implements Reporter {
 			return
 		}
 		try {
-			await this.fetch('reports.step', step, { field: 'screenshot', name: 'screenshot.png', body: screenshot }, { quiet: true })
+			await this.fetch('reports.step', step, { field: 'screenshot', name: 'screenshot.png', body: screenshot })
 		} catch (err) {
-			// The step matters more than its picture: record it without the file, marked, so the gap on the dashboard
-			// isn't a mystery. Only a failure of this second call counts as a lost report.
-			console.error(`[opice] screenshot upload failed for step "${event.name}" (${err instanceof Error ? err.message : String(err)}) — recording the step without it.`)
+			// Only a refused file is retried without it: after a timeout or a 5xx the step may already be stored, and a
+			// second send would duplicate it. The step matters more than its picture, so it is recorded, marked.
+			if (!(err instanceof FileRefused)) throw err
+			console.error(`[opice] the platform refused the screenshot of step "${event.name}" (${err.message}) — recording the step without it.`)
 			await this.fetch('reports.step', { ...step, screenshotFailed: true })
 		}
 	}
@@ -406,7 +438,6 @@ class HttpReporter implements Reporter {
 		procedure: string,
 		input: Record<string, unknown>,
 		file?: UploadFile,
-		options: { quiet?: boolean } = {},
 	): Promise<Record<string, unknown>> {
 		// Retry only TRANSIENT failures (network error, 5xx, 429) with a short
 		// backoff — a momentary blip or a cold start shouldn't read as a lost
@@ -426,7 +457,8 @@ class HttpReporter implements Reporter {
 				await new Promise((resolve) => setTimeout(resolve, delay))
 				continue
 			}
-			if (!options.quiet) this.noteFailure(`${MACHINE_PREFIX}/${procedure}`, result.detail, !result.retryable)
+			if (file && (result.status === 413 || result.status === 415)) throw new FileRefused(result.detail)
+			this.noteFailure(`${MACHINE_PREFIX}/${procedure}`, result.detail, !result.retryable)
 			throw result.error
 		}
 	}
@@ -440,9 +472,9 @@ class HttpReporter implements Reporter {
 		procedure: string,
 		input: Record<string, unknown>,
 		file: UploadFile | undefined,
-	): Promise<{ data: Record<string, unknown> } | { retryable: boolean; detail: string; error: Error }> {
+	): Promise<{ data: Record<string, unknown> } | { retryable: boolean; status?: number; detail: string; error: Error }> {
 		const call = `${MACHINE_PREFIX}/${procedure}`
-		const fail = (retryable: boolean, detail: string) => ({ retryable, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) })
+		const fail = (retryable: boolean, detail: string, status?: number) => ({ retryable, status, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) })
 		const authorization = `Bearer ${this.config.key}`
 		let response: Response
 		try {
@@ -450,7 +482,7 @@ class HttpReporter implements Reporter {
 				method: 'POST',
 				// A multipart body sets its own content type, with the boundary.
 				headers: file ? { authorization } : { authorization, 'content-type': 'application/json' },
-				body: file ? multipart(input, file) : JSON.stringify(input),
+				body: file ? multipart(fitInput(input), file) : JSON.stringify(fitInput(input)),
 				// 'manual': a sign-in redirect must read as an auth failure, not be chased into an HTML page.
 				redirect: 'manual',
 				// Don't let a stalled connection hang past the afterAll budget.
@@ -472,7 +504,7 @@ class HttpReporter implements Reporter {
 		if (!response.ok) {
 			// 5xx and 429 are the platform asking us to back off and retry; other 4xx
 			// mean the request itself is wrong (validation) — a retry won't change that.
-			return fail(response.status >= 500 || response.status === 429, `${response.status} ${(await response.text()).trim()}`)
+			return fail(response.status >= 500 || response.status === 429, `${response.status} ${(await response.text()).trim()}`, response.status)
 		}
 		// Parse defensively: a 200 that isn't the platform's `{ result }` (a login or
 		// proxy page) must count as a failure, not a swallowed throw. Not transient.
@@ -584,8 +616,12 @@ export function configureFromEnv(env: NodeJS.ProcessEnv = process.env): Reporter
 	const endpoint = env['OPICE_ENDPOINT'] ?? dsn?.endpoint
 	const projectId = env['OPICE_PROJECT'] ?? dsn?.project
 	const key = env['OPICE_KEY'] ?? dsn?.key
-	if (env['OPICE_DSN'] && !dsn) {
-		console.error('[opice] OPICE_DSN is not a DSN of this platform (https://<px_ key>@<host>/<project id>); a DSN with a password is the old platform\'s.')
+	if (env['OPICE_DSN'] && !dsn && !(env['OPICE_ENDPOINT'] && env['OPICE_PROJECT'] && env['OPICE_KEY'])) {
+		console.error('[opice] OPICE_DSN is not a DSN of this platform (https://<px_ key>@<host>/<project id>); a DSN with a password is the old platform\'s. Nothing will be reported.')
+		// Set but unusable is a misconfiguration, not an opt-out: strict reporting fails the run on it.
+		const reporter = new NoopReporter(strictReporting)
+		setReporter(reporter)
+		return reporter
 	}
 	if (!endpoint || !projectId || !key) {
 		if (strictReporting) warnStrictNoop('reporter credentials are not configured (no OPICE_DSN / OPICE_* vars)')

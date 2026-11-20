@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { configureFromEnv, type Reporter, type ScenarioStart } from './reporter.js'
+import { configureFromEnv, fitInput, type Reporter, type ScenarioStart } from './reporter.js'
 
 let server: ReturnType<typeof Bun.serve> | undefined
 let handler: (req: Request) => Response | Promise<Response>
@@ -101,6 +101,40 @@ test('a step whose screenshot upload fails is recorded without it, marked', asyn
 	expect(steps.map((step) => step.multipart)).toEqual([true, false])
 	expect(steps[1]?.input).toMatchObject({ runId: 'run-1', scenarioId, name: 'a step', screenshotFailed: true })
 	expect(reporter.reportingFailed()).toBe(false)
+})
+
+test('a step whose screenshot upload times out is not sent again without it', async () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'opice-reporter-'))
+	const screenshotPath = path.join(dir, 'step.png')
+	writeFileSync(screenshotPath, new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+	const kinds: boolean[] = []
+	handler = (req) => {
+		if (new URL(req.url).pathname !== '/machine/reports.step') return ok()
+		kinds.push((req.headers.get('content-type') ?? '').startsWith('multipart/form-data'))
+		return new Response('busy', { status: 503 })
+	}
+	const reporter = serving()
+	const scenarioId = await reporter.startScenario(scenario)
+	await reporter.recordStep({ scenarioId, sequence: 0, name: 'a step', status: 'passed', durationMs: 1, screenshotPath })
+	rmSync(dir, { recursive: true })
+	// Four tries of the step with its file, none without: a 5xx may have stored the step already.
+	expect(kinds).toEqual([true, true, true, true])
+}, 15_000)
+
+test('a report is cut to the platform caps instead of being refused', () => {
+	const fitted = fitInput({ name: 'n'.repeat(1500), error: 'e'.repeat(150_000), seeds: Array.from({ length: 150 }, () => 's'.repeat(300)), durationMs: 5 })
+	expect(String(fitted['name']).length).toBe(1000)
+	expect(String(fitted['name']).endsWith('…')).toBe(true)
+	expect(String(fitted['error']).length).toBe(100_000)
+	const seeds = fitted['seeds']
+	expect(Array.isArray(seeds) ? seeds.length : 0).toBe(100)
+	expect(Array.isArray(seeds) ? String(seeds[0]).length : 0).toBe(200)
+	expect(fitted['durationMs']).toBe(5)
+})
+
+test('a DSN that is set but unusable fails strict reporting', () => {
+	const reporter = configureFromEnv({ OPICE_DSN: 'https://id:secret@example.com/proj', OPICE_REPORT: 'always', OPICE_REPORT_STRICT: '1' })
+	expect(reporter.reportingFailed()).toBe(true)
 })
 
 test('a DSN of the old platform (with a password) does not configure reporting', () => {
