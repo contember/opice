@@ -51,7 +51,7 @@ Commands:
       writes to opice-videos/; --video=DIR picks another folder. Set
       OPICE_VIDEO_SIZE=WxH (e.g. 1280x720) to fix the recording size.
 
-  failures <run-url|run-id> [--json]
+  failures <run-url|run-id> [--json] [--screenshots <dir>]
       Pull a failed run's details (failed scenarios, the failing step,
       error, screenshot URL, and source files) for the re-eval workflow.
       Read token comes from the URL's ?token=, OPICE_READ_TOKEN, or
