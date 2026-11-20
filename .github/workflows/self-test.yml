@@ -1,0 +1,33 @@
+name: Self-test
+
+# Runs apps/self-test against the platform and reports the run to the platform's own test project, so the reporting
+# path (harness → /machine → dashboard) is proven end to end. OPICE_DSN is that project's service key DSN.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    # Playwright 1.60 cannot install chromium on ubuntu-latest (26.04); unpin once on >= 1.61.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright chromium
+        working-directory: packages/harness
+        run: bun x playwright install --only-shell chromium
+
+      - name: Run the self-test and report it
+        working-directory: apps/self-test
+        env:
+          OPICE_DSN: ${{ secrets.OPICE_DSN }}
+        run: bun ../../packages/cli/src/cli.ts test --fail-on-report-error
