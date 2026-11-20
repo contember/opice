@@ -17,9 +17,9 @@ export async function initCommand(opts: InitOptions): Promise<number> {
 		return 1
 	}
 
-	const project = opts.project ?? prompt('Project slug:') ?? ''
+	const project = opts.project ?? prompt('Project id (from the dashboard):') ?? ''
 	if (!project) {
-		console.error('Project slug is required.')
+		console.error('Project id is required.')
 		return 1
 	}
 	const endpoint = opts.endpoint ?? prompt('Reporter endpoint (e.g. https://opice.example.com):') ?? ''
@@ -38,7 +38,7 @@ export async function initCommand(opts: InitOptions): Promise<number> {
 
 	console.log()
 	console.log('Next steps:')
-	console.log('  1. Set OPICE_DSN (from the dashboard) in .env locally and as a CI repo secret.')
+	console.log('  1. Set OPICE_DSN (https://<px_ key>@<host>/<project id>; an installation administrator mints the key in the platform console) in .env locally and as a CI repo secret.')
 	console.log('  2. Run your tests via `opice test <bun-test-args>` to stream results.')
 	return 0
 }

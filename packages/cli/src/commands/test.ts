@@ -10,11 +10,10 @@ const HANDOFF_DIR = path.join(tmpdir(), 'opice-handoffs')
 
 interface Handoff {
 	endpoint: string
-	/** Project slug — used to build the /api/v1/<project>/runs/<id>/finish URL. */
+	/** Project id, for the run URL. */
 	project: string
-	/** Service-token credentials for the CF-Access-Client-* headers on POST /finish. */
-	clientId: string
-	clientSecret: string
+	/** The service key `reports.finishRun` is called with. */
+	key: string
 	runId: string
 }
 
@@ -23,8 +22,7 @@ export async function testCommand(args: string[]): Promise<number> {
 	const dsn = parseOpiceDsn(process.env['OPICE_DSN'])
 	const project = process.env['OPICE_PROJECT'] ?? config?.project ?? dsn?.project
 	const endpoint = process.env['OPICE_ENDPOINT'] ?? config?.endpoint ?? dsn?.endpoint
-	const clientId = process.env['OPICE_CLIENT_ID'] ?? dsn?.clientId
-	const clientSecret = process.env['OPICE_CLIENT_SECRET'] ?? dsn?.clientSecret
+	const key = process.env['OPICE_KEY'] ?? dsn?.key
 
 	if (!project) {
 		warn('OPICE_PROJECT not set and no opice.config.json found. Run `opice init` or set the env var.')
@@ -32,8 +30,8 @@ export async function testCommand(args: string[]): Promise<number> {
 	if (!endpoint) {
 		warn('OPICE_ENDPOINT not set and no opice.config.json found. Tests will run without reporting.')
 	}
-	if (!clientId || !clientSecret) {
-		warn('OPICE_CLIENT_ID / OPICE_CLIENT_SECRET not set (the OPICE_DSN userinfo). Tests will run without reporting.')
+	if (!key) {
+		warn('OPICE_KEY not set (the OPICE_DSN userinfo, a px_ service key from the platform console). Tests will run without reporting.')
 	}
 
 	// `--tier=NAME` selects which test tier runs (critical < standard < extended).
@@ -96,10 +94,9 @@ export async function testCommand(args: string[]): Promise<number> {
 		...process.env,
 		...(project ? { OPICE_PROJECT: project } : {}),
 		...(endpoint ? { OPICE_ENDPOINT: endpoint } : {}),
-		// Resolve the service-token pair (incl. from a DSN) into the explicit vars the
+		// Resolve the service key (incl. from a DSN) into the explicit var the
 		// harness reporter reads, so a bare OPICE_DSN is enough to report.
-		...(clientId ? { OPICE_CLIENT_ID: clientId } : {}),
-		...(clientSecret ? { OPICE_CLIENT_SECRET: clientSecret } : {}),
+		...(key ? { OPICE_KEY: key } : {}),
 		...(git.branch ? { OPICE_BRANCH: git.branch } : {}),
 		...(git.commit ? { OPICE_COMMIT: git.commit } : {}),
 		...(resolvedTier ? { OPICE_TIER: resolvedTier } : {}),
@@ -351,13 +348,11 @@ function printRunUrl(handoff: Handoff, slug: string | undefined): void {
 }
 
 async function finishRun(handoff: Handoff): Promise<void> {
-	const url = `${handoff.endpoint}/api/v1/${handoff.project}/runs/${handoff.runId}/finish`
+	const url = `${handoff.endpoint}/machine/reports.finishRun`
 	const response = await fetch(url, {
 		method: 'POST',
-		headers: {
-			'cf-access-client-id': handoff.clientId,
-			'cf-access-client-secret': handoff.clientSecret,
-		},
+		headers: { authorization: `Bearer ${handoff.key}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ runId: handoff.runId }),
 	})
 	if (!response.ok) {
 		throw new Error(`${response.status} ${await response.text()}`)
