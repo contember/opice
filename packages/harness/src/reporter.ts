@@ -25,12 +25,6 @@ import { resolveSelectedTier } from './tier.js'
 
 /** Per-request cap, so a hung connection can't stall a scenario's afterAll. */
 const REQUEST_TIMEOUT_MS = 10_000
-/**
- * Longer cap for a video PUT — a walkthrough webm is megabytes, not the few KB of
- * a step screenshot, so it needs more headroom than {@link REQUEST_TIMEOUT_MS}.
- * Still bounded so a stalled upload can't hang the scenario's afterAll forever.
- */
-const VIDEO_REQUEST_TIMEOUT_MS = 30_000
 /** The platform's machine mount: each report is `POST <endpoint>/machine/reports.<name>`. */
 export const MACHINE_PREFIX = '/machine'
 
@@ -233,6 +227,7 @@ class HttpReporter implements Reporter {
 	private runIdPromise: Promise<string> | null = null
 	private readonly pending: Set<Promise<unknown>> = new Set()
 	private warnedUnreachable = false
+	private warnedVideo = false
 	/** Reports that reached the platform. Zero means the dashboard has nothing of this run. */
 	private successes = 0
 	/** Failed reports (network error or non-2xx), for the log summary. */
@@ -298,8 +293,9 @@ class HttpReporter implements Reporter {
 		const runId = await this.ensureRun()
 		// A skipped scenario is created already-finished on the platform — no
 		// steps follow, so we don't keep the returned id.
-		await this.fetch('reports.skipScenario', {
+		await this.fetch('reports.startScenario', {
 			runId,
+			skipped: true,
 			name: input.name,
 			hash: input.hash,
 			testFile: input.testFile,
@@ -358,29 +354,13 @@ class HttpReporter implements Reporter {
 	}
 
 	/**
-	 * Upload a scenario's walkthrough video as a multipart file field. Awaited inline by the harness before the
-	 * scenario finishes — there's at most one per scenario, and a fire-and-forget upload could be cut off when the test
-	 * process exits. Best-effort: any failure (missing file, storage hiccup, auth) is logged and swallowed — a dropped
-	 * video must never fail the run, so it does NOT touch the strict-mode failure count.
+	 * The platform stores no videos yet (its file store does not admit WebM), so a recorded walkthrough stays on disk
+	 * under OPICE_VIDEO_DIR. Said once per process, never a reporting failure.
 	 */
-	async uploadVideo(input: VideoUpload): Promise<void> {
-		// A rejected run-start is swallowed: no run ⇒ nothing to attach the video to.
-		const runId = await this.ensureRun().catch(() => undefined)
-		if (!runId) return
-		const video = await this.readFile(input.filePath, 'video/webm')
-		if (!video) {
-			console.error(`[opice] video upload skipped for scenario ${input.scenarioId}: cannot read ${input.filePath}`)
-			return
-		}
-		const result = await this.attempt(
-			'reports.video',
-			{ runId, scenarioId: input.scenarioId },
-			{ field: 'video', name: 'video.webm', body: video },
-			VIDEO_REQUEST_TIMEOUT_MS,
-		)
-		if (!('data' in result)) {
-			console.error(`[opice] ${MACHINE_PREFIX}/reports.video failed: ${result.detail} — the video was NOT uploaded.`)
-		}
+	async uploadVideo(_input: VideoUpload): Promise<void> {
+		if (this.warnedVideo) return
+		this.warnedVideo = true
+		console.error('[opice] the platform does not store walkthrough videos yet; they stay on disk under OPICE_VIDEO_DIR.')
 	}
 
 	async finishScenario(input: ScenarioFinish): Promise<void> {
@@ -436,7 +416,7 @@ class HttpReporter implements Reporter {
 		// loud. `noteFailure` only fires once retries are spent, so a blip that
 		// clears on retry isn't recorded as a failure at all.
 		for (let attempt = 0; ; attempt++) {
-			const result = await this.attempt(procedure, input, file, REQUEST_TIMEOUT_MS)
+			const result = await this.attempt(procedure, input, file)
 			if ('data' in result) {
 				this.successes++
 				return result.data
@@ -460,7 +440,6 @@ class HttpReporter implements Reporter {
 		procedure: string,
 		input: Record<string, unknown>,
 		file: UploadFile | undefined,
-		timeoutMs: number,
 	): Promise<{ data: Record<string, unknown> } | { retryable: boolean; detail: string; error: Error }> {
 		const call = `${MACHINE_PREFIX}/${procedure}`
 		const fail = (retryable: boolean, detail: string) => ({ retryable, detail, error: new Error(`opice reporter ${call} failed: ${detail}`) })
@@ -475,7 +454,7 @@ class HttpReporter implements Reporter {
 				// 'manual': a sign-in redirect must read as an auth failure, not be chased into an HTML page.
 				redirect: 'manual',
 				// Don't let a stalled connection hang past the afterAll budget.
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 			})
 		} catch (err) {
 			// Network error / blocked request (e.g. a test runner that installs a
