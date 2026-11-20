@@ -1,6 +1,4 @@
 node_modules/
 fabrika.manifest.json
-/fabrika/entry.generated.ts
 /dist/
 /fabrika/assets/
-/fabrika/migrations.generated.ts

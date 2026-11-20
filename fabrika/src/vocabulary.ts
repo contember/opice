@@ -14,7 +14,7 @@ export const vocabulary = defineVocabulary({
 	actions: {
 		'project.read': 'See projects and their run lists',
 		'project.write': 'Create projects and share runs',
-		'report.read': 'Read runs, scenarios, steps, screenshots and videos',
+		'report.read': 'Read runs, scenarios, steps and screenshots',
 		'report.write': 'Report test runs',
 		'data.import': 'Import data moved from the previous platform',
 	},
