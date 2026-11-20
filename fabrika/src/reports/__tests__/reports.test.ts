@@ -83,6 +83,8 @@ describe('reporting', () => {
 		expect(all.runs.find((listed) => listed.id === runId)?.projectSlug).toBe('flow')
 		const found = await operatorApi.projects.get({ slug: 'flow' })
 		expect(found.project?.id).toBe(project.id)
+		expect((await operatorApi.projects.get({ slug: project.id })).project?.slug).toBe('flow')
+		expect((await operatorApi.projects.get({ slug: 'no-such-project' })).project).toBeNull()
 		const listed = await operatorApi.projects.list()
 		expect(listed.projects.find((item) => item.slug === 'flow')?.lastRun?.id).toBe(runId)
 	})

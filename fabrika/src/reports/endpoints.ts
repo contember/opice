@@ -329,7 +329,9 @@ export const projects = app.group({ callers: ['human'] }, (r) => ({
 		access: { action: 'project.read', over: 'project' },
 	})
 		.handle(async ({ input, ctx }) => {
-			const [row] = (await ctx.db.within.projects.list({ where: [['slug', '=', input.slug]], limit: 1 })).items
+			// A dashboard URL names a project by its slug; the CLI's run link names it by its id.
+			const [bySlug] = (await ctx.db.within.projects.list({ where: [['slug', '=', input.slug]], limit: 1 })).items
+			const [row] = bySlug === undefined ? (await ctx.db.within.projects.list({ where: [['id', '=', input.slug]], limit: 1 })).items : [bySlug]
 			return { project: row === undefined ? null : fromRow(Project, row) }
 		}),
 	create: r.mutation({
