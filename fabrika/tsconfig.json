@@ -17,5 +17,5 @@
 		"noEmit": true,
 		"types": ["@cloudflare/workers-types", "@types/bun"]
 	},
-	"include": ["src/**/*", "web/**/*", "dev/**/*", "fabrika/**/*", "tools/**/*", "build-web.ts", "fabrika.contract.ts"]
+	"include": ["src/**/*", "web/**/*", "dev/**/*", "fabrika/**/*", "build-web.ts", "fabrika.contract.ts"]
 }

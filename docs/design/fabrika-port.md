@@ -17,9 +17,8 @@ application from a directory that installs on its own.
 | credential minting | dashboard mints and revokes DSNs                   | an installation administrator, in the console (Access → Credentials)    |
 
 Vocabulary `opice`: dimensions `project` (top level, `creator: 'owner'`) and `run` (in `project`). Actions
-`project.read`, `project.write`, `report.read`, `report.write`, `data.import`. Roles: `viewer` (`project.read`,
-`report.read`) and `editor` (all four but `data.import`) are application-wide; `owner` (all four but `data.import`) is
-the creator's membership role in one project. No role grants `data.import`: only the import key holds it.
+`project.read`, `project.write`, `report.read`, `report.write`. Roles: `viewer` (`project.read`, `report.read`) and
+`editor` (all four) are application-wide; `owner` (all four) is the creator's membership role in one project.
 
 A CI key holds `report.write` (and `report.read` for `opice failures`) in its project. A key in one project reaches no
 other: every machine procedure names its run or project, and the access form checks the chain.
@@ -41,8 +40,7 @@ SQLite migrations replay D1 migrations 0001–0011 as one schema. Times stay int
 - `/api` (human): `session.me`, `projects.list|get|create`, `runs.listForProject|listAll|get|scenarios|steps|screenshot`
   (the screenshot is a GET file), `shares.create|list|revoke`.
 - `/machine` (machine): `reports.startRun|startScenario|finishScenario|step|finishRun` (a skipped scenario is
-  `startScenario` with `skipped: true`), `reads.run|scenarios|steps|screenshot`, `migration.*` (the one-off import,
-  removed after the data move).
+  `startScenario` with `skipped: true`), `reads.run|scenarios|steps|screenshot`.
 - `/s` (link mount on `run`): `run`, `scenarios`, `steps`, `screenshot`, and the share SPA.
 - `/` the operator SPA (member). `/healthz`.
 - Job `reapStaleRuns` every 5 minutes.
