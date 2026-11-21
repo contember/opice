@@ -10,9 +10,8 @@ permissions:
 
 jobs:
   self-test:
-    # Playwright 1.60 cannot install chromium on ubuntu-latest (26.04); unpin once on >= 1.61.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
