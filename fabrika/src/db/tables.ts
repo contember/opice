@@ -22,13 +22,8 @@ export const tables = defineTables(vocabulary, columns)({
 			'status',
 			'source',
 			'tier',
-			'total_scenarios',
-			'passed_scenarios',
-			'failed_scenarios',
 			'started_at',
 			'last_activity_at',
-			'reaped_at',
-			'finished_at',
 		],
 		update: ['status', 'total_scenarios', 'passed_scenarios', 'failed_scenarios', 'last_activity_at', 'reaped_at', 'finished_at'],
 	},
@@ -49,8 +44,6 @@ export const tables = defineTables(vocabulary, columns)({
 			'roles',
 			'tier',
 			'status',
-			'duration_ms',
-			'attempts',
 			'started_at',
 			'finished_at',
 			'skipped_at',
@@ -63,7 +56,6 @@ export const tables = defineTables(vocabulary, columns)({
 		actions: {
 			read: ['report.read', 'report.write'],
 			insert: 'report.write',
-			update: 'report.write',
 		},
 		insert: [
 			'scenario_id',
@@ -81,7 +73,6 @@ export const tables = defineTables(vocabulary, columns)({
 			'screenshot_failed',
 			'created_at',
 		],
-		update: ['screenshot'],
 		files: { screenshot: 'screenshots' },
 	},
 	run_shares: {

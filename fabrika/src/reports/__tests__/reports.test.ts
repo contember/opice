@@ -215,6 +215,10 @@ describe('reporting', () => {
 		expect((await viewerApi.runs.get({ runId })).id).toBe(runId)
 	})
 
+	test('an unknown run is 404', async () => {
+		expect(await statusOf(operatorApi.runs.get({ runId: 'not-a-run' }))).toBe(404)
+	})
+
 	test('a slug names one project', async () => {
 		await newProject('twice')
 		expect(await statusOf(newProject('twice'))).toBe(409)
@@ -235,10 +239,12 @@ describe('the reaper', () => {
 			setSystemTime(new Date(hourAgo))
 			expect(await kit.runJob('reapStaleRuns')).toMatchObject({ status: 'succeeded' })
 			const stale = await start()
+			const active = await start()
 			const finished = await start()
 			await ci.reports.finishRun({ runId: finished })
 			setSystemTime()
-			const active = await start()
+			// Started an hour ago but reporting now: idleness counts from the last activity, not the start.
+			await ci.reports.startScenario({ runId: active, name: 'still going' })
 
 			expect((await operatorApi.runs.get({ runId: stale })).status).toBe('incomplete')
 			expect(await kit.runJob('reapStaleRuns')).toMatchObject({ status: 'succeeded' })
