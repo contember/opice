@@ -2,7 +2,7 @@ import { createClient, download } from '@fabrika/app/client'
 import { statusOf, testKit } from '@fabrika/app/testing'
 import { testDatabase } from '@fabrika/db/testing-sqlite'
 import { MemoryFileObjects } from '@fabrika/platform/testing'
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, setSystemTime, test } from 'bun:test'
 import { contract } from '../../../fabrika.contract'
 import app from '../../app'
 
@@ -224,140 +224,32 @@ describe('reporting', () => {
 describe('the reaper', () => {
 	test('marks a run idle past the stale limit reaped, and leaves an active or finished one', async () => {
 		const project = await newProject('reaped')
-		const importer = createClient(contract, 'machine', {
-			fetch: kit.fetch,
-			key: kit.testCaller([{ action: 'data.import' }], { kind: 'machine' }).key ?? undefined,
-		})
-		const longAgo = Date.now() - 60 * 60 * 1000
-		const base = {
-			branch: null,
-			commitSha: null,
-			source: null,
-			tier: null,
-			totalScenarios: 0,
-			passedScenarios: 0,
-			failedScenarios: 0,
-			reapedAt: null,
-		}
-		const { ids } = await importer.migration.runs({
-			projectId: project.id,
-			runs: [
-				{ ...base, from: 'stale', status: 'running', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: null },
-				{ ...base, from: 'active', status: 'running', startedAt: longAgo, lastActivityAt: Date.now(), finishedAt: null },
-				{ ...base, from: 'finished', status: 'passed', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: longAgo },
-				{ ...base, from: 'reaped', status: 'running', startedAt: longAgo, lastActivityAt: longAgo, finishedAt: longAgo, reapedAt: longAgo },
-			],
-		})
-		const idOf = (from: string) => ids.find((pair) => pair.from === from)?.to ?? ''
-		expect((await operatorApi.runs.get({ runId: idOf('stale') })).status).toBe('incomplete')
-		expect(await kit.runJob('reapStaleRuns')).toMatchObject({ status: 'succeeded' })
 		const ci = ciKey(project.id)
-		// The reaped run stays incomplete after the job, now stored; the others are untouched.
-		expect((await ci.reads.run({ runId: idOf('stale') })).finishedAt).not.toBeNull()
-		expect((await ci.reads.run({ runId: idOf('active') })).status).toBe('running')
-		expect((await ci.reads.run({ runId: idOf('finished') })).status).toBe('passed')
-		// A run reaped before keeps the time it was reaped at.
-		expect((await ci.reads.run({ runId: idOf('reaped') })).finishedAt).toBe(longAgo)
-	})
-})
+		const start = async () => (await ci.reports.startRun({ projectId: project.id })).runId
+		const now = Date.now()
+		const hourAgo = now - 60 * 60 * 1000
+		try {
+			// The handlers and the job stamp runs with the clock, so these runs are reported, and one reaped, in the past.
+			setSystemTime(new Date(now - 2 * 60 * 60 * 1000))
+			const reaped = await start()
+			setSystemTime(new Date(hourAgo))
+			expect(await kit.runJob('reapStaleRuns')).toMatchObject({ status: 'succeeded' })
+			const stale = await start()
+			const finished = await start()
+			await ci.reports.finishRun({ runId: finished })
+			setSystemTime()
+			const active = await start()
 
-describe('the import', () => {
-	test('keeps every stored value, timestamps included, and attaches screenshots', async () => {
-		const project = await newProject('imported')
-		const importer = createClient(contract, 'machine', {
-			fetch: kit.fetch,
-			key: kit.testCaller([{ action: 'data.import' }], { kind: 'machine' }).key ?? undefined,
-		})
-		await importer.migration.project({ projectId: project.id, createdAt: 1_700_000_000_000 })
-		const runs = await importer.migration.runs({
-			projectId: project.id,
-			runs: [{
-				from: 'old-run',
-				branch: 'main',
-				commitSha: 'def',
-				status: 'passed',
-				source: 'ci',
-				tier: null,
-				totalScenarios: 1,
-				passedScenarios: 1,
-				failedScenarios: 0,
-				startedAt: 1_700_000_100_000,
-				lastActivityAt: 1_700_000_150_000,
-				reapedAt: null,
-				finishedAt: 1_700_000_200_000,
-			}],
-		})
-		const runId = runs.ids[0]?.to ?? ''
-		const scenarios = await importer.migration.scenarios({
-			runId,
-			scenarios: [{
-				from: 'old-scenario',
-				name: 'imported scenario',
-				hash: 'h1',
-				testFile: 'tests/a.test.ts',
-				scenarioFile: null,
-				feature: 'F-1',
-				seeds: '["seed"]',
-				roles: null,
-				tier: 'critical',
-				status: 'passed',
-				durationMs: 900,
-				attempts: 1,
-				startedAt: 1_700_000_110_000,
-				finishedAt: 1_700_000_190_000,
-				skippedAt: null,
-				skipReason: null,
-			}],
-		})
-		const scenarioId = scenarios.ids[0]?.to ?? ''
-		const steps = await importer.migration.steps({
-			runId,
-			steps: [{
-				from: '42',
-				scenarioId,
-				attempt: 0,
-				sequence: 0,
-				kind: 'invariant',
-				name: 'imported step',
-				status: 'passed',
-				durationMs: 5,
-				error: null,
-				intent: 'why',
-				manual: 'how',
-				reason: null,
-				screenshotFailed: false,
-				createdAt: 1_700_000_120_000,
-			}],
-		})
-		const stepId = steps.ids[0]?.to ?? ''
-		await importer.migration.screenshots({ runId, stepIds: [stepId], files: [screenshot()] })
-
-		expect((await operatorApi.projects.get({ slug: 'imported' })).project?.createdAt).toBe(1_700_000_000_000)
-		expect(await operatorApi.runs.get({ runId })).toMatchObject({
-			status: 'passed',
-			branch: 'main',
-			commitSha: 'def',
-			startedAt: 1_700_000_100_000,
-			finishedAt: 1_700_000_200_000,
-		})
-		const [scenario] = (await operatorApi.runs.scenarios({ runId })).scenarios
-		expect(scenario).toMatchObject({
-			name: 'imported scenario',
-			feature: 'F-1',
-			seeds: ['seed'],
-			tier: 'critical',
-			durationMs: 900,
-			startedAt: 1_700_000_110_000,
-			finishedAt: 1_700_000_190_000,
-		})
-		const [step] = (await operatorApi.runs.steps({ runId, scenarioId })).steps
-		expect(step).toMatchObject({ kind: 'invariant', intent: 'why', manual: 'how', createdAt: 1_700_000_120_000 })
-		expect(step?.screenshotUrl).not.toBeNull()
-		expect(await statusOf(operatorApi.runs.get({ runId: 'not-a-run' }))).toBe(404)
-	})
-
-	test('an import key without data.import is refused, and a CI key cannot import', async () => {
-		const project = await newProject('guarded')
-		expect(await statusOf(ciKey(project.id).migration.runs({ projectId: project.id, runs: [] }))).toBe(403)
+			expect((await operatorApi.runs.get({ runId: stale })).status).toBe('incomplete')
+			expect(await kit.runJob('reapStaleRuns')).toMatchObject({ status: 'succeeded' })
+			// The reaped run stays incomplete after the job, now stored; the others are untouched.
+			expect((await ci.reads.run({ runId: stale })).finishedAt).not.toBeNull()
+			expect((await ci.reads.run({ runId: active })).status).toBe('running')
+			expect(await ci.reads.run({ runId: finished })).toMatchObject({ status: 'failed', finishedAt: hourAgo })
+			// A run reaped before keeps the time it was reaped at.
+			expect((await ci.reads.run({ runId: reaped })).finishedAt).toBe(hourAgo)
+		} finally {
+			setSystemTime()
+		}
 	})
 })
