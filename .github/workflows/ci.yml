@@ -14,8 +14,7 @@ permissions:
 
 jobs:
   check:
-    # Playwright 1.60 cannot install chromium on ubuntu-latest (26.04); unpin once on >= 1.61.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
@@ -66,7 +65,7 @@ jobs:
 
   fabrika:
     # The platform application installs on its own (fabrika/ has its own bun.lock, outside the root workspaces).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
