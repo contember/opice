@@ -15,7 +15,7 @@
 	},
 	"dependencies": {
 		"@opice/harness": "workspace:*",
-		"playwright": "^1.60.0",
+		"playwright": "^1.65.1",
 		"zod": "^4.4.3"
 	},
 	"license": "MIT",
