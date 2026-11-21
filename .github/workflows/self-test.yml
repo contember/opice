@@ -30,4 +30,7 @@ jobs:
         working-directory: apps/self-test
         env:
           OPICE_DSN: ${{ secrets.OPICE_DSN }}
-        run: bun ../../packages/cli/src/cli.ts test --fail-on-report-error
+        # Without the secret the reporter is a no-op and the job would pass with nothing reported.
+        run: |
+          test -n "$OPICE_DSN" || { echo 'the OPICE_DSN secret is not set' >&2; exit 1; }
+          bun ../../packages/cli/src/cli.ts test --fail-on-report-error

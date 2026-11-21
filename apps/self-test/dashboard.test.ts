@@ -18,12 +18,13 @@ browserTest({ name: 'Platform serves an anonymous visitor', url: `${ENDPOINT}/`,
 		intent: 'A share link opens for anyone: the share SPA is public, and without a key it says so instead of bouncing to sign-in.',
 	}, async () => {
 		await open(`${ENDPOINT}/s/`)
-		expect(new URL(currentUrl()).origin).toBe(new URL(ENDPOINT).origin)
 		await expect(byText('This link carries no key')).toBeVisible()
+		expect(new URL(currentUrl()).origin).toBe(new URL(ENDPOINT).origin)
 	})
 
 	await invariant('the health check answers', async () => {
-		const response = await fetch(`${ENDPOINT}/healthz`)
+		// Not followed: a redirect to sign-in would end on a 200 page and pass by mistake.
+		const response = await fetch(`${ENDPOINT}/healthz`, { redirect: 'manual' })
 		expect(response.status).toBe(200)
 	})
 })
