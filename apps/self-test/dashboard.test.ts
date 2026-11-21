@@ -1,43 +1,30 @@
-import { describe, test } from 'bun:test'
-import { browserTest, el, expect, step } from '@opice/harness'
+import { browserTest, byLabel, byRole, byText, currentUrl, expect, invariant, open, step } from '@opice/harness'
 
-const ENDPOINT = process.env['OPICE_ENDPOINT'] ?? 'https://stage-opice-worker.contember.workers.dev'
-const READ_TOKEN = process.env['OPICE_SELF_READ_TOKEN'] ?? ''
+// The platform's own smoke test: what an anonymous visitor gets from the deployed platform. Run through
+// `opice test` with the platform test project's DSN, it also proves the reporting path end to end.
+const ENDPOINT = process.env['OPICE_SELF_TEST_URL'] ?? 'https://opice.contember.online'
 
-if (!READ_TOKEN) {
-	throw new Error('OPICE_SELF_READ_TOKEN is required (mirror of stage worker READ_TOKEN secret).')
-}
-
-// OPICE_SELF_READ_TOKEN is a PROJECT-scoped read capability for `opice-self`.
-// The operator dashboard is behind Cloudflare Access — an anonymous, token-bearing
-// visitor can only reach the public `/s/*` share surface. Enter on the project
-// share view: the worker exchanges `?token=` for the `opice_read` cookie and
-// 302s to the clean `/s/p/opice-self`; every later `/s/rpc` call carries the cookie.
-const ENTRY_URL = `${ENDPOINT}/s/p/opice-self?token=${READ_TOKEN}`
-
-browserTest({ name: 'Stage dashboard end-to-end', url: ENTRY_URL }, () => {
-	describe('project overview share', () => {
-		test('renders the project name and run list', async () => {
-			await step('the project share view loads with the project name as the heading', async () => {
-				await expect(el('main h1')).toHaveText('Opice self-test')
-			})
-
-			await step('at least one run is listed', async () => {
-				await expect(el('[data-testid="share-run-row"]').first()).toBeVisible()
-			})
-		})
+browserTest({ name: 'Platform serves an anonymous visitor', url: `${ENDPOINT}/`, tier: 'critical' }, async () => {
+	await step('the dashboard sends an anonymous visitor to sign in', {
+		intent: 'The operator dashboard is never served without a session: the proxy bounces to the identity provider.',
+	}, async () => {
+		await expect(byRole('heading', 'Sign in to Opice')).toBeVisible()
+		await expect(byLabel('Email')).toBeVisible()
+		await expect(byLabel('Password')).toBeVisible()
+		expect(new URL(currentUrl()).origin).not.toBe(new URL(ENDPOINT).origin)
 	})
 
-	describe('run share navigation', () => {
-		test('clicking a run navigates to its share run view', async () => {
-			await step('click the first run row', async () => {
-				await el('[data-testid="share-run-row"] .e-title a').first().click()
-			})
+	await step('the share view loads without signing in', {
+		intent: 'A share link opens for anyone: the share SPA is public, and without a key it says so instead of bouncing to sign-in.',
+	}, async () => {
+		await open(`${ENDPOINT}/s/`)
+		await expect(byText('This link carries no key')).toBeVisible()
+		expect(new URL(currentUrl()).origin).toBe(new URL(ENDPOINT).origin)
+	})
 
-			await step('the run detail renders (run heading)', async () => {
-				// RunDetail renders the run title as `main h1` → "Run <8-char id>".
-				await expect(el('main h1')).toContainText('Run ')
-			})
-		})
+	await invariant('the health check answers', async () => {
+		// Not followed: a redirect to sign-in would end on a 200 page and pass by mistake.
+		const response = await fetch(`${ENDPOINT}/healthz`, { redirect: 'manual' })
+		expect(response.status).toBe(200)
 	})
 })
