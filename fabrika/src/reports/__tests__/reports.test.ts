@@ -226,12 +226,18 @@ describe('reporting', () => {
 
 	test('the console offers the projects a reader reads, labelled name (slug), and none without project.read', async () => {
 		const alpha = await operatorApi.projects.create({ slug: 'scope-alpha', name: 'Alpha' })
-		const long = await operatorApi.projects.create({ slug: 'scope-long', name: 'L'.repeat(120) })
-		const label = `${'L'.repeat(106)}… (scope-long)`
+		const lower = await operatorApi.projects.create({ slug: 'scope-beta', name: 'beta' })
+		// 105 letters and an emoji (two UTF-16 units) where the cut falls: the emoji is dropped whole, never halved.
+		const long = await operatorApi.projects.create({ slug: 'scope-long', name: `${'L'.repeat(105)}😀${'L'.repeat(13)}` })
+		const label = `${'L'.repeat(105)}… (scope-long)`
 		const everyone = createClient(contract, 'api', { fetch: kit.browser(kit.testCaller([{ action: 'project.read' }])) })
-		const offered = (await everyone.projects.scopeValues()).values.filter((entry) => [alpha.id, long.id].includes(entry.value))
-		expect(offered).toEqual([{ value: alpha.id, label: 'Alpha (scope-alpha)' }, { value: long.id, label }])
-		expect(label).toHaveLength(120)
+		const ids = [alpha.id, lower.id, long.id]
+		const offered = (await everyone.projects.scopeValues()).values.filter((entry) => ids.includes(entry.value))
+		expect(offered).toEqual([
+			{ value: alpha.id, label: 'Alpha (scope-alpha)' },
+			{ value: lower.id, label: 'beta (scope-beta)' },
+			{ value: long.id, label },
+		])
 		const one = createClient(contract, 'api', {
 			fetch: kit.browser(kit.testCaller([{ action: 'project.read', scope: { type: 'project', value: alpha.id } }])),
 		})

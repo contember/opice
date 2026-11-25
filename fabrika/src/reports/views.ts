@@ -29,8 +29,16 @@ const MAX_VALUE_LABEL = 120
 export const toProjectValue = (row: { readonly id: string; readonly slug: string; readonly name: string }) => {
 	const suffix = ` (${row.slug})`
 	const room = MAX_VALUE_LABEL - suffix.length
-	const name = row.name.length > room ? `${row.name.slice(0, room - 1)}…` : row.name
-	return { value: row.id, label: `${name}${suffix}` }
+	if (row.name.length <= room) {
+		return { value: row.id, label: `${row.name}${suffix}` }
+	}
+	// Cut by whole code points, so a character outside the BMP is never split; the cap counts UTF-16 units.
+	let cut = ''
+	for (const char of row.name) {
+		if (cut.length + char.length > room - 1) break
+		cut += char
+	}
+	return { value: row.id, label: `${cut}…${suffix}` }
 }
 
 const runFields = (row: RunRowShape, counts: RunCounts | undefined, now: number) => {

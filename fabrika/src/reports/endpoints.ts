@@ -341,7 +341,9 @@ export const projects = app.group({ callers: ['human'] }, (r) => ({
 	})
 		.handle(async ({ ctx }) => {
 			const page = await ctx.db.within.projects.list({ orderBy: [['name', 'asc']], limit: 500 })
-			return { values: page.items.map(toProjectValue) }
+			// SQLite orders by byte; the picker reads in a person's order, where "alpha" comes before "Zeta".
+			const rows = [...page.items].sort((a, b) => a.name.localeCompare(b.name))
+			return { values: rows.map(toProjectValue) }
 		}),
 	create: r.mutation({
 		input: NewProject,
