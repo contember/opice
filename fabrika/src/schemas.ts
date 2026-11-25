@@ -114,6 +114,11 @@ export const ShareSummary = z.strictObject({
 	expiresAt: z.int(),
 })
 
+/** A dimension's values as the fabrika console offers them to an administrator who grants. */
+export const DimensionValues = z.strictObject({
+	values: z.array(z.strictObject({ value: z.string(), label: z.string().max(120).optional() })).max(500),
+})
+
 export const Ok = z.strictObject({ ok: z.literal(true) })
 
 // Inputs several slices share.

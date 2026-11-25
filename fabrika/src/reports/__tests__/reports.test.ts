@@ -223,6 +223,28 @@ describe('reporting', () => {
 		await newProject('twice')
 		expect(await statusOf(newProject('twice'))).toBe(409)
 	})
+
+	test('the console offers the projects a reader reads, labelled name (slug), and none without project.read', async () => {
+		const alpha = await operatorApi.projects.create({ slug: 'scope-alpha', name: 'Alpha' })
+		const lower = await operatorApi.projects.create({ slug: 'scope-beta', name: 'beta' })
+		// 105 letters and an emoji (two UTF-16 units) where the cut falls: the emoji is dropped whole, never halved.
+		const long = await operatorApi.projects.create({ slug: 'scope-long', name: `${'L'.repeat(105)}😀${'L'.repeat(13)}` })
+		const label = `${'L'.repeat(105)}… (scope-long)`
+		const everyone = createClient(contract, 'api', { fetch: kit.browser(kit.testCaller([{ action: 'project.read' }])) })
+		const ids = [alpha.id, lower.id, long.id]
+		const offered = (await everyone.projects.scopeValues()).values.filter((entry) => ids.includes(entry.value))
+		expect(offered).toEqual([
+			{ value: alpha.id, label: 'Alpha (scope-alpha)' },
+			{ value: lower.id, label: 'beta (scope-beta)' },
+			{ value: long.id, label },
+		])
+		const one = createClient(contract, 'api', {
+			fetch: kit.browser(kit.testCaller([{ action: 'project.read', scope: { type: 'project', value: alpha.id } }])),
+		})
+		expect(await one.projects.scopeValues()).toEqual({ values: [{ value: alpha.id, label: 'Alpha (scope-alpha)' }] })
+		const reporter = createClient(contract, 'api', { fetch: kit.browser(kit.testCaller([{ action: 'report.read' }])) })
+		expect(await statusOf(reporter.projects.scopeValues())).toBe(403)
+	})
 })
 
 describe('the reaper', () => {
