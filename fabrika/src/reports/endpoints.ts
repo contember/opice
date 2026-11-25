@@ -12,6 +12,7 @@ import {
 	ByRun,
 	ByRunScenario,
 	ByRunStep,
+	DimensionValues,
 	Ok,
 	Project,
 	ProjectWithLastRun,
@@ -37,7 +38,7 @@ import {
 	runCounts,
 	scenarioFlags,
 } from './queries'
-import { storedRun, toRun, toRunWithProject, toScenario, toStep } from './views'
+import { storedRun, toProjectValue, toRun, toRunWithProject, toScenario, toStep } from './views'
 
 const Text = z.string().max(1000)
 const LongText = z.string().max(100_000)
@@ -332,6 +333,15 @@ export const projects = app.group({ callers: ['human'] }, (r) => ({
 			const [bySlug] = (await ctx.db.within.projects.list({ where: [['slug', '=', input.slug]], limit: 1 })).items
 			const [row] = bySlug === undefined ? (await ctx.db.within.projects.list({ where: [['id', '=', input.slug]], limit: 1 })).items : [bySlug]
 			return { project: row === undefined ? null : fromRow(Project, row) }
+		}),
+	// The fabrika console lists the projects a grant may name from here, called as the granting administrator.
+	scopeValues: r.query({
+		output: DimensionValues,
+		access: { action: 'project.read', over: 'project' },
+	})
+		.handle(async ({ ctx }) => {
+			const page = await ctx.db.within.projects.list({ orderBy: [['name', 'asc']], limit: 500 })
+			return { values: page.items.map(toProjectValue) }
 		}),
 	create: r.mutation({
 		input: NewProject,

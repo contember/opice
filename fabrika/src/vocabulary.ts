@@ -8,7 +8,8 @@ export const vocabulary = defineVocabulary({
 	app: 'opice',
 	displayName: 'Opice',
 	dimensions: {
-		project: { creator: 'owner' },
+		// The console offers a grant's projects from the application, asked as the administrator who grants.
+		project: { creator: 'owner', valuesFrom: 'api.projects.scopeValues' },
 		run: { in: 'project' },
 	},
 	actions: {

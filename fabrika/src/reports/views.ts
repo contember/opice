@@ -22,6 +22,17 @@ type RunRowShape = {
 	readonly finishedAt: number | null
 }
 
+/** The console caps a value's label at 120 characters; a long name is cut so the slug stays readable. */
+const MAX_VALUE_LABEL = 120
+
+/** A project as the console offers it in a grant: its id, labelled `name (slug)`. */
+export const toProjectValue = (row: { readonly id: string; readonly slug: string; readonly name: string }) => {
+	const suffix = ` (${row.slug})`
+	const room = MAX_VALUE_LABEL - suffix.length
+	const name = row.name.length > room ? `${row.name.slice(0, room - 1)}…` : row.name
+	return { value: row.id, label: `${name}${suffix}` }
+}
+
 const runFields = (row: RunRowShape, counts: RunCounts | undefined, now: number) => {
 	const tally = counts ?? NO_COUNTS
 	return {
